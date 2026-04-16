@@ -1,0 +1,23 @@
+# Environment files — all flavors
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+dist/
+build/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
