@@ -3,7 +3,7 @@
 # Uses the agent-memory venv Python (has psycopg + dotenv).
 # Called by launchd every 2 minutes, or run manually.
 
-AGENT_MEMORY_DIR="${AGENT_MEMORY_DIR:-$HOME/minions/minions-suite/agent-memory}"
+AGENT_MEMORY_DIR="${AGENT_MEMORY_DIR:-$HOME/garner/repos/agents-nexus/mnemon}"
 PYTHON="$AGENT_MEMORY_DIR/.venv/bin/python3"
 
 if [ ! -x "$PYTHON" ]; then

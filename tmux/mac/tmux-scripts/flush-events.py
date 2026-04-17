@@ -19,7 +19,7 @@ from pathlib import Path
 def _db_url() -> str:
     # Load .env from agent-memory project
     agent_memory_dir = Path(
-        os.getenv("AGENT_MEMORY_DIR", Path.home() / "minions/minions-suite/agent-memory")
+        os.getenv("AGENT_MEMORY_DIR", Path.home() / "garner/repos/agents-nexus/mnemon")
     )
     env_file = agent_memory_dir / ".env"
     if env_file.exists():

@@ -2,7 +2,7 @@
 # Flush buffered memory events to Postgres.
 # Uses the agent-memory venv Python (has psycopg + dotenv).
 
-AGENT_MEMORY_DIR="${AGENT_MEMORY_DIR:-$HOME/minions/minions-suite/agent-memory}"
+AGENT_MEMORY_DIR="${AGENT_MEMORY_DIR:-$HOME/garner/repos/agents-nexus/mnemon}"
 PYTHON="$AGENT_MEMORY_DIR/.venv/bin/python3"
 
 if [ ! -x "$PYTHON" ]; then

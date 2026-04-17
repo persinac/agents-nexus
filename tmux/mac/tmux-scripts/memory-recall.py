@@ -17,7 +17,7 @@ import argparse
 from pathlib import Path
 from datetime import datetime, timezone
 
-ENV_FILE = Path.home() / "minions/minions-suite/agent-memory/.env"
+ENV_FILE = Path.home() / "garner/repos/agents-nexus/mnemon/.env"
 DEFAULT_MAX_TOKENS = 2000
 CHARS_PER_TOKEN = 4  # conservative estimate
 

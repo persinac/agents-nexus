@@ -1,0 +1,99 @@
+version: '3'
+
+dotenv: ['.env.local', '.env']
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  # =============================================================================
+  # Setup
+  # =============================================================================
+
+  install:
+    desc: Install all dependencies (mnemon, arbiter, dashboard)
+    cmds:
+      - task: mnemon:install
+      - task: arbiter:install
+      - task: dashboard:install
+
+  # =============================================================================
+  # Arbiter (A2A hub + WebSocket bridge)
+  # =============================================================================
+
+  arbiter:start:
+    desc: Start the arbiter server
+    dir: arbiter
+    cmds:
+      - npm start
+
+  arbiter:dev:
+    desc: Start the arbiter server with file watching
+    dir: arbiter
+    cmds:
+      - npm run dev
+
+  arbiter:install:
+    desc: Install arbiter dependencies
+    dir: arbiter
+    cmds:
+      - npm install
+
+  # =============================================================================
+  # Dashboard (pixel UI)
+  # =============================================================================
+
+  dashboard:dev:
+    desc: Start the dashboard UI in dev mode
+    dir: dashboard/ui
+    cmds:
+      - npm run dev
+
+  dashboard:build:
+    desc: Build the dashboard UI
+    dir: dashboard/ui
+    cmds:
+      - npm run build
+
+  dashboard:install:
+    desc: Install dashboard dependencies
+    dir: dashboard/ui
+    cmds:
+      - npm install
+
+  # =============================================================================
+  # Mnemon (memory MCP server)
+  # =============================================================================
+
+  mnemon:install:
+    desc: Create venv and install mnemon dependencies
+    dir: mnemon
+    cmds:
+      - uv sync --extra mcp
+
+  mnemon:serve:
+    desc: Start the mnemon MCP server
+    dir: mnemon
+    cmds:
+      - uv run agent-memory-serve
+
+  mnemon:migrate:
+    desc: Run database migrations
+    dir: mnemon
+    cmds:
+      - psql $DATABASE_URL -f migrations/001_initial_schema.sql
+
+  mnemon:test:
+    desc: Run mnemon tests
+    dir: mnemon
+    cmds:
+      - uv run pytest {{.CLI_ARGS}}
+
+  mnemon:fmt:
+    desc: Format and lint mnemon
+    dir: mnemon
+    cmds:
+      - uv run ruff format .
+      - uv run ruff check --fix .

@@ -13,7 +13,7 @@ REPO_PATH="${PWD}"
 project_slug="${PROJECT_SLUG:-$(basename "$REPO_PATH")}"
 
 # ── Agent-memory Python (venv used by the MCP server) ──────────────────────
-_AGENT_MEM_VENV="$HOME/minions/minions-suite/agent-memory/.venv"
+_AGENT_MEM_VENV="$HOME/garner/repos/agents-nexus/mnemon/.venv"
 if [ -x "$_AGENT_MEM_VENV/bin/python3" ]; then
   MEMORY_PYTHON="$_AGENT_MEM_VENV/bin/python3"
 elif [ -x "$_AGENT_MEM_VENV/Scripts/python3.exe" ]; then

@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-ENV_FILE = Path.home() / "minions/minions-suite/agent-memory/.env"
+ENV_FILE = Path.home() / "garner/repos/agents-nexus/mnemon/.env"
 
 
 def load_env():
