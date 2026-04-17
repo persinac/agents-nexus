@@ -1,0 +1,12 @@
+# Agent source → sprite config
+# Copy this file to agentSources.yaml and add your own sources.
+# agentSources.yaml is gitignored — safe for site-specific entries.
+#
+# Each entry maps an agentSource string (sent by relay bridge clients) to a
+# palette index. Palette indices map to the character sprites loaded at runtime.
+# Sources not listed here get randomized pixel people.
+#
+# Example:
+#
+# my-runner:
+#   palette: 6

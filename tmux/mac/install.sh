@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Symlinks config files from this repo into their expected locations.
+# Run from the repo root: ./mac/install.sh
+
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+ln -sf "$SCRIPT_DIR/tmux.conf" "$HOME/.tmux.conf"
+
+mkdir -p "$HOME/.tmux"
+for script in "$SCRIPT_DIR"/tmux-scripts/*.sh; do
+  chmod +x "$script"
+  ln -sf "$script" "$HOME/.tmux/$(basename "$script")"
+done
+for script in "$SCRIPT_DIR"/tmux-scripts/*.py; do
+  [ -f "$script" ] || continue
+  chmod +x "$script"
+  ln -sf "$script" "$HOME/.tmux/$(basename "$script")"
+done
+
+# Launchd agents
+mkdir -p "$HOME/Library/LaunchAgents"
+for plist in "$SCRIPT_DIR"/launchd/*.plist; do
+  [ -f "$plist" ] || continue
+  name=$(basename "$plist")
+  cp "$plist" "$HOME/Library/LaunchAgents/$name"
+  launchctl unload "$HOME/Library/LaunchAgents/$name" 2>/dev/null || true
+  launchctl load "$HOME/Library/LaunchAgents/$name"
+  echo "  Loaded launchd: $name"
+done
+
+# Write machine-specific env (sourced by tmux scripts at runtime)
+ENV_FILE="$HOME/.tmux/env.sh"
+REPO_DIR_DEFAULT="$HOME/repos"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "REPO_DIR=\"\${REPO_DIR:-$REPO_DIR_DEFAULT}\"" > "$ENV_FILE"
+  echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/garner/notes}\"" >> "$ENV_FILE"
+  echo "Created ~/.tmux/env.sh (edit REPO_DIR/NOTES_DIR if your paths differ)"
+else
+  # Add NOTES_DIR if missing
+  if ! grep -q "NOTES_DIR" "$ENV_FILE"; then
+    echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/garner/notes}\"" >> "$ENV_FILE"
+    echo "Added NOTES_DIR to ~/.tmux/env.sh"
+  fi
+  # Add EXTRA_REPO_DIRS if missing
+  if ! grep -q "EXTRA_REPO_DIRS" "$ENV_FILE"; then
+    echo "EXTRA_REPO_DIRS=\"\${EXTRA_REPO_DIRS:-\$HOME/projects}\"" >> "$ENV_FILE"
+    echo "Added EXTRA_REPO_DIRS to ~/.tmux/env.sh"
+  else
+    echo "~/.tmux/env.sh already exists — verify REPO_DIR/NOTES_DIR/EXTRA_REPO_DIRS are correct"
+  fi
+fi
+
+mkdir -p "$HOME/.claude"
+SETTINGS="$HOME/.claude/settings.json"
+TEMPLATE="$SCRIPT_DIR/claude-settings.json"
+
+if [ ! -f "$SETTINGS" ]; then
+  cp "$TEMPLATE" "$SETTINGS"
+  echo "Created ~/.claude/settings.json from template"
+else
+  # Back up first
+  cp "$SETTINGS" "${SETTINGS}.bak"
+
+  # If it's a symlink, unlink it so we can write a real merged file
+  if [ -L "$SETTINGS" ]; then
+    cp --remove-destination "$(readlink "$SETTINGS")" "$SETTINGS"
+  fi
+
+  # Smart merge: add repo hooks (dedup by command) + union permissions
+  node - "$SETTINGS" "$TEMPLATE" <<'EOF'
+const [,, existingPath, templatePath] = process.argv;
+const existing = JSON.parse(require('fs').readFileSync(existingPath, 'utf8'));
+const template = JSON.parse(require('fs').readFileSync(templatePath, 'utf8'));
+
+// Merge hooks: for each event in template, append entries whose command isn't already present
+for (const [event, entries] of Object.entries(template.hooks ?? {})) {
+  existing.hooks ??= {};
+  existing.hooks[event] ??= [];
+  for (const entry of entries) {
+    const cmd = entry.hooks?.[0]?.command;
+    const alreadyPresent = existing.hooks[event].some(e => e.hooks?.[0]?.command === cmd);
+    if (!alreadyPresent) existing.hooks[event].push(entry);
+  }
+}
+
+// Union permissions.allow
+const existingPerms = existing.permissions?.allow ?? [];
+const templatePerms = template.permissions?.allow ?? [];
+existing.permissions ??= {};
+existing.permissions.allow = [...new Set([...existingPerms, ...templatePerms])];
+
+require('fs').writeFileSync(existingPath, JSON.stringify(existing, null, 2) + '\n');
+EOF
+
+  echo "Merged claude-settings.json into ~/.claude/settings.json (backup at settings.json.bak)"
+fi
+
+# Append zshrc sourcing if not already present
+MARKER="# agent-orchestration"
+if ! grep -qF "$MARKER" "$HOME/.zshrc" 2>/dev/null; then
+  echo "" >> "$HOME/.zshrc"
+  echo "$MARKER" >> "$HOME/.zshrc"
+  echo "source \"$SCRIPT_DIR/zshrc\"" >> "$HOME/.zshrc"
+  echo "Added source line to ~/.zshrc"
+else
+  echo "~/.zshrc already sources agent-orchestration"
+fi
+
+echo "Done. Reload with: tmux source ~/.tmux.conf"

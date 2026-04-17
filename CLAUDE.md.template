@@ -1,0 +1,64 @@
+# CLAUDE.md
+
+## Project overview
+
+<!-- What does this project do? One or two sentences. -->
+
+## Tech stack
+
+<!-- e.g., Node.js + TypeScript, Python + FastAPI, Go, etc. -->
+
+## Key commands
+
+```bash
+# Install dependencies
+# TODO
+
+# Run dev server
+# TODO
+
+# Run tests
+# TODO
+
+# Run linter / formatter
+# TODO
+
+# Build for production
+# TODO
+```
+
+## Project structure
+
+<!-- Which directories matter and what they contain. -->
+<!-- e.g.,
+- src/          — application source code
+- tests/        — test files
+- deploy/       — infrastructure / deployment configs
+-->
+
+## Conventions
+
+<!-- Coding style, naming conventions, patterns to follow. -->
+<!-- e.g.,
+- Use snake_case for Python, camelCase for TypeScript
+- All API endpoints go in src/routes/
+- Tests mirror src/ structure in tests/
+-->
+
+## Things to know
+
+<!-- Non-obvious project knowledge that saves time. -->
+<!-- e.g.,
+- The auth middleware must be initialized before route registration
+- Environment variables are validated at startup in src/config.ts
+- Database migrations run automatically in dev but manually in prod
+-->
+
+## Do NOT
+
+<!-- Guardrails — things agents should avoid. -->
+<!-- e.g.,
+- Do not modify migration files that have already been applied
+- Do not commit .env or secrets
+- Do not add dependencies without checking the existing lockfile
+-->

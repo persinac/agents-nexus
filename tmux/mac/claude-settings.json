@@ -1,0 +1,89 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.tmux/hook-stop.sh; true"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.tmux/hook-memory.sh session_idle; true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.tmux/hook-pretooluse.sh; true"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.tmux/hook-memory.sh tool_use; true"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.tmux/hook-notification.sh; true"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.tmux/hook-memory.sh permission_wait; true"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(glab mr *)",
+      "Bash(glab pipeline *)",
+      "Bash(glab ci *)",
+      "Bash(glab api *)",
+      "Bash(git branch *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git status*)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git rebase *)",
+      "Bash(git push *)",
+      "Bash(git remote *)",
+      "Bash(git rev-parse *)",
+      "Bash(python3 -c *)",
+      "Bash(python3 -m *)",
+      "Bash(echo *)",
+      "Bash(env)",
+      "Bash(grep *)",
+      "Bash(uv run *)",
+      "Bash($HOME/.tmux/agent-send.sh *)"
+    ]
+  }
+}

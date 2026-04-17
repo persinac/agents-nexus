@@ -1,0 +1,83 @@
+{
+  "alwaysThinkingEnabled": true,
+  "autoUpdatesChannel": "latest",
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-stop.sh; true"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-memory.sh session_idle; true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-pretooluse.sh; true"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-memory.sh tool_use; true"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-notification.sh; true"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-memory.sh permission_wait; true"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git branch *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git status*)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git rebase *)",
+      "Bash(git push *)",
+      "Bash(git remote *)",
+      "Bash(git rev-parse *)",
+      "Bash(echo *)",
+      "Bash(grep *)",
+      "Bash(/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/agent-send.sh *)"
+    ]
+  }
+}
