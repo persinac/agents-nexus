@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.docker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/docker</string>
+        <string>compose</string>
+        <string>--project-directory</string>
+        <string>/Users/alex.persinger@getgarner.com/garner/repos/agents-nexus</string>
+        <string>up</string>
+        <string>--no-recreate</string>
+        <string>-d</string>
+    </array>
+
+    <!-- Start after login, retry if it fails (Docker Desktop may not be ready immediately) -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- Wait 10s after login so Docker Desktop has time to start -->
+    <key>StartInterval</key>
+    <integer>0</integer>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-docker.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-docker.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>

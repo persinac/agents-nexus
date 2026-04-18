@@ -18,8 +18,8 @@ import { homedir } from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const MEMORY_RECALL_SCRIPT = resolve(__dirname, '../../mac/tmux-scripts/memory-recall.py');
-const MEMORY_STATS_SCRIPT = resolve(__dirname, '../../mac/tmux-scripts/memory-stats.py');
+const MEMORY_RECALL_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-recall.py');
+const MEMORY_STATS_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-stats.py');
 
 const PORT = parseInt(process.env.PORT || '8420', 10);
 const POLL_MS = 100;  // fast baseline poll

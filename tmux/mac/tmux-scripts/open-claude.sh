@@ -75,6 +75,12 @@ if [ -x "$HOME/.tmux/memory-recall.py" ]; then
   memory_section=$("$MEMORY_PYTHON" "$HOME/.tmux/memory-recall.py" "$project_slug" 2>/dev/null || true)
 fi
 
+# ── Build claude args ──────────────────────────────────────────────────────
+claude_args=()
+[ -n "$MY_NAME" ]       && claude_args+=(--name "$MY_NAME")
+[ -n "$CLAUDE_MODEL" ]  && claude_args+=(--model "$CLAUDE_MODEL")
+[ -n "$CLAUDE_EFFORT" ] && claude_args+=(--effort "$CLAUDE_EFFORT")
+
 # ── Launch claude with assembled context ───────────────────────────────────
 if [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ]; then
   prompt=""
@@ -89,7 +95,7 @@ if [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ]; 
     [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
     prompt="${prompt}${registry_section}"
   fi
-  exec claude "$prompt"
+  exec claude "${claude_args[@]}" "$prompt"
 else
-  exec claude
+  exec claude "${claude_args[@]}"
 fi

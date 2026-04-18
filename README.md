@@ -5,6 +5,105 @@ without full context switches, using tmux as the orchestration layer.
 
 Multi-platform: macOS, Windows (MSYS2), Linux.
 
+## Knowledge Stack (Docker)
+
+Postgres + pgvector, Ollama, 343 Guilty Spark, and the pixel dashboard all run as Docker services that start automatically on login. The only piece that stays native is the arbiter (it needs your local tmux socket).
+
+### Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — enable **Start at login** in settings
+- [`task`](https://taskfile.dev) — `brew install go-task`
+- [guilty-spark](https://github.com/your-org/guilty-spark) repo cloned as a sibling: `garner/repos/guilty-spark`
+
+### First-time setup
+
+```bash
+cd ~/garner/repos/agents-nexus
+
+# 1. Create your local env file
+cp .env.example .env
+
+# 2. Fill in secrets
+#    - POSTGRES_PASSWORD   — pick anything, used internally only
+#    - GITLAB_TOKEN        — copy from guilty-spark/.env
+#    - SPARK_SOURCE        — absolute path to the guilty-spark repo
+#    - REPOS_PATH          — absolute path to your repos directory
+#    - HOST_TMUX_DIR       — usually ~/.tmux
+$EDITOR .env
+
+# 3. Start all services
+task docker:up
+
+# 4. Pull the embedding model into Ollama (once; ~270 MB)
+task docker:init
+
+# 5. Build the Spark index (first run indexes all repos — takes a while)
+task spark:reclaim
+
+# 6. Wire autostart so the stack comes up after every reboot
+task launchd:install
+```
+
+### Point Claude Code at the local services
+
+Update `mnemon/.env` so the MCP memory server connects to the Docker postgres:
+
+```
+DATABASE_URL=postgresql://agents:<your-password>@localhost:5432/agents?sslmode=disable
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+Spark's MCP server is already running at `http://localhost:8343` (SSE transport). Add it to `~/.claude.json` if it isn't there:
+
+```json
+{
+  "mcpServers": {
+    "spark": {
+      "type": "sse",
+      "url": "http://localhost:8343/sse"
+    }
+  }
+}
+```
+
+### Start the pixel dashboard
+
+The dashboard UI is served by Docker at `http://localhost:8421`. Start the arbiter (WebSocket bridge) natively:
+
+```bash
+task arbiter:start
+```
+
+Then open `http://localhost:8421` in a browser.
+
+### Day-to-day commands
+
+```bash
+task docker:up              # start everything
+task docker:down            # stop (data volumes preserved)
+task docker:logs            # tail all logs
+task docker:logs -- spark   # tail a single service
+task docker:status          # health + uptime
+
+task spark:activate -- my-repo   # re-index one repo after changes
+task spark:status                # index stats
+
+task launchd:install        # enable autostart
+task launchd:uninstall      # disable autostart
+```
+
+### Ports
+
+| Service | Port |
+|---------|------|
+| Postgres | 5432 |
+| Ollama | 11434 |
+| 343 Guilty Spark | 8343 |
+| Dashboard UI | 8421 |
+| Arbiter (native) | 8420 |
+
+---
+
 ## Install
 
 One command — detects your OS, installs system deps, links configs, and sets up the pixel dashboard:

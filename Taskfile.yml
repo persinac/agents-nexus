@@ -97,3 +97,78 @@ tasks:
     cmds:
       - uv run ruff format .
       - uv run ruff check --fix .
+
+  # =============================================================================
+  # Docker Compose (knowledge stack)
+  # =============================================================================
+
+  docker:up:
+    desc: Start the full knowledge stack in the background
+    cmds:
+      - docker compose up -d
+
+  docker:down:
+    desc: Stop all services (data volumes preserved)
+    cmds:
+      - docker compose down
+
+  docker:restart:
+    desc: Restart a single service (e.g. task docker:restart -- spark)
+    cmds:
+      - docker compose restart {{.CLI_ARGS}}
+
+  docker:logs:
+    desc: Tail logs for all services (or pass a service name)
+    cmds:
+      - docker compose logs -f {{.CLI_ARGS}}
+
+  docker:status:
+    desc: Show container health and uptime
+    cmds:
+      - docker compose ps
+
+  docker:init:
+    desc: First-time setup — pull embedding models
+    cmds:
+      - docker compose --profile init run --rm ollama-init
+
+  docker:build:
+    desc: Rebuild all images without cache
+    cmds:
+      - docker compose build --no-cache
+
+  # =============================================================================
+  # 343 Guilty Spark
+  # =============================================================================
+
+  spark:reclaim:
+    desc: Full index rebuild (runs inside the spark container)
+    cmds:
+      - docker compose exec spark uv run spark reclaim {{.CLI_ARGS}}
+
+  spark:activate:
+    desc: Re-index a single repo (e.g. task spark:activate -- my-repo)
+    cmds:
+      - docker compose exec spark uv run spark activate {{.CLI_ARGS}}
+
+  spark:status:
+    desc: Show index stats
+    cmds:
+      - docker compose exec spark uv run spark status
+
+  # =============================================================================
+  # Autostart (macOS launchd)
+  # =============================================================================
+
+  launchd:install:
+    desc: Install launchd agent so Docker stack starts at login
+    cmds:
+      - cp launchd/com.agents-nexus.docker.plist ~/Library/LaunchAgents/
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.docker.plist
+      - echo "Installed — stack will start at next login (or run: task docker:up)"
+
+  launchd:uninstall:
+    desc: Remove the launchd autostart agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.docker.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.docker.plist
