@@ -14,6 +14,65 @@ Multi-platform: macOS, Windows (MSYS2), Linux.
 | **mnemon** | Agent memory — persist notes and events to Postgres, query via MCP in any session |
 | **spark** | Semantic search index over all your repos, served as an MCP tool |
 
+## Architecture
+
+```mermaid
+graph TB
+      subgraph host["Host Machine"]
+          subgraph tmux["tmux (orchestration)"]
+              agents["Claude Code agents\n(1..N windows)"]
+              hooks["hooks\nPreToolUse / Stop / Notification"]
+          end
+
+          arbiter["arbiter\nWebSocket bridge\n:8420"]
+          browser["Browser\nlocalhost:8421"]
+
+          subgraph claude["Claude Code (each agent)"]
+              mcp_mnemon["MCP: mnemon\n(stdio)"]
+              mcp_spark["MCP: spark\n(SSE → :8343)"]
+          end
+      end
+
+      subgraph docker["Docker Compose"]
+          postgres["Postgres + pgvector\n:5432"]
+          ollama["Ollama\n:11434"]
+          spark_svc["spark\n:8343"]
+          mnemon_flush["mnemon-flush\n(cron daemon)"]
+          dashboard["dashboard\nnginx :8421"]
+      end
+
+      jsonl["~/.tmux/\nmemory-events.jsonl"]
+
+      %% hook → jsonl → flush → postgres
+      hooks -->|"append event"| jsonl
+      jsonl -->|"mount + drain every 120s"| mnemon_flush
+      mnemon_flush -->|"INSERT"| postgres
+
+      %% MCP mnemon (stdio) → postgres
+      mcp_mnemon -->|"create_note\nquery_notes\nsearch_similar"| postgres
+      mcp_mnemon -->|"embeddings"| ollama
+
+      %% MCP spark → spark container
+      mcp_spark -->|"SSE"| spark_svc
+      spark_svc -->|"embeddings"| ollama
+      spark_svc -->|"reads"| repos[("~/repos\n(bind mount)")]
+
+      %% arbiter ↔ tmux + transcripts
+      agents -->|"JSONL transcripts\n~/.claude/projects/"| arbiter
+      tmux -->|"tmux list-windows\n(exec)"| arbiter
+
+      %% arbiter → dashboard browser
+      arbiter -->|"WebSocket\nagent events"| browser
+      dashboard -->|"serves static UI"| browser
+
+      %% arbiter → mnemon scripts (subprocess)
+      arbiter -->|"memory-stats.py\nmemory-recall.py\n(subprocess)"| postgres
+
+      style docker fill:#dbe4ff,stroke:#4a9eed
+      style host fill:#d3f9d8,stroke:#22c55e
+      style tmux fill:#e5dbff,stroke:#8b5cf6
+```
+
 ## Knowledge Stack (Docker)
 
 Postgres + pgvector, Ollama, Spark, and the pixel dashboard all run as Docker services that start automatically on login. The arbiter stays native (it needs your local tmux socket).
