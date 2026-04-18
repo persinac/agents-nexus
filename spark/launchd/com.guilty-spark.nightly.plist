@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.guilty-spark.nightly</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>SPARK_DIR_PLACEHOLDER/scripts/spark-pipeline.sh</string>
+    </array>
+
+    <!-- Run at 2:00 AM every night -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>SPARK_DIR_PLACEHOLDER</string>
+
+    <key>StandardOutPath</key>
+    <string>SPARK_DIR_PLACEHOLDER/logs/pipeline.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>SPARK_DIR_PLACEHOLDER/logs/pipeline.error.log</string>
+
+    <!-- Do NOT run immediately on load — only on schedule -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Minimal environment so scripts can find brew tools -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>HOME_PLACEHOLDER</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
