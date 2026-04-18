@@ -10,7 +10,7 @@
         <string>/usr/local/bin/docker</string>
         <string>compose</string>
         <string>--project-directory</string>
-        <string>/Users/alex.persinger@getgarner.com/garner/repos/agents-nexus</string>
+        <string>__AGENTS_NEXUS_DIR__</string>
         <string>up</string>
         <string>--no-recreate</string>
         <string>-d</string>

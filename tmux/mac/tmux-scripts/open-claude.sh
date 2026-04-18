@@ -8,12 +8,12 @@
 
 [ -f "$HOME/.tmux/env.sh" ] && source "$HOME/.tmux/env.sh"
 
-NOTES_DIR="${NOTES_DIR:-$HOME/garner/notes}"
+NOTES_DIR="${NOTES_DIR:-$HOME/notes}"
 REPO_PATH="${PWD}"
 project_slug="${PROJECT_SLUG:-$(basename "$REPO_PATH")}"
 
 # ── Agent-memory Python (venv used by the MCP server) ──────────────────────
-_AGENT_MEM_VENV="$HOME/garner/repos/agents-nexus/mnemon/.venv"
+_AGENT_MEM_VENV="${AGENTS_NEXUS_DIR:-$HOME/repos/agents-nexus}/mnemon/.venv"
 if [ -x "$_AGENT_MEM_VENV/bin/python3" ]; then
   MEMORY_PYTHON="$_AGENT_MEM_VENV/bin/python3"
 elif [ -x "$_AGENT_MEM_VENV/Scripts/python3.exe" ]; then

@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.garner.agent-memory.flush</string>
+    <string>com.agents-nexus.agent-memory.flush</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/alex.persinger@getgarner.com/.tmux/flush-events.sh</string>
+        <string>__HOME__/.tmux/flush-events.sh</string>
     </array>
 
     <!-- Flush every 2 minutes -->
@@ -19,15 +19,17 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/Users/alex.persinger@getgarner.com/.tmux/flush-events.log</string>
+    <string>__HOME__/.tmux/flush-events.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/alex.persinger@getgarner.com/.tmux/flush-events.log</string>
+    <string>__HOME__/.tmux/flush-events.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/alex.persinger@getgarner.com</string>
+        <string>__HOME__</string>
+        <key>AGENTS_NEXUS_DIR</key>
+        <string>__AGENTS_NEXUS_DIR__</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>

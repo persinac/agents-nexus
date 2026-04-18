@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-ENV_FILE = Path.home() / "garner/repos/agents-nexus/mnemon/.env"
+ENV_FILE = Path(os.environ.get("AGENTS_NEXUS_DIR", Path.home() / "repos/agents-nexus")) / "mnemon/.env"
 
 
 def load_env():

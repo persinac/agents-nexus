@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REFRESH_SECS = 5
-ENV_FILE = Path.home() / "garner/repos/agents-nexus/mnemon/.env"
+ENV_FILE = Path(os.environ.get("AGENTS_NEXUS_DIR", Path.home() / "repos/agents-nexus")) / "mnemon/.env"
 WIDTH = 46  # inner content width (box is WIDTH+4)
 
 

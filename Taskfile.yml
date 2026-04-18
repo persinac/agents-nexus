@@ -138,7 +138,7 @@ tasks:
       - docker compose build --no-cache
 
   # =============================================================================
-  # 343 Guilty Spark
+  # Spark (semantic repo search)
   # =============================================================================
 
   spark:reclaim:
@@ -162,8 +162,11 @@ tasks:
 
   launchd:install:
     desc: Install launchd agent so Docker stack starts at login
+    vars:
+      NEXUS_DIR:
+        sh: pwd
     cmds:
-      - cp launchd/com.agents-nexus.docker.plist ~/Library/LaunchAgents/
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.docker.plist > ~/Library/LaunchAgents/com.agents-nexus.docker.plist
       - launchctl load ~/Library/LaunchAgents/com.agents-nexus.docker.plist
       - echo "Installed — stack will start at next login (or run: task docker:up)"
 

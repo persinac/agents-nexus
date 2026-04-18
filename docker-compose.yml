@@ -1,6 +1,6 @@
 name: agents-nexus
 
-# Knowledge stack: Postgres + pgvector, Ollama, 343 Guilty Spark, mnemon flush daemon, dashboard UI.
+# Knowledge stack: Postgres + pgvector, Ollama, Spark, mnemon flush daemon, dashboard UI.
 # Arbiter runs natively (needs tmux socket) — start with: task arbiter:start
 #
 # First-time setup:
@@ -66,7 +66,7 @@ services:
 
   # ── Knowledge Services ───────────────────────────────────────────────────
 
-  # 343 Guilty Spark — semantic index over all repos
+  # Spark — semantic index over all repos
   spark:
     build:
       context: ${SPARK_SOURCE:?Set SPARK_SOURCE in .env (path to guilty-spark repo)}

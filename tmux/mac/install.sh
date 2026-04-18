@@ -18,12 +18,14 @@ for script in "$SCRIPT_DIR"/tmux-scripts/*.py; do
   ln -sf "$script" "$HOME/.tmux/$(basename "$script")"
 done
 
-# Launchd agents
+# Launchd agents — substitute __HOME__ and __AGENTS_NEXUS_DIR__ placeholders
+NEXUS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 mkdir -p "$HOME/Library/LaunchAgents"
 for plist in "$SCRIPT_DIR"/launchd/*.plist; do
   [ -f "$plist" ] || continue
   name=$(basename "$plist")
-  cp "$plist" "$HOME/Library/LaunchAgents/$name"
+  sed -e "s|__HOME__|$HOME|g" -e "s|__AGENTS_NEXUS_DIR__|$NEXUS_DIR|g" \
+    "$plist" > "$HOME/Library/LaunchAgents/$name"
   launchctl unload "$HOME/Library/LaunchAgents/$name" 2>/dev/null || true
   launchctl load "$HOME/Library/LaunchAgents/$name"
   echo "  Loaded launchd: $name"
@@ -34,13 +36,19 @@ ENV_FILE="$HOME/.tmux/env.sh"
 REPO_DIR_DEFAULT="$HOME/repos"
 if [ ! -f "$ENV_FILE" ]; then
   echo "REPO_DIR=\"\${REPO_DIR:-$REPO_DIR_DEFAULT}\"" > "$ENV_FILE"
-  echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/garner/notes}\"" >> "$ENV_FILE"
-  echo "Created ~/.tmux/env.sh (edit REPO_DIR/NOTES_DIR if your paths differ)"
+  echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/notes}\"" >> "$ENV_FILE"
+  echo "AGENTS_NEXUS_DIR=\"\${AGENTS_NEXUS_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}\"" >> "$ENV_FILE"
+  echo "Created ~/.tmux/env.sh (edit REPO_DIR/NOTES_DIR/AGENTS_NEXUS_DIR if your paths differ)"
 else
   # Add NOTES_DIR if missing
   if ! grep -q "NOTES_DIR" "$ENV_FILE"; then
-    echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/garner/notes}\"" >> "$ENV_FILE"
+    echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/notes}\"" >> "$ENV_FILE"
     echo "Added NOTES_DIR to ~/.tmux/env.sh"
+  fi
+  # Add AGENTS_NEXUS_DIR if missing
+  if ! grep -q "AGENTS_NEXUS_DIR" "$ENV_FILE"; then
+    echo "AGENTS_NEXUS_DIR=\"\${AGENTS_NEXUS_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}\"" >> "$ENV_FILE"
+    echo "Added AGENTS_NEXUS_DIR to ~/.tmux/env.sh"
   fi
   # Add EXTRA_REPO_DIRS if missing
   if ! grep -q "EXTRA_REPO_DIRS" "$ENV_FILE"; then

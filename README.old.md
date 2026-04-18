@@ -1,39 +1,32 @@
-# agents-nexus
+# claude-agents-tmux
 
-RTS-inspired multi-agent orchestration with a built-in knowledge stack. Run multiple Claude Code agents across repos simultaneously, persist memory across sessions, and semantically search your codebase — all from tmux.
+RTS-inspired multi-agent orchestration — manage multiple Claude Code agents across repos
+without full context switches, using tmux as the orchestration layer.
 
 Multi-platform: macOS, Windows (MSYS2), Linux.
 
-## What's Inside
-
-| Component | What it does |
-|-----------|-------------|
-| **tmux layer** | Orchestration shell — spawn agents, monitor status, relay commands without context switches |
-| **arbiter** | WebSocket bridge — streams live tmux + transcript state to the dashboard |
-| **dashboard** | Pixel art office visualization of all active agents |
-| **mnemon** | Agent memory — persist notes and events to Postgres, query via MCP in any session |
-| **spark** | Semantic search index over all your repos, served as an MCP tool |
-
 ## Knowledge Stack (Docker)
 
-Postgres + pgvector, Ollama, Spark, and the pixel dashboard all run as Docker services that start automatically on login. The arbiter stays native (it needs your local tmux socket).
+Postgres + pgvector, Ollama, 343 Guilty Spark, and the pixel dashboard all run as Docker services that start automatically on login. The only piece that stays native is the arbiter (it needs your local tmux socket).
 
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) — enable **Start at login** in settings
 - [`task`](https://taskfile.dev) — `brew install go-task`
+- [guilty-spark](https://github.com/your-org/guilty-spark) repo cloned as a sibling: `garner/repos/guilty-spark`
 
 ### First-time setup
 
 ```bash
-cd ~/repos/agents-nexus
+cd ~/garner/repos/agents-nexus
 
 # 1. Create your local env file
 cp .env.example .env
 
 # 2. Fill in secrets
 #    - POSTGRES_PASSWORD   — pick anything, used internally only
-#    - GITLAB_TOKEN        — GitLab personal access token (for repo metadata)
+#    - GITLAB_TOKEN        — copy from guilty-spark/.env
+#    - SPARK_SOURCE        — absolute path to the guilty-spark repo
 #    - REPOS_PATH          — absolute path to your repos directory
 #    - HOST_TMUX_DIR       — usually ~/.tmux
 $EDITOR .env
@@ -60,7 +53,7 @@ DATABASE_URL=postgresql://agents:<your-password>@localhost:5432/agents?sslmode=d
 OLLAMA_BASE_URL=http://localhost:11434
 ```
 
-Spark's MCP server runs at `http://localhost:8343` (SSE). Add it to `~/.claude.json`:
+Spark's MCP server is already running at `http://localhost:8343` (SSE transport). Add it to `~/.claude.json` if it isn't there:
 
 ```json
 {
@@ -105,20 +98,18 @@ task launchd:uninstall      # disable autostart
 |---------|------|
 | Postgres | 5432 |
 | Ollama | 11434 |
-| Spark | 8343 |
+| 343 Guilty Spark | 8343 |
 | Dashboard UI | 8421 |
 | Arbiter (native) | 8420 |
 
 ---
 
-## Tmux Integration
-
-### Install
+## Install
 
 One command — detects your OS, installs system deps, links configs, and sets up the pixel dashboard:
 
 ```bash
-cd ~/repos/agents-nexus
+cd /path/to/agent-orchestration
 ./install.sh            # full install (deps + configs + dashboard)
 ./install.sh --no-ui    # skip pixel dashboard setup
 ```
@@ -128,13 +119,11 @@ The installer handles macOS (Homebrew), Windows (MSYS2/pacman), and Linux (apt/d
 > **Windows:** Requires [MSYS2](https://www.msys2.org/) (default: `C:\msys64`). Run inside an MSYS2 terminal.
 > MSYS2's `$HOME` is `/home/<user>` (`C:\msys64\home\<user>`), not `/c/Users/<user>`.
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) must be installed and on `PATH`.
+Platform-specific install scripts (`mac/install.sh`, `windows/install.sh`) still work standalone if you prefer.
 
-Set `AGENTS_NEXUS_DIR` in `~/.tmux/env.sh` if you install outside the default `~/repos/agents-nexus`:
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) must be installed and on `PATH` for all platforms.
 
-```bash
-AGENTS_NEXUS_DIR="/your/custom/path/agents-nexus"
-```
+## Usage
 
 ### Start a session
 
@@ -171,10 +160,10 @@ q 2 1                             # approve (no Enter — instant select)
 
 Agents automatically know about each other. On startup, each agent:
 
-1. **Registers** itself in `~/.tmux/registry/` (keyed by pane ID)
+1. **Registers** itself in `~/.tmux/registry/` (keyed by pane ID, so slot numbers stay correct across `renumber-windows`)
 2. **Receives a peer list** in its opening prompt — slot number, project name, and directory for every other active agent
 
-Agents can use `/msg <slot> <message>` without you telling them which slot to target. The `agents` shell command shows the same registry for humans.
+This means agents can use `/msg <slot> <message>` without you telling them which slot to target. The `agents` shell command shows the same registry for humans.
 
 ### Navigation
 
@@ -188,8 +177,6 @@ Agents can use `/msg <slot> <message>` without you telling them which slot to ta
 | `ctrl+a → d` | Detach (leave running in background) |
 | `ctrl+a → r` | Reload tmux config |
 | `ctrl+a → ,` | Rename current window |
-
----
 
 ## APM Tracking
 
@@ -210,8 +197,6 @@ The status bar shows a rolling 60-second count: `42a/7h` = 42 agent actions, 7 h
 
 Log lives at `~/.tmux/apm.log`, auto-pruned to 24h.
 
----
-
 ## Claude Code Hooks
 
 The `claude-settings.json` configures two hooks:
@@ -219,32 +204,31 @@ The `claude-settings.json` configures two hooks:
 - **Stop** — sets `@waiting` flag (turns status bar red), fires bell, logs `wait`
 - **PreToolUse** — clears `@waiting` flag, logs `agent` tool use
 
----
-
 ## Files
 
 ```
-agents-nexus/
-├── install.sh               # unified installer (detects OS)
-├── Taskfile.yml             # task runner (docker, spark, mnemon, arbiter, launchd)
-├── docker-compose.yml       # knowledge stack (postgres, ollama, spark, mnemon-flush, dashboard)
-├── .env.example             # environment variable template
+├── install.sh               # unified installer (detects OS, installs everything)
 ├── CLAUDE.md.template       # scaffold template for per-repo CLAUDE.md
 ├── IDEAS.md                 # roadmap & feature ideas
-├── arbiter/                 # WebSocket bridge (tmux state → dashboard)
-├── dashboard/               # pixel art office UI (React + Vite)
-├── mnemon/                  # agent memory system (MCP server + Postgres)
-│   └── migrations/          # database schema
-├── spark/                   # semantic repo search index (MCP server)
-├── docker/                  # Dockerfiles + postgres init SQL
-├── launchd/                 # macOS autostart plists
-└── tmux/
-    ├── mac/                 # macOS tmux config, hooks, install script
-    ├── windows/             # Windows (MSYS2) equivalent
-    └── linux/               # Linux (placeholder)
+├── searchable-history-design.md  # design doc for #11 (searchable history)
+├── mac/
+│   ├── install.sh           # symlinks into ~/
+│   ├── zshrc                # shell functions (zsh)
+│   ├── tmux.conf
+│   ├── claude-settings.json
+│   └── tmux-scripts/        # macOS-specific (osascript, BSD date, open-claude.sh)
+├── windows/
+│   ├── install.sh           # copies into MSYS2 $HOME
+│   ├── bashrc               # shell functions (bash)
+│   ├── tmux.conf
+│   ├── claude-settings.json
+│   └── tmux-scripts/        # Windows-specific (PowerShell toast, GNU date)
+├── pixel-dashboard/         # animated pixel art agent dashboard
+│   ├── server/              # WebSocket bridge (tmux → browser)
+│   └── ui/                  # React + Vite frontend
+└── linux/
+    └── README.md            # placeholder — not yet implemented
 ```
-
----
 
 ## Platform differences
 
@@ -252,6 +236,8 @@ agents-nexus/
 |---|---|---|---|
 | Shell | zsh | bash | bash |
 | Home | `~/` | `/home/<user>` (MSYS2) | `~/` |
+| Repo dir | `~/repos` | `/c/projects` | configurable |
 | `date` | BSD (`-v0H`) | GNU (`-d "today..."`) | GNU |
 | `read` key | `-rk1` (zsh) | `-rsn1` (bash) | `-rsn1` |
 | Notifications | `osascript` | PowerShell toast | `notify-send` |
+| Idle check | `zsh` process | `bash` process | `bash` process |

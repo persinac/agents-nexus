@@ -34,7 +34,9 @@ const HOME = homedir();
 const CLAUDE_PROJECTS_DIR = join(HOME, '.claude', 'projects');
 
 // Prefer the agent-memory venv python (has psycopg) over system python3
-const AGENT_MEM_VENV = join(HOME, 'garner/repos/agents-nexus/mnemon/.venv');
+const AGENT_MEM_VENV = process.env.AGENTS_NEXUS_DIR
+  ? join(process.env.AGENTS_NEXUS_DIR, 'mnemon/.venv')
+  : join(HOME, 'repos/agents-nexus/mnemon/.venv');
 const MEMORY_PYTHON = (() => {
   for (const p of [
     join(AGENT_MEM_VENV, 'bin', 'python3'),
