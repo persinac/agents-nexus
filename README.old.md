@@ -7,18 +7,18 @@ Multi-platform: macOS, Windows (MSYS2), Linux.
 
 ## Knowledge Stack (Docker)
 
-Postgres + pgvector, Ollama, 343 Guilty Spark, and the pixel dashboard all run as Docker services that start automatically on login. The only piece that stays native is the arbiter (it needs your local tmux socket).
+Postgres + pgvector, Ollama, Spark, and the pixel dashboard all run as Docker services that start automatically on login. The only piece that stays native is the arbiter (it needs your local tmux socket).
 
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) — enable **Start at login** in settings
 - [`task`](https://taskfile.dev) — `brew install go-task`
-- [guilty-spark](https://github.com/your-org/guilty-spark) repo cloned as a sibling: `garner/repos/guilty-spark`
+- [`spark/`](spark/) — included in this repo
 
 ### First-time setup
 
 ```bash
-cd ~/garner/repos/agents-nexus
+cd ~/repos/agents-nexus
 
 # 1. Create your local env file
 cp .env.example .env
@@ -98,7 +98,7 @@ task launchd:uninstall      # disable autostart
 |---------|------|
 | Postgres | 5432 |
 | Ollama | 11434 |
-| 343 Guilty Spark | 8343 |
+| Spark | 8343 |
 | Dashboard UI | 8421 |
 | Arbiter (native) | 8420 |
 
