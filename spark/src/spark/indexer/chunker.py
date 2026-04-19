@@ -128,6 +128,11 @@ def build_summary_chunk(
     When GitLab/detected metadata is available, prepends a structured header.
     """
     parts = [f"# {installation}", f"Team: {team}", f"Path: {installation_path}"]
+    # Add parent directory names as searchable aliases so queries mentioning
+    # a parent group (e.g. "flashback fleet") can match nested repos
+    path_segments = [s.replace("-", " ") for s in installation_path.split("/") if s != installation]
+    if path_segments:
+        parts.append(f"Groups: {', '.join(path_segments)}")
 
     # GitLab metadata fields for the Chunk dataclass
     gl_description = ""

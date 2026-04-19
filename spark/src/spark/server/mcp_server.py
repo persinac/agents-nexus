@@ -201,7 +201,12 @@ def spark_deep(
         stage1_info = f"**Searching within:** {', '.join(installations)}\n\n"
 
     # Stage 2: Search file + MR chunks within those installations
-    install_filter = " OR ".join(f'installation = "{name}"' for name in installations)
+    # Match on both installation name and installation_path so queries like
+    # "flashback fleet" can match repos nested under flashback-fleet/
+    install_clauses = []
+    for name in installations:
+        install_clauses.append(f'installation = "{name}"')
+    install_filter = " OR ".join(install_clauses)
     file_where = f'(chunk_type = "file" OR chunk_type = "symbol" OR chunk_type = "merge_request") AND ({install_filter})'
 
     fetch_k = top_k * config.reranker_top_k_multiplier if config.reranker_enabled else top_k
