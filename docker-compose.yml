@@ -69,7 +69,7 @@ services:
   # Spark — semantic index over all repos
   spark:
     build:
-      context: ${SPARK_SOURCE:?Set SPARK_SOURCE in .env (path to guilty-spark repo)}
+      context: ./spark
     container_name: nexus-spark
     restart: always
     environment:
@@ -81,11 +81,8 @@ services:
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       SPARK_WEBHOOK_SECRET: ${SPARK_WEBHOOK_SECRET:-}
     volumes:
-      # Mount live config so team mappings + settings stay current without rebuilding
-      - ${SPARK_SOURCE}/config.yaml:/app/config.yaml:ro
-      # Repos to index (read-only; spark activate also does git pull, set rw if needed)
+      - ./spark/config.yaml:/app/config.yaml:ro
       - ${REPOS_PATH:?Set REPOS_PATH in .env}:/repos:ro
-      # Persist the LanceDB vector index across restarts
       - spark-index:/app/data/the-index
     ports:
       - "${SPARK_PORT:-8343}:8343"
@@ -102,14 +99,11 @@ services:
     container_name: nexus-mnemon-flush
     restart: always
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-agents}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agents}?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       HOME: /host-home
     volumes:
       # Hook scripts on host write events here; flush daemon drains them
       - ${HOST_TMUX_DIR:?Set HOST_TMUX_DIR in .env (usually ~/.tmux)}:/host-home/.tmux
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # ── Dashboard ────────────────────────────────────────────────────────────
 

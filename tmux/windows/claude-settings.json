@@ -8,7 +8,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-stop.sh; true"
+            "command": "/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/hook-stop.sh; true"
           }
         ]
       },
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-memory.sh session_idle; true"
+            "command": "/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/hook-memory.sh session_idle; true"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-pretooluse.sh; true"
+            "command": "/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/hook-pretooluse.sh; true"
           }
         ]
       },
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-memory.sh tool_use; true"
+            "command": "/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/hook-memory.sh tool_use; true"
           }
         ]
       }
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-notification.sh; true"
+            "command": "/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/hook-notification.sh; true"
           }
         ]
       },
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/hook-memory.sh permission_wait; true"
+            "command": "/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/hook-memory.sh permission_wait; true"
           }
         ]
       }
@@ -77,7 +77,7 @@
       "Bash(git rev-parse *)",
       "Bash(echo *)",
       "Bash(grep *)",
-      "Bash(/c/msys64/usr/bin/bash.exe /c/Users/apfba/.tmux/agent-send.sh *)"
+      "Bash(/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/agent-send.sh *)"
     ]
   }
 }

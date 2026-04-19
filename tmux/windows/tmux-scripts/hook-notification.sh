@@ -2,6 +2,7 @@
 # Notification hook: fires on permission prompts, questions, etc.
 # Sets @waiting=1 (red) when Claude needs user input.
 
+: "${USER:=${USERNAME:=$(whoami)}}"
 HOME_DIR="${HOME:-/c/Users/$USER}"
 DEBUG_LOG="$HOME_DIR/.tmux/hook-debug.log"
 LOG="$HOME_DIR/.tmux/apm.log"

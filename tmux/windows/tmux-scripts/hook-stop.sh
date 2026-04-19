@@ -5,6 +5,7 @@
 # Claude Code hooks receive JSON on stdin with { cwd, session_id, ... }.
 # We match cwd to a tmux pane's current path to find our pane.
 
+: "${USER:=${USERNAME:=$(whoami)}}"
 HOME_DIR="${HOME:-/c/Users/$USER}"
 DEBUG_LOG="$HOME_DIR/.tmux/hook-debug.log"
 LOG="$HOME_DIR/.tmux/apm.log"

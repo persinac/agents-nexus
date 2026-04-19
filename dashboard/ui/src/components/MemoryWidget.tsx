@@ -27,7 +27,6 @@ interface MemoryWidgetProps {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const MONO = "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, monospace";
 const BASE = 20; // base font size in px — scale everything relative to this
 
 const DIM   = 'rgba(255,255,255,0.4)';

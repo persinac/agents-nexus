@@ -2,6 +2,7 @@
 # PreToolUse hook: clear waiting flag, log agent action for APM.
 # Bridges Windows Claude Code → MSYS2 tmux.
 
+: "${USER:=${USERNAME:=$(whoami)}}"
 HOME_DIR="${HOME:-/c/Users/$USER}"
 DEBUG_LOG="$HOME_DIR/.tmux/hook-debug.log"
 LOG="$HOME_DIR/.tmux/apm.log"

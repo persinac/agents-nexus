@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Copies config files from this repo into their expected locations.
-# Run from the repo root inside MSYS2: ./install.sh
+# Run from the repo root: ./tmux/windows/install.sh
 #
-# IMPORTANT: On MSYS2, $HOME is /home/<user> (C:\msys64\home\<user>),
-# NOT /c/Users/<user>. This script installs into MSYS2's $HOME.
+# Works in both MSYS2 (where $HOME=/home/<user>) and Git Bash / MINGW64
+# (where $HOME=/c/Users/<user>). Installs into whatever $HOME resolves to.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "Installing to HOME=$HOME"
+# Ensure $USER is set (empty in Git Bash / MINGW64)
+: "${USER:=${USERNAME:=$(whoami)}}"
+
+echo "Installing to HOME=$HOME (user: $USER)"
 
 # tmux config
 cp "$SCRIPT_DIR/tmux.conf" "$HOME/.tmux.conf"
@@ -29,16 +32,17 @@ for script in "$SCRIPT_DIR"/tmux-scripts/*.py "$MAC_SCRIPTS"/memory-status.py "$
 done
 echo "  -> ~/.tmux/*.sh + *.py"
 
-# Claude Code settings
+# Claude Code settings (template __HOME__ → actual $HOME)
 CLAUDE_DIR="$HOME/.claude"
-# Also try Windows-side claude dir
 WIN_CLAUDE_DIR="/c/Users/$USER/.claude"
 for dir in "$CLAUDE_DIR" "$WIN_CLAUDE_DIR"; do
+  [ "$CLAUDE_DIR" = "$WIN_CLAUDE_DIR" ] && [ "$dir" = "$WIN_CLAUDE_DIR" ] && continue
   if [ -d "$dir" ]; then
     if [ -f "$dir/settings.json" ]; then
       echo "  !! $dir/settings.json exists — compare with claude-settings.json manually"
     else
-      cp "$SCRIPT_DIR/claude-settings.json" "$dir/settings.json"
+      MSYS_HOME="/c/msys64${HOME}"
+      sed "s|__MSYS_HOME__|$MSYS_HOME|g" "$SCRIPT_DIR/claude-settings.json" > "$dir/settings.json"
       echo "  -> $dir/settings.json"
     fi
   fi
@@ -59,6 +63,8 @@ fi
 # NOTE: Do NOT add "Program Files" paths to PATH directly — breaks fzf in tmux.
 mkdir -p "$HOME/.local/bin"
 WRAPPERS=(
+  "tmux:/c/msys64/usr/bin/tmux.exe"
+  "fzf:/c/msys64/mingw64/bin/fzf.exe"
   "aws:/c/Program Files/Amazon/AWSCLIV2/aws.exe"
   "docker:/c/Program Files/Docker/Docker/resources/bin/docker.exe"
   "docker-compose:/c/Program Files/Docker/Docker/resources/bin/docker-compose.exe"
@@ -82,5 +88,5 @@ for entry in "${WRAPPERS[@]}"; do
 done
 
 echo ""
-echo "Done. Open a new MSYS2 terminal or run: source ~/.bashrc"
+echo "Done. Open a new terminal or run: source ~/.bashrc"
 echo "Then type 'work' to start tmux."

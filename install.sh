@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unified installer for agent-orchestration.
+# Unified installer for agents-nexus.
 # Detects OS, installs system deps, links configs, and sets up the pixel dashboard.
 #
 # Usage:

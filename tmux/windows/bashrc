@@ -1,3 +1,7 @@
+# ── Ensure $USER is set (empty in Git Bash / MINGW64) ─────────
+: "${USER:=${USERNAME:=$(whoami)}}"
+export USER
+
 # ── PATH: make Windows-installed tools visible in MSYS2 ───────
 # NOTE: Do NOT add paths with spaces (e.g. "Program Files") — breaks fzf in tmux.
 # Instead, symlink tools into ~/.local/bin (see install.sh).
@@ -79,7 +83,7 @@ wt() {
 
 # claude-init — scaffold a CLAUDE.md in the current repo from the template
 claude-init() {
-  local template="/c/projects/agent-orchestration/CLAUDE.md.template"
+  local template="/c/projects/agents-nexus/CLAUDE.md.template"
   if [ -f "CLAUDE.md" ]; then
     echo "CLAUDE.md already exists in $(pwd)"
     return 1

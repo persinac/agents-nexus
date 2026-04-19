@@ -24,3 +24,6 @@ dist/
 .DS_Store
 Thumbs.db
 .idea/
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json

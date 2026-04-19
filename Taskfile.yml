@@ -168,7 +168,7 @@ tasks:
     cmds:
       - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.docker.plist > ~/Library/LaunchAgents/com.agents-nexus.docker.plist
       - launchctl load ~/Library/LaunchAgents/com.agents-nexus.docker.plist
-      - echo "Installed — stack will start at next login (or run: task docker:up)"
+      - echo "Installed - stack will start at next login (or run task docker:up)"
 
   launchd:uninstall:
     desc: Remove the launchd autostart agent
