@@ -2,9 +2,8 @@
 # Launch claude with recent checkpoint context injected as the opening message.
 # Reads checkpoint notes from $NOTES_DIR for the current repo (past 3 days).
 # Also registers this agent in the shared registry (~/.tmux/registry/) and
-# injects a list of other active agents into the startup prompt so agents can
-# use /msg <slot> to communicate with peers.
-# Falls back to plain `claude` if no notes found and no peers are active.
+# injects agent communication tool instructions into the startup prompt.
+# Falls back to plain `claude` if no notes found.
 
 [ -f "$HOME/.tmux/env.sh" ] && source "$HOME/.tmux/env.sh"
 
@@ -26,7 +25,11 @@ fi
 # Files are keyed by pane ID (stable — unaffected by renumber-windows).
 MY_PANE_ID="$TMUX_PANE"
 MY_SLOT=$(tmux display-message -p '#{window_index}' 2>/dev/null)
-MY_NAME=$(tmux display-message -p '#W' 2>/dev/null)
+MY_NAME="$project_slug"
+
+# Lock the window name so tmux doesn't override it with the process name
+tmux rename-window -t "$MY_PANE_ID" "$MY_NAME" 2>/dev/null
+tmux set-window-option -t "$MY_PANE_ID" automatic-rename off 2>/dev/null
 
 if [ -n "$MY_PANE_ID" ] && [ -n "$MY_SLOT" ]; then
   mkdir -p "$HOME/.tmux/registry"
@@ -49,24 +52,24 @@ while IFS= read -r f; do
   fi
 done < <(ls -1 "$NOTES_DIR"/*-${project_slug}-checkpoint.md 2>/dev/null | sort)
 
-# ── Build peer agent list (other registered agents) ────────────────────────
-# Slot numbers are resolved live from tmux so renumber-windows doesn't stale them.
+# ── Agent communication tools ─────────────────────────────────────────────
+REGISTRY_SCRIPT="$HOME/.tmux/agent-registry.sh"
+SEND_SCRIPT="$HOME/.tmux/agent-send.sh"
 registry_section=""
-if [ -d "$HOME/.tmux/registry" ]; then
-  other_agents=""
-  for f in "$HOME/.tmux/registry"/*; do
-    [ -f "$f" ] || continue
-    r_pane_id=$(grep '^PANE_ID=' "$f" | cut -d= -f2)
-    r_name=$(grep '^NAME=' "$f" | cut -d= -f2)
-    r_cwd=$(grep '^CWD=' "$f" | cut -d= -f2)
-    [ "$r_pane_id" = "$MY_PANE_ID" ] && continue  # skip self
-    r_slot=$(tmux display-message -t "$r_pane_id" -p '#{window_index}' 2>/dev/null)
-    [ -z "$r_slot" ] && continue  # stale entry — pane gone
-    other_agents+="  - Slot ${r_slot}: ${r_name} (${r_cwd})"$'\n'
-  done
-  if [ -n "$other_agents" ]; then
-    registry_section="## Active Agents"$'\n'"Other agents you can reach with /msg <slot> <message>:"$'\n'"${other_agents}"
-  fi
+if [ -x "$REGISTRY_SCRIPT" ]; then
+  peers_output=$("$REGISTRY_SCRIPT" peers --exclude "$MY_PANE_ID" 2>/dev/null || true)
+  registry_section="## Agent Communication
+You are part of a multi-agent system. ALWAYS pass --exclude ${MY_PANE_ID} to avoid listing yourself.
+  - \`$REGISTRY_SCRIPT peers --exclude ${MY_PANE_ID}\` — list all active agents
+  - \`$SEND_SCRIPT <slot_or_name> <message>\` — send a message to a specific agent
+  - \`$REGISTRY_SCRIPT broadcast --exclude ${MY_PANE_ID} <message>\` — send to ALL other agents
+  - \`$REGISTRY_SCRIPT whoami --exclude ${MY_PANE_ID}\` — show your own slot, name, and directory
+
+### Current Peers
+\`\`\`
+${peers_output}
+\`\`\`
+Re-run peers before messaging to get up-to-date slot numbers."
 fi
 
 # ── Query prior knowledge from memory store ────────────────────────────────

@@ -30,7 +30,7 @@ selected=$(
 
 # Handle general session
 if [[ "$selected" == "[general]" ]]; then
-  tmux new-window -d -n "general" -c "$HOME" "env PROJECT_SLUG=general $HOME/.tmux/open-claude.sh"
+  tmux new-window -d -n "general" -c "${REPO_DIR}" "env PROJECT_SLUG=general $HOME/.tmux/open-claude.sh"
   exit 0
 fi
 

@@ -16,6 +16,14 @@ export AWS_SHARED_CREDENTIALS_FILE="/c/Users/$USER/.aws/credentials"
 
 work() {
   local session=${1:-agents}
+  local nexus_dir="${AGENTS_NEXUS_DIR:-/c/projects/agents-nexus}"
+
+  # Auto-start arbiter if not already running
+  if ! pgrep -f "node.*arbiter" >/dev/null 2>&1; then
+    (cd "$nexus_dir/arbiter" && node index.js >> "$HOME/.tmux/arbiter.log" 2>&1 &)
+    echo "arbiter started (log: ~/.tmux/arbiter.log)"
+  fi
+
   if [ -n "$TMUX" ]; then
     tmux switch-client -t "$session" 2>/dev/null || (tmux new-session -d -s "$session" && tmux switch-client -t "$session")
   else

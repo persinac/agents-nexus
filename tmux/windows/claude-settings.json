@@ -77,7 +77,8 @@
       "Bash(git rev-parse *)",
       "Bash(echo *)",
       "Bash(grep *)",
-      "Bash(/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/agent-send.sh *)"
+      "Bash(/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/agent-send.sh *)",
+      "Bash(/c/msys64/usr/bin/bash.exe __MSYS_HOME__/.tmux/agent-registry.sh *)"
     ]
   }
 }
