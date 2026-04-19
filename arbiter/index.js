@@ -18,6 +18,20 @@ import { homedir } from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Load .env from project root so DATABASE_URL is available for memory stats
+const _envPath = resolve(__dirname, '..', '.env');
+if (existsSync(_envPath)) {
+  for (const line of readFileSync(_envPath, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    const k = trimmed.slice(0, eq).trim();
+    if (!process.env[k]) process.env[k] = trimmed.slice(eq + 1).trim();
+  }
+}
+
 const MEMORY_RECALL_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-recall.py');
 const MEMORY_STATS_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-stats.py');
 
@@ -34,13 +48,13 @@ const HOME = homedir();
 const CLAUDE_PROJECTS_DIR = join(HOME, '.claude', 'projects');
 
 // Prefer the agent-memory venv python (has psycopg) over system python3
-const AGENT_MEM_VENV = process.env.AGENTS_NEXUS_DIR
-  ? join(process.env.AGENTS_NEXUS_DIR, 'mnemon/.venv')
-  : join(HOME, 'repos/agents-nexus/mnemon/.venv');
+const AGENTS_NEXUS_DIR = process.env.AGENTS_NEXUS_DIR || resolve(__dirname, '..');
+const AGENT_MEM_VENV = join(AGENTS_NEXUS_DIR, 'mnemon', '.venv');
 const MEMORY_PYTHON = (() => {
   for (const p of [
     join(AGENT_MEM_VENV, 'bin', 'python3'),
     join(AGENT_MEM_VENV, 'Scripts', 'python3.exe'),
+    join(AGENT_MEM_VENV, 'Scripts', 'python.exe'),
   ]) {
     if (existsSync(p)) return p;
   }

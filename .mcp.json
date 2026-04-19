@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "spark": {
+      "type": "sse",
+      "url": "http://localhost:8343/sse"
+    }
+  }
+}

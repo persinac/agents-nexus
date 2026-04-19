@@ -37,6 +37,9 @@ def _db_url() -> str:
     url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not url:
         return ""
+    # psycopg doesn't support search_path as a URI param — strip it
+    import re
+    url = re.sub(r'[&?]search_path=[^&]*', '', url)
     if "sslmode" not in url:
         sep = "&" if "?" in url else "?"
         url += f"{sep}sslmode=require"
@@ -44,7 +47,8 @@ def _db_url() -> str:
 
 
 def main() -> int:
-    buffer = Path.home() / ".tmux" / "memory-events.jsonl"
+    tmux_home = os.getenv("TMUX_HOME", str(Path.home() / ".tmux"))
+    buffer = Path(tmux_home) / "memory-events.jsonl"
     if not buffer.exists() or buffer.stat().st_size == 0:
         return 0
 
@@ -79,10 +83,11 @@ def main() -> int:
         with psycopg.connect(url) as conn:
             conn.autocommit = True
             with conn.cursor() as cur:
+                cur.execute("SET search_path TO agents, public")
                 for ev in events:
                     cur.execute(
                         """
-                        INSERT INTO minions.memory_events
+                        INSERT INTO agents.memory_events
                             (id, project, event_type, device, repo, branch,
                              agent_slot, session_id, payload)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)

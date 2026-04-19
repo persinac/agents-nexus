@@ -19,7 +19,8 @@ work() {
   local nexus_dir="${AGENTS_NEXUS_DIR:-/c/projects/agents-nexus}"
 
   # Auto-start arbiter if not already running
-  if ! pgrep -f "node.*arbiter" >/dev/null 2>&1; then
+  # MSYS2 ps can't see Windows-native node processes; check the port instead
+  if ! curl -s http://localhost:8420/api/memory/stats >/dev/null 2>&1; then
     (cd "$nexus_dir/arbiter" && node index.js >> "$HOME/.tmux/arbiter.log" 2>&1 &)
     echo "arbiter started (log: ~/.tmux/arbiter.log)"
   fi

@@ -79,7 +79,10 @@ def main() -> None:
         "payload":    payload,
     }
 
-    buffer = Path.home() / ".tmux" / "memory-events.jsonl"
+    # Use TMUX_HOME if set (handles MSYS2 vs Windows home mismatch);
+    # Path.home() can crash under MSYS2 so avoid it as a default
+    tmux_home = os.getenv("TMUX_HOME") or os.getenv("HOME", "") + "/.tmux"
+    buffer = Path(tmux_home) / "memory-events.jsonl"
     buffer.parent.mkdir(exist_ok=True)
     with buffer.open("a") as f:
         f.write(json.dumps(event) + "\n")
