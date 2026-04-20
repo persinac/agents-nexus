@@ -1,5 +1,5 @@
 -- 001_initial_schema.sql
--- Agent Memory — initial schema in the minions schema.
+-- Agent Memory — initial schema in the agents schema.
 -- Idempotent: safe to run against a DB that already has some of these tables.
 --
 -- Run with:

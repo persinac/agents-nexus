@@ -68,7 +68,7 @@ Add to `~/.claude.json` under `mcpServers`:
 
 ## Schema
 
-Four tables in the `minions` schema:
+Four tables in the `agents` schema:
 
 - `memory_nodes` — curated notes with embeddings and tags
 - `memory_events` — raw event log (session lifecycle, tool calls)
