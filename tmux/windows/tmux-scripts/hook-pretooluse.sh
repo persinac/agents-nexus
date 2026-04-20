@@ -12,6 +12,10 @@ log_debug() { echo "$(date '+%H:%M:%S') TOOL: $*" >> "$DEBUG_LOG" 2>/dev/null; }
 # Read JSON from stdin
 INPUT=$(cat)
 
+# Chain memory event early (before tmux-specific exits)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+echo "$INPUT" | /c/msys64/usr/bin/bash.exe "$SCRIPT_DIR/hook-memory.sh" tool_use 2>/dev/null
+
 # Extract cwd from JSON
 CWD=$(echo "$INPUT" | sed -n 's/.*"cwd" *: *"\([^"]*\)".*/\1/p' | head -1)
 

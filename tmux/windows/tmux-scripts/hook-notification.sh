@@ -12,6 +12,10 @@ log_debug() { echo "$(date '+%H:%M:%S') NOTIF: $*" >> "$DEBUG_LOG" 2>/dev/null; 
 INPUT=$(cat)
 log_debug "stdin: $(echo "$INPUT" | head -c 200)"
 
+# Chain memory event early (before tmux-specific exits)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+echo "$INPUT" | /c/msys64/usr/bin/bash.exe "$SCRIPT_DIR/hook-memory.sh" permission_wait 2>/dev/null
+
 # Extract fields
 CWD=$(echo "$INPUT" | sed -n 's/.*"cwd" *: *"\([^"]*\)".*/\1/p' | head -1)
 NTYPE=$(echo "$INPUT" | sed -n 's/.*"notification_type" *: *"\([^"]*\)".*/\1/p' | head -1)

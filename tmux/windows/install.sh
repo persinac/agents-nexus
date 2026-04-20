@@ -77,6 +77,7 @@ WRAPPERS=(
   "node:/c/Program Files/nodejs/node.exe"
   "npm:/c/Program Files/nodejs/npm.cmd"
   "claude:/c/Users/$USER/.local/bin/claude.exe"
+  "python:/c/Users/$USER/.pyenv/pyenv-win/shims/python"
 )
 for entry in "${WRAPPERS[@]}"; do
   name="${entry%%:*}"
