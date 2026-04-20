@@ -9,15 +9,6 @@
             "command": "$HOME/.tmux/hook-stop.sh; true"
           }
         ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.tmux/hook-memory.sh session_idle; true"
-          }
-        ]
       }
     ],
     "PreToolUse": [
@@ -29,15 +20,6 @@
             "command": "$HOME/.tmux/hook-pretooluse.sh; true"
           }
         ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.tmux/hook-memory.sh tool_use; true"
-          }
-        ]
       }
     ],
     "Notification": [
@@ -47,15 +29,6 @@
           {
             "type": "command",
             "command": "$HOME/.tmux/hook-notification.sh; true"
-          }
-        ]
-      },
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.tmux/hook-memory.sh permission_wait; true"
           }
         ]
       }

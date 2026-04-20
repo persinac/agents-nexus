@@ -2,10 +2,14 @@
 # Notification hook: fires on permission prompts, questions, etc.
 # Sets @waiting=1 (red) when Claude needs user input.
 
+INPUT=$(cat)
+
+# Chain memory event early (works even outside tmux)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+echo "$INPUT" | "$SCRIPT_DIR/hook-memory.sh" permission_wait 2>/dev/null
+
 [ -n "$TMUX_PANE" ] || exit 0
 
-# Read JSON from stdin
-INPUT=$(cat)
 NTYPE=$(echo "$INPUT" | sed -n 's/.*"notification_type" *: *"\([^"]*\)".*/\1/p' | head -1)
 
 # Only go red for genuine approval/input requests.
