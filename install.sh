@@ -28,7 +28,7 @@ detect_os() {
 
 OS=$(detect_os)
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLATFORM_DIR="$REPO_DIR/$OS"
+PLATFORM_DIR="$REPO_DIR/tmux/$OS"
 SKIP_UI=false
 [[ "${1:-}" == "--no-ui" ]] && SKIP_UI=true
 

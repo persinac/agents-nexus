@@ -12,7 +12,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- Curated knowledge nodes: decisions, insights, checkpoints.
 -- Written intentionally by agents or humans. Persisted indefinitely.
 
-CREATE TABLE IF NOT EXISTS minions.memory_nodes (
+CREATE TABLE IF NOT EXISTS agents.memory_nodes (
     id              TEXT        PRIMARY KEY,
     content         TEXT        NOT NULL,
     title           TEXT,
@@ -28,15 +28,15 @@ CREATE TABLE IF NOT EXISTS minions.memory_nodes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_project
-    ON minions.memory_nodes (project, created_at DESC);
+    ON agents.memory_nodes (project, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_tags
-    ON minions.memory_nodes USING GIN (tags);
+    ON agents.memory_nodes USING GIN (tags);
 
 -- ── memory_entities ───────────────────────────────────────────────────────────
 -- Named entities referenced by nodes (files, modules, repos, concepts).
 
-CREATE TABLE IF NOT EXISTS minions.memory_entities (
+CREATE TABLE IF NOT EXISTS agents.memory_entities (
     id          TEXT        PRIMARY KEY,
     name        TEXT        NOT NULL,
     entity_type TEXT,
@@ -47,13 +47,13 @@ CREATE TABLE IF NOT EXISTS minions.memory_entities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_entities_project
-    ON minions.memory_entities (project);
+    ON agents.memory_entities (project);
 
 -- ── memory_links ──────────────────────────────────────────────────────────────
 -- Edges in the knowledge graph: node → entity references, temporal, causal.
 
-CREATE TABLE IF NOT EXISTS minions.memory_links (
-    from_node   TEXT        NOT NULL REFERENCES minions.memory_nodes(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS agents.memory_links (
+    from_node   TEXT        NOT NULL REFERENCES agents.memory_nodes(id) ON DELETE CASCADE,
     to_entity   TEXT        NOT NULL,
     link_type   TEXT        NOT NULL DEFAULT 'reference',
     confidence  FLOAT       NOT NULL DEFAULT 1.0,
@@ -63,14 +63,14 @@ CREATE TABLE IF NOT EXISTS minions.memory_links (
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_links_entity
-    ON minions.memory_links (to_entity);
+    ON agents.memory_links (to_entity);
 
 -- ── memory_events ─────────────────────────────────────────────────────────────
 -- High-volume, machine-generated event log.
 -- Written by tmux hooks (session start/stop, tool use, permission waits).
 -- Separate from memory_nodes: raw facts vs. curated knowledge.
 
-CREATE TABLE IF NOT EXISTS minions.memory_events (
+CREATE TABLE IF NOT EXISTS agents.memory_events (
     id          TEXT        PRIMARY KEY,
     timestamp   TIMESTAMPTZ NOT NULL DEFAULT now(),
     device      TEXT        NOT NULL DEFAULT '',
@@ -84,11 +84,11 @@ CREATE TABLE IF NOT EXISTS minions.memory_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_events_project_time
-    ON minions.memory_events (project, timestamp DESC);
+    ON agents.memory_events (project, timestamp DESC);
 
 CREATE INDEX IF NOT EXISTS idx_memory_events_type
-    ON minions.memory_events (event_type, timestamp DESC);
+    ON agents.memory_events (event_type, timestamp DESC);
 
 CREATE INDEX IF NOT EXISTS idx_memory_events_session
-    ON minions.memory_events (session_id)
+    ON agents.memory_events (session_id)
     WHERE session_id IS NOT NULL;

@@ -69,7 +69,7 @@ def fetch_notes(project: str, limit: int = 15) -> list[dict]:
                     cur.execute(
                         """
                         SELECT title, content, tags, created_at, access_count, project
-                        FROM minions.memory_nodes
+                        FROM agents.memory_nodes
                         ORDER BY
                             (COALESCE(last_accessed, created_at)) DESC,
                             access_count DESC
@@ -82,7 +82,7 @@ def fetch_notes(project: str, limit: int = 15) -> list[dict]:
                     cur.execute(
                         """
                         SELECT title, content, tags, created_at, access_count, NULL
-                        FROM minions.memory_nodes
+                        FROM agents.memory_nodes
                         WHERE project = %s
                         ORDER BY
                             (COALESCE(last_accessed, created_at)) DESC,

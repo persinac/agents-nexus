@@ -141,7 +141,7 @@ async def log_event(
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
             """
-            INSERT INTO minions.memory_events
+            INSERT INTO agents.memory_events
                 (id, project, event_type, device, repo, branch, agent_slot, session_id, payload)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
@@ -211,7 +211,7 @@ async def create_note(
         pool = await _get_pool()
         async with pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
-                "UPDATE minions.memory_nodes SET embedding = %s::vector WHERE id = %s",
+                "UPDATE agents.memory_nodes SET embedding = %s::vector WHERE id = %s",
                 (str(embedding), node_id),
             )
 
@@ -263,7 +263,7 @@ async def query_notes(
             await cur.execute(
                 """
                 SELECT id, content, title, tags, access_count, created_at
-                FROM minions.memory_nodes
+                FROM agents.memory_nodes
                 WHERE project = %s
                 ORDER BY created_at DESC
                 LIMIT %s
@@ -322,7 +322,7 @@ async def search_similar(
             pool = await _get_pool()
             async with pool.connection() as conn, conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT id, content, title, tags, access_count, created_at FROM minions.memory_nodes WHERE project = %s ORDER BY created_at DESC LIMIT %s",
+                    "SELECT id, content, title, tags, access_count, created_at FROM agents.memory_nodes WHERE project = %s ORDER BY created_at DESC LIMIT %s",
                     (project, limit),
                 )
                 rows = await cur.fetchall()
@@ -368,7 +368,7 @@ async def query_entity(
         await cur.execute(
             """
             SELECT id, name, entity_type, project, first_seen, attributes
-            FROM minions.memory_entities
+            FROM agents.memory_entities
             WHERE name = %s AND project = %s
             """,
             (name, project),
@@ -436,7 +436,7 @@ async def recent_events(
         await cur.execute(
             f"""
             SELECT id, timestamp, event_type, device, repo, branch, agent_slot, session_id, payload
-            FROM minions.memory_events
+            FROM agents.memory_events
             WHERE project = %s
               AND timestamp > now() - (%s * interval '1 hour')
               {type_clause}
@@ -480,7 +480,7 @@ async def query_session(
         await cur.execute(
             """
             SELECT id, title, content, tags, created_at
-            FROM minions.memory_nodes
+            FROM agents.memory_nodes
             WHERE source_job_id = %s AND project = %s
             ORDER BY created_at ASC
             """,

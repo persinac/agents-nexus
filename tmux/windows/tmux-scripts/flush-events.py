@@ -82,7 +82,7 @@ def main() -> int:
                 for ev in events:
                     cur.execute(
                         """
-                        INSERT INTO minions.memory_events
+                        INSERT INTO agents.memory_events
                             (id, project, event_type, device, repo, branch,
                              agent_slot, session_id, payload)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)

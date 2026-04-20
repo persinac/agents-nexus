@@ -116,15 +116,15 @@ async def _inspect_l3(project: str | None):
         where = "WHERE project = %s" if project else ""
         params = (project,) if project else ()
 
-        cur.execute(f"SELECT count(*) FROM minions.memory_nodes {where}", params)
+        cur.execute(f"SELECT count(*) FROM agents.memory_nodes {where}", params)
         node_count = cur.fetchone()[0]
 
-        cur.execute(f"SELECT count(*) FROM minions.memory_entities {where}", params)
+        cur.execute(f"SELECT count(*) FROM agents.memory_entities {where}", params)
         entity_count = cur.fetchone()[0]
 
         cur.execute(
-            f"""SELECT count(*) FROM minions.memory_links lk
-                JOIN minions.memory_nodes n ON lk.from_node = n.id
+            f"""SELECT count(*) FROM agents.memory_links lk
+                JOIN agents.memory_nodes n ON lk.from_node = n.id
                 {"WHERE n.project = %s" if project else ""}""",
             params,
         )
@@ -132,9 +132,9 @@ async def _inspect_l3(project: str | None):
 
         # pgvector stats
         cur.execute(
-            f"SELECT count(*) FROM minions.memory_nodes {where} AND embedding IS NOT NULL"
+            f"SELECT count(*) FROM agents.memory_nodes {where} AND embedding IS NOT NULL"
             if project
-            else "SELECT count(*) FROM minions.memory_nodes WHERE embedding IS NOT NULL"
+            else "SELECT count(*) FROM agents.memory_nodes WHERE embedding IS NOT NULL"
         )
         vector_count = cur.fetchone()[0]
 
@@ -147,7 +147,7 @@ async def _inspect_l3(project: str | None):
         cur.execute(
             f"""SELECT id, title, tags, source_agent_role, access_count, created_at,
                        (embedding IS NOT NULL) as has_vector
-                FROM minions.memory_nodes {where}
+                FROM agents.memory_nodes {where}
                 ORDER BY created_at DESC LIMIT 10""",
             params,
         )
@@ -162,8 +162,8 @@ async def _inspect_l3(project: str | None):
         # Top entities by backlink count
         cur.execute(
             f"""SELECT lk.to_entity, count(*) as cnt
-                FROM minions.memory_links lk
-                JOIN minions.memory_nodes n ON lk.from_node = n.id
+                FROM agents.memory_links lk
+                JOIN agents.memory_nodes n ON lk.from_node = n.id
                 {"WHERE n.project = %s" if project else ""}
                 GROUP BY lk.to_entity ORDER BY cnt DESC LIMIT 10""",
             params,
@@ -177,8 +177,8 @@ async def _inspect_l3(project: str | None):
         # Link type distribution
         cur.execute(
             f"""SELECT lk.link_type, count(*) as cnt
-                FROM minions.memory_links lk
-                JOIN minions.memory_nodes n ON lk.from_node = n.id
+                FROM agents.memory_links lk
+                JOIN agents.memory_nodes n ON lk.from_node = n.id
                 {"WHERE n.project = %s" if project else ""}
                 GROUP BY lk.link_type ORDER BY cnt DESC""",
             params,
@@ -253,12 +253,12 @@ async def cmd_stats(args):
             import psycopg
 
             with psycopg.connect(pg_url) as conn, conn.cursor() as cur:
-                cur.execute("SELECT project, count(*) FROM minions.memory_nodes GROUP BY project ORDER BY count(*) DESC")
+                cur.execute("SELECT project, count(*) FROM agents.memory_nodes GROUP BY project ORDER BY count(*) DESC")
                 rows = cur.fetchall()
                 print("\n  L3 (Postgres):")
                 if rows:
                     for proj, cnt in rows:
-                        cur.execute("SELECT count(*) FROM minions.memory_nodes WHERE project = %s AND embedding IS NOT NULL", (proj,))
+                        cur.execute("SELECT count(*) FROM agents.memory_nodes WHERE project = %s AND embedding IS NOT NULL", (proj,))
                         vec_count = cur.fetchone()[0]
                         print(f"    {proj}: {cnt} nodes ({vec_count} with vectors)")
                 else:
@@ -335,11 +335,11 @@ async def cmd_flush(args):
 
             with psycopg.connect(pg_url) as conn, conn.cursor() as cur:
                 cur.execute(
-                    "DELETE FROM minions.memory_links WHERE from_node IN (SELECT id FROM minions.memory_nodes WHERE project = %s)", (args.project,)
+                    "DELETE FROM agents.memory_links WHERE from_node IN (SELECT id FROM agents.memory_nodes WHERE project = %s)", (args.project,)
                 )
-                cur.execute("DELETE FROM minions.memory_nodes WHERE project = %s", (args.project,))
+                cur.execute("DELETE FROM agents.memory_nodes WHERE project = %s", (args.project,))
                 nodes = cur.rowcount
-                cur.execute("DELETE FROM minions.memory_entities WHERE project = %s", (args.project,))
+                cur.execute("DELETE FROM agents.memory_entities WHERE project = %s", (args.project,))
                 entities = cur.rowcount
                 conn.commit()
                 print(f"  L3: removed {nodes} nodes, {entities} entities")

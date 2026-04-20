@@ -33,7 +33,7 @@ class PostgresMemoryBackend:
             embedding_val = node.embedding if node.embedding else None
             await cur.execute(
                 """
-                INSERT INTO minions.memory_nodes
+                INSERT INTO agents.memory_nodes
                     (id, content, title, tags, embedding, attributes,
                      source_job_id, source_agent_role, project, access_count)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -60,7 +60,7 @@ class PostgresMemoryBackend:
                 """
                 SELECT id, content, title, tags, embedding, attributes,
                        source_job_id, source_agent_role, project, access_count, created_at
-                FROM minions.memory_nodes WHERE id = %s
+                FROM agents.memory_nodes WHERE id = %s
                 """,
                 (node_id,),
             )
@@ -75,7 +75,7 @@ class PostgresMemoryBackend:
                 """
                 SELECT id, content, title, tags, embedding, attributes,
                        source_job_id, source_agent_role, project, access_count, created_at
-                FROM minions.memory_nodes
+                FROM agents.memory_nodes
                 WHERE project = %s AND tags && %s
                 ORDER BY created_at DESC
                 LIMIT %s
@@ -91,7 +91,7 @@ class PostgresMemoryBackend:
                 """
                 SELECT id, content, title, tags, embedding, attributes,
                        source_job_id, source_agent_role, project, access_count, created_at
-                FROM minions.memory_nodes
+                FROM agents.memory_nodes
                 WHERE project = %s AND embedding IS NOT NULL
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s
@@ -112,7 +112,7 @@ class PostgresMemoryBackend:
         async with self._pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO minions.memory_links (from_node, to_entity, link_type, confidence, reasoning)
+                INSERT INTO agents.memory_links (from_node, to_entity, link_type, confidence, reasoning)
                 VALUES (%s, %s, %s, %s, %s)
                 """,
                 (from_id, to_entity, link_type, confidence, reasoning),
@@ -124,8 +124,8 @@ class PostgresMemoryBackend:
                 """
                 SELECT n.id, n.content, n.title, n.tags, n.embedding, n.attributes,
                        n.source_job_id, n.source_agent_role, n.project, n.access_count, n.created_at
-                FROM minions.memory_nodes n
-                JOIN minions.memory_links l ON l.from_node = n.id
+                FROM agents.memory_nodes n
+                JOIN agents.memory_links l ON l.from_node = n.id
                 WHERE l.to_entity = %s AND n.project = %s
                 ORDER BY n.created_at DESC
                 LIMIT %s
@@ -140,7 +140,7 @@ class PostgresMemoryBackend:
         async with self._pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO minions.memory_entities (id, name, entity_type, project)
+                INSERT INTO agents.memory_entities (id, name, entity_type, project)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (name, project) DO NOTHING
                 RETURNING id
@@ -152,7 +152,7 @@ class PostgresMemoryBackend:
                 return row[0]
             # Already existed — fetch existing ID
             await cur.execute(
-                "SELECT id FROM minions.memory_entities WHERE name = %s AND project = %s",
+                "SELECT id FROM agents.memory_entities WHERE name = %s AND project = %s",
                 (name, project),
             )
             row = await cur.fetchone()
@@ -165,7 +165,7 @@ class PostgresMemoryBackend:
                 """
                 SELECT id, content, title, tags, embedding, attributes,
                        source_job_id, source_agent_role, project, access_count, created_at
-                FROM minions.memory_nodes
+                FROM agents.memory_nodes
                 WHERE source_job_id = %s AND project = %s AND id != %s
                 ORDER BY created_at ASC
                 """,
@@ -178,7 +178,7 @@ class PostgresMemoryBackend:
         async with self._pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
-                UPDATE minions.memory_nodes
+                UPDATE agents.memory_nodes
                 SET access_count = access_count + 1, last_accessed = now()
                 WHERE id = %s
                 """,

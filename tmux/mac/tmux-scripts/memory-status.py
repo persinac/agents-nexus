@@ -188,7 +188,7 @@ def query(conn) -> dict:
             SELECT
                 count(*) FILTER (WHERE timestamp > now() - interval '1 hour') AS ev_1h,
                 count(*) FILTER (WHERE timestamp > now() - interval '24 hours') AS ev_24h
-            FROM minions.memory_events
+            FROM agents.memory_events
         """)
         ev_1h, ev_24h = cur.fetchone()
 
@@ -197,14 +197,14 @@ def query(conn) -> dict:
             SELECT
                 count(*) AS total,
                 count(*) FILTER (WHERE embedding IS NOT NULL) AS embedded
-            FROM minions.memory_nodes
+            FROM agents.memory_nodes
         """)
         notes_total, notes_embedded = cur.fetchone()
 
         # last event
         cur.execute("""
             SELECT timestamp, event_type, repo
-            FROM minions.memory_events
+            FROM agents.memory_events
             ORDER BY timestamp DESC LIMIT 1
         """)
         row = cur.fetchone()
@@ -213,7 +213,7 @@ def query(conn) -> dict:
         # last note
         cur.execute("""
             SELECT created_at, title, content
-            FROM minions.memory_nodes
+            FROM agents.memory_nodes
             ORDER BY created_at DESC LIMIT 1
         """)
         row = cur.fetchone()
@@ -222,7 +222,7 @@ def query(conn) -> dict:
         # recent 5 events
         cur.execute("""
             SELECT timestamp, event_type, repo
-            FROM minions.memory_events
+            FROM agents.memory_events
             ORDER BY timestamp DESC LIMIT 5
         """)
         recent = [{"ts": str(r[0]), "type": r[1], "repo": r[2]} for r in cur.fetchall()]

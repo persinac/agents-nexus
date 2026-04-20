@@ -71,9 +71,12 @@ WRAPPERS=(
   "docker-credential-wincred:/c/Program Files/Docker/Docker/resources/bin/docker-credential-wincred.exe"
   "git:/c/Program Files/Git/cmd/git.exe"
   "kubectl:/c/ProgramData/chocolatey/bin/kubectl.exe"
-  "uv:/c/Users/$USER/.local/bin/uv.exe"
-  "uvx:/c/Users/$USER/.local/bin/uvx.exe"
+  "uv:/c/Users/$USER/scoop/shims/uv.exe"
+  "uvx:/c/Users/$USER/scoop/shims/uvx.exe"
   "task:/c/Users/$USER/scoop/shims/task.exe"
+  "node:/c/Program Files/nodejs/node.exe"
+  "npm:/c/Program Files/nodejs/npm.cmd"
+  "claude:/c/Users/$USER/.local/bin/claude.exe"
 )
 for entry in "${WRAPPERS[@]}"; do
   name="${entry%%:*}"
