@@ -182,3 +182,43 @@ q() {
     tmux send-keys -t "agents:${slot}" "$*" Enter
   fi
 }
+
+# ── API key rotation ────────────────────────────────────────────
+
+usekey() {
+  local name="${1:?Usage: usekey <name>}"
+  local keyfile="$HOME/.tmux/keys/$name"
+  if [ ! -f "$keyfile" ]; then
+    echo "Key '$name' not found. Add it: echo 'sk-ant-...' > ~/.tmux/keys/$name"
+    return 1
+  fi
+  export ANTHROPIC_API_KEY=$(cat "$keyfile")
+  tmux setenv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
+  tmux setenv ANTHROPIC_KEY_NAME "$name"
+  echo "Active key: $name"
+}
+
+whichkey() {
+  local name
+  name=$(tmux show-environment ANTHROPIC_KEY_NAME 2>/dev/null | sed 's/ANTHROPIC_KEY_NAME=//')
+  if [ -n "$name" ]; then
+    echo "Active key: $name (${ANTHROPIC_API_KEY:0:12}...)"
+  else
+    echo "No named key active (using default ANTHROPIC_API_KEY)"
+  fi
+}
+
+keys() {
+  local dir="$HOME/.tmux/keys"
+  mkdir -p "$dir"
+  if [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+    echo "No keys found. Add one: echo 'sk-ant-...' > ~/.tmux/keys/<name>"
+    return
+  fi
+  local active
+  active=$(tmux show-environment ANTHROPIC_KEY_NAME 2>/dev/null | sed 's/ANTHROPIC_KEY_NAME=//')
+  for f in "$dir"/*; do
+    local n=$(basename "$f")
+    [ "$n" = "$active" ] && echo "  * $n (active)" || echo "    $n"
+  done
+}

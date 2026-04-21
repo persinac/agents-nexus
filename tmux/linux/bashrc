@@ -69,7 +69,8 @@ wt() {
 
 # claude-init — scaffold a CLAUDE.md in the current repo from the template
 claude-init() {
-  local template="${0:A:h}/../CLAUDE.md.template"
+  local nexus="${AGENTS_NEXUS_DIR:-$HOME/repos/agents-nexus}"
+  local template="$nexus/CLAUDE.md.template"
   if [ -f "CLAUDE.md" ]; then
     echo "CLAUDE.md already exists in $(pwd)"
     return 1
@@ -82,9 +83,7 @@ claude-init() {
   echo "Created CLAUDE.md in $(pwd) — edit it to match your project"
 }
 
-# agents — list all registered agents with their current slot, name, and directory.
-# Slot numbers are resolved live from tmux so they stay accurate after renumber-windows.
-# Stale entries (pane no longer exists) are pruned automatically.
+# agents — list all registered agents
 agents() {
   local dir="$HOME/.tmux/registry"
   local session="${TMUX_AGENT_SESSION:-agents}"
@@ -101,7 +100,7 @@ agents() {
     local slot
     slot=$(tmux display-message -t "$pane_id" -p '#{window_index}' 2>/dev/null)
     if [ -z "$slot" ]; then
-      rm -f "$f"   # stale entry — pane gone
+      rm -f "$f"
       continue
     fi
     lines+=$(printf "%-6s %-24s %s\n" "$slot" "$name" "$cwd")
@@ -120,7 +119,6 @@ agents() {
 }
 
 # qa <message> — send the same response to ALL waiting agents
-# e.g., qa 1 (approve all), qa 2 (approve all + don't ask again)
 qa() {
   local msg="${1:?"Usage: qa <message>"}"
   shift 2>/dev/null
@@ -138,7 +136,7 @@ qa() {
   echo "Sent to $sent waiting agent(s)"
 }
 
-# v <N> — quick view: float an overlay with status summary + last output of agent N
+# v <N> — quick view: float an overlay with status + last output of agent N
 v() {
   local slot=${1:?"Usage: v <slot>"}
   echo "$(date +%s) human-v agents:${slot}" >> "$HOME/.tmux/apm.log"
@@ -193,8 +191,7 @@ whichkey() {
 keys() {
   local dir="$HOME/.tmux/keys"
   mkdir -p "$dir"
-  local files=("$dir"/*)
-  if [ ! -e "${files[0]}" ]; then
+  if [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
     echo "No keys found. Add one: echo 'sk-ant-...' > ~/.tmux/keys/<name>"
     return
   fi

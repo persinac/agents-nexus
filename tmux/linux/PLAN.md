@@ -417,6 +417,33 @@ Open `http://<tailscale-ip>:8421` in local browser for the pixel dashboard.
 
 ---
 
+## Phase 9 — API Key Rotation
+
+Multiple named keys live in `~/.tmux/keys/` (never committed — add to `~/.gitignore` if the home dir is a repo):
+
+```bash
+mkdir -p ~/.tmux/keys
+echo 'sk-ant-...' > ~/.tmux/keys/alex
+echo 'sk-ant-...' > ~/.tmux/keys/buddy
+chmod 600 ~/.tmux/keys/*
+```
+
+Switch the active key for the session:
+```bash
+usekey alex      # set key + update tmux session env → all new windows inherit it
+usekey buddy     # swap to buddy's key
+whichkey         # show active key name + first 12 chars
+keys             # list all available profiles (* = active)
+```
+
+The status bar shows `[key:buddy]` in red when a non-default key is active.
+When the default key is in use, nothing is shown (no clutter).
+
+> Existing Claude processes keep their key until restarted. `usekey` only
+> affects new windows/panes spawned after the call.
+
+---
+
 ## Open Questions / TODOs
 
 - [ ] Evaluate Tailscale MagicDNS subdomains vs Caddy path routing
