@@ -251,6 +251,28 @@ q 2 "can you check the tests?"   # quote if message has ? ! * etc.
 q 2 1                             # approve (no Enter — instant select)
 ```
 
+### API key rotation
+
+Multiple named keys can be stored in `~/.tmux/keys/` and swapped per session. New agent windows spawned after a swap inherit the active key automatically.
+
+```bash
+# One-time setup
+mkdir -p ~/.tmux/keys
+echo 'sk-ant-...' > ~/.tmux/keys/alex
+echo 'sk-ant-...' > ~/.tmux/keys/buddy
+chmod 600 ~/.tmux/keys/*
+
+# Swap keys
+usekey buddy     # activate buddy's key for this session
+usekey alex      # swap back
+whichkey         # show active key name + first 12 chars
+keys             # list all profiles (* = active)
+```
+
+The status bar shows `[key:name]` in red when a non-default key is active. Hidden when you're on your own key.
+
+> Keys live in `~/.tmux/keys/` — never committed to the repo.
+
 ### Agent-to-agent messaging
 
 Agents automatically know about each other. On startup, each agent:
