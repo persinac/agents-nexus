@@ -83,7 +83,9 @@ tasks:
     desc: Run database migrations
     dir: mnemon
     cmds:
-      - psql $DATABASE_URL -f migrations/001_initial_schema.sql
+      - cmd: |
+          PSQL_URL=$(echo "$DATABASE_URL" | sed 's/[&?]search_path=[^&]*//')
+          PGOPTIONS="-c search_path=agents,public" psql "$PSQL_URL" -f migrations/001_initial_schema.sql
 
   mnemon:test:
     desc: Run mnemon tests
@@ -97,6 +99,38 @@ tasks:
     cmds:
       - uv run ruff format .
       - uv run ruff check --fix .
+
+  # =============================================================================
+  # Stack lifecycle (arbiter + dashboard + mnemon)
+  # =============================================================================
+
+  kill:
+    desc: Kill arbiter and mnemon MCP server (dashboard runs in Docker)
+    cmds:
+      - pkill -f "agents-nexus/arbiter/index.js" || true
+      - pkill -f "agent_memory.server.mcp_server" || true
+      - echo "All services stopped."
+
+  up:
+    desc: Start docker stack + arbiter and mnemon in the background (logs in /tmp)
+    cmds:
+      - docker compose up -d
+      - cmd: |
+          nohup bash -c 'cd {{.TASKFILE_DIR}}/arbiter && node --watch index.js' > /tmp/arbiter.log 2>&1 &
+          nohup bash -c 'cd {{.TASKFILE_DIR}}/mnemon && uv run agent-memory-serve' > /tmp/mnemon.log 2>&1 &
+          echo "Started. Logs: /tmp/arbiter.log  /tmp/mnemon.log"
+
+  restart:
+    desc: Kill and restart all services (arbiter, dashboard, mnemon)
+    cmds:
+      - task: kill
+      - sleep 1
+      - task: up
+
+  logs:
+    desc: Tail arbiter and mnemon logs (Ctrl-C to stop)
+    cmds:
+      - tail -f /tmp/arbiter.log /tmp/mnemon.log
 
   # =============================================================================
   # Docker Compose (knowledge stack)
@@ -155,6 +189,36 @@ tasks:
     desc: Show index stats
     cmds:
       - docker compose exec spark uv run spark status
+
+  # =============================================================================
+  # Langfuse (optional observability — task langfuse:up to start)
+  # =============================================================================
+
+  langfuse:up:
+    desc: Start the Langfuse observability stack (data volumes persist across restarts)
+    cmds:
+      - docker compose --profile langfuse up -d
+
+  langfuse:down:
+    desc: Stop Langfuse (data volumes preserved — use down -v to wipe)
+    cmds:
+      - docker compose --profile langfuse down
+
+  langfuse:update:
+    desc: Pull latest Langfuse images and restart
+    cmds:
+      - docker compose --profile langfuse pull langfuse-web langfuse-worker
+      - docker compose --profile langfuse up -d
+
+  langfuse:logs:
+    desc: Tail Langfuse web + worker logs
+    cmds:
+      - docker compose logs -f langfuse-web langfuse-worker
+
+  langfuse:status:
+    desc: Show Langfuse container health
+    cmds:
+      - docker compose ps langfuse-web langfuse-worker langfuse-postgres langfuse-redis langfuse-clickhouse langfuse-minio
 
   # =============================================================================
   # Autostart (macOS launchd)

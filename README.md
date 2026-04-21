@@ -13,6 +13,7 @@ Multi-platform: macOS, Windows (MSYS2), Linux.
 | **dashboard** | Pixel art office visualization of all active agents |
 | **mnemon** | Agent memory — persist notes and events to Postgres, query via MCP in any session |
 | **spark** | Semantic search index over all your repos, served as an MCP tool |
+| **Langfuse** | Optional observability stack — traces every memory operation (start with `task langfuse:up`) |
 
 ## Architecture
 
@@ -34,12 +35,13 @@ graph TB
       end
 
       subgraph docker["Docker Compose"]
-          postgres["Postgres + pgvector\n:5432"]
           ollama["Ollama\n:11434"]
           spark_svc["spark\n:8343"]
           mnemon_flush["mnemon-flush\n(cron daemon)"]
           dashboard["dashboard\nnginx :8421"]
       end
+
+      postgres[("Postgres + pgvector\n(cloud-hosted)")]
 
       jsonl["~/.tmux/\nmemory-events.jsonl"]
 
@@ -75,12 +77,13 @@ graph TB
 
 ## Knowledge Stack (Docker)
 
-Postgres + pgvector, Ollama, Spark, and the pixel dashboard all run as Docker services that start automatically on login. The arbiter stays native (it needs your local tmux socket).
+Ollama, Spark, the mnemon flush daemon, and the pixel dashboard all run as Docker services. **Postgres is cloud-hosted** — point `DATABASE_URL` at your cloud instance. The arbiter and mnemon MCP server run natively (arbiter needs the local tmux socket; mnemon is stdio-based).
 
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) — enable **Start at login** in settings
 - [`task`](https://taskfile.dev) — `brew install go-task`
+- A Postgres instance with pgvector (cloud or local — DigitalOcean managed postgres works well)
 
 ### First-time setup
 
@@ -90,40 +93,44 @@ cd ~/repos/agents-nexus
 # 1. Create your local env file
 cp .env.example .env
 
-# 2. Fill in secrets
-#    - POSTGRES_PASSWORD   — pick anything, used internally only
-#    - GITLAB_TOKEN        — GitLab personal access token (for repo metadata)
-#    - REPOS_PATH          — absolute path to your repos directory
-#    - HOST_TMUX_DIR       — usually ~/.tmux
+# 2. Fill in secrets — key fields:
+#    DATABASE_URL  — connection string to your cloud Postgres
+#    GITLAB_TOKEN  — GitLab personal access token (for repo metadata)
+#    REPOS_PATH    — absolute path to your repos directory (no ~ expansion)
+#    HOST_TMUX_DIR — usually ~/.tmux
 $EDITOR .env
 
-# 3. Start all services
+# 3. Run database migrations
+task mnemon:migrate
+
+# 4. Start Docker services (ollama, spark, mnemon-flush, dashboard)
 task docker:up
 
-# 4. Pull the embedding model into Ollama (once; ~270 MB)
+# 5. Pull the embedding model into Ollama (once; ~270 MB)
 task docker:init
 
-# 5. Build the Spark index (first run indexes all repos — takes a while)
+# 6. Start native services (arbiter + mnemon MCP) in the background
+task up
+
+# 7. Build the Spark index (first run indexes all repos — takes a while)
 task spark:reclaim
 
-# 6. Wire autostart so the stack comes up after every reboot
+# 8. Wire autostart so the stack comes up after every reboot
 task launchd:install
 ```
 
 ### Point Claude Code at the local services
 
-Update `mnemon/.env` so the MCP memory server connects to the Docker postgres:
-
-```
-DATABASE_URL=postgresql://agents:<your-password>@localhost:5432/agents?sslmode=disable
-OLLAMA_BASE_URL=http://localhost:11434
-```
-
-Spark's MCP server runs at `http://localhost:8343` (SSE). Add it to `~/.claude.json`:
+Add mnemon and spark to `~/.claude.json`:
 
 ```json
 {
   "mcpServers": {
+    "agent-memory": {
+      "type": "stdio",
+      "command": "/path/to/agents-nexus/mnemon/.venv/bin/python3",
+      "args": ["-m", "agent_memory.server.mcp_server"]
+    },
     "spark": {
       "type": "sse",
       "url": "http://localhost:8343/sse"
@@ -132,41 +139,59 @@ Spark's MCP server runs at `http://localhost:8343` (SSE). Add it to `~/.claude.j
 }
 ```
 
-### Start the pixel dashboard
-
-The dashboard UI is served by Docker at `http://localhost:8421`. Start the arbiter (WebSocket bridge) natively:
+### Stack lifecycle
 
 ```bash
-task arbiter:start
-```
+task up                     # start docker stack + arbiter + mnemon in background
+task kill                   # stop arbiter and mnemon
+task restart                # kill + up
+task logs                   # tail arbiter and mnemon logs
 
-Then open `http://localhost:8421` in a browser.
-
-### Day-to-day commands
-
-```bash
-task docker:up              # start everything
-task docker:down            # stop (data volumes preserved)
-task docker:logs            # tail all logs
+task docker:up              # start docker services only
+task docker:down            # stop docker services (volumes preserved)
+task docker:logs            # tail all docker logs
 task docker:logs -- spark   # tail a single service
 task docker:status          # health + uptime
 
 task spark:activate -- my-repo   # re-index one repo after changes
+task spark:reclaim               # full index rebuild
 task spark:status                # index stats
 
-task launchd:install        # enable autostart
+task launchd:install        # enable autostart on login (macOS)
 task launchd:uninstall      # disable autostart
 ```
 
+### Langfuse (optional observability)
+
+Langfuse is bundled as an optional Docker Compose profile. It traces every mnemon memory operation (L2/L3 reads, retrieval scoring, archive jobs, entity extraction LLM calls).
+
+```bash
+task langfuse:up        # start Langfuse stack (postgres, redis, clickhouse, minio, web, worker)
+task langfuse:down      # stop (data volumes preserved)
+task langfuse:update    # pull latest images and restart
+task langfuse:logs      # tail web + worker logs
+task langfuse:status    # container health
+```
+
+After `task langfuse:up`, open `http://localhost:3000`, create an account, then generate an API key and add it to `.env`:
+
+```
+LANGFUSE_HOST=http://localhost:3000
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+> **Plain `task up` / `docker compose up -d` will not start Langfuse.** The profile is self-documenting — it's in the compose file so you know it exists, but it stays off unless you explicitly opt in.
+
 ### Ports
 
-| Service | Port |
-|---------|------|
-| Postgres | 5432 |
-| Ollama | 11434 |
-| Spark | 8343 |
-| Dashboard UI | 8421 |
-| Arbiter (native) | 8420 |
+| Service | Port | Notes |
+|---------|------|-------|
+| Ollama | 11434 | Embedding model |
+| Spark | 8343 | Semantic search MCP (SSE) |
+| Dashboard UI | 8421 | Pixel office UI (nginx) |
+| Arbiter | 8420 | WebSocket bridge (native) |
+| Langfuse | 3000 | Observability UI (optional) |
 
 ---
 
@@ -286,7 +311,7 @@ The `claude-settings.json` configures two hooks:
 agents-nexus/
 ├── install.sh               # unified installer (detects OS)
 ├── Taskfile.yml             # task runner (docker, spark, mnemon, arbiter, launchd)
-├── docker-compose.yml       # knowledge stack (postgres, ollama, spark, mnemon-flush, dashboard)
+├── docker-compose.yml       # knowledge stack (ollama, spark, mnemon-flush, dashboard) + optional Langfuse profile
 ├── .env.example             # environment variable template
 ├── CLAUDE.md.template       # scaffold template for per-repo CLAUDE.md
 ├── IDEAS.md                 # roadmap & feature ideas
