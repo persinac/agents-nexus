@@ -77,7 +77,6 @@ WRAPPERS=(
   "node:/c/Program Files/nodejs/node.exe"
   "npm:/c/Program Files/nodejs/npm.cmd"
   "claude:/c/Users/$USER/.local/bin/claude.exe"
-  "python:/c/Users/$USER/.pyenv/pyenv-win/shims/python"
 )
 for entry in "${WRAPPERS[@]}"; do
   name="${entry%%:*}"
@@ -90,6 +89,24 @@ for entry in "${WRAPPERS[@]}"; do
     echo "  !! $exe not found, skipping $name"
   fi
 done
+
+# Install Python 3.14 via uv and wire ~/.local/bin/python + python3
+if command -v uv &>/dev/null; then
+  echo "  Installing Python 3.14 via uv..."
+  uv python install 3.14
+  UV_PYTHON=$(uv python find 3.14 2>/dev/null) || true
+  if [ -n "$UV_PYTHON" ]; then
+    for name in python python3; do
+      printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$UV_PYTHON" > "$HOME/.local/bin/$name"
+      chmod +x "$HOME/.local/bin/$name"
+    done
+    echo "  -> ~/.local/bin/{python,python3} -> Python 3.14 (uv-managed)"
+  fi
+else
+  echo "  WARNING: uv not found — Python 3.14 not installed"
+  echo "    Install via scoop: scoop install uv"
+  echo "    Then run: uv python install 3.14"
+fi
 
 echo ""
 echo "Done. Open a new terminal or run: source ~/.bashrc"

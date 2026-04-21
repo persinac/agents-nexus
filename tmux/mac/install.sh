@@ -115,4 +115,80 @@ else
   echo "~/.zshrc already sources agent-orchestration"
 fi
 
+setup_mcp_config() {
+  local template="$SCRIPT_DIR/claude-code-config.json"
+  if [ ! -f "$template" ]; then
+    echo "  WARNING: claude-code-config.json template not found, skipping MCP config"
+    return
+  fi
+
+  local config_file="$HOME/.claude/claude_code_config.json"
+
+  # Auto-detect spark binary
+  local spark_cmd
+  spark_cmd=$(command -v spark 2>/dev/null || echo "/usr/local/bin/spark")
+
+  # Auto-detect agent-memory dir by searching common locations
+  local agent_memory_dir=""
+  local search_paths=(
+    "$HOME/minions/minions-suite/agent-memory"
+    "$HOME/garner/repos/minions-suite/agent-memory"
+    "$HOME/repos/minions-suite/agent-memory"
+    "$HOME/projects/minions-suite/agent-memory"
+  )
+  for p in "${search_paths[@]}"; do
+    if [ -d "$p" ]; then
+      agent_memory_dir="$p"
+      break
+    fi
+  done
+
+  if [ -z "$agent_memory_dir" ]; then
+    echo ""
+    echo "  agent-memory dir not auto-detected."
+    read -r -p "  Enter path to agent-memory dir (blank to skip): " agent_memory_dir
+    agent_memory_dir="${agent_memory_dir/#\~/$HOME}"
+    if [ -z "$agent_memory_dir" ]; then
+      echo "  Skipping agent-memory MCP config."
+      return
+    fi
+  fi
+
+  local agent_memory_python="$agent_memory_dir/.venv/bin/python3"
+
+  local tmp_file="${config_file}.new"
+  sed \
+    -e "s|__SPARK_CMD__|$spark_cmd|g" \
+    -e "s|__AGENT_MEMORY_PYTHON__|$agent_memory_python|g" \
+    -e "s|__AGENT_MEMORY_DIR__|$agent_memory_dir|g" \
+    "$template" > "$tmp_file"
+
+  if [ ! -f "$config_file" ]; then
+    mv "$tmp_file" "$config_file"
+    echo "  Created ~/.claude/claude_code_config.json"
+  else
+    # Merge: add missing servers, leave existing ones untouched
+    node - "$config_file" "$tmp_file" <<'EOF'
+const fs = require('fs');
+const [,, existingPath, incomingPath] = process.argv;
+const existing = JSON.parse(fs.readFileSync(existingPath, 'utf8'));
+const incoming = JSON.parse(fs.readFileSync(incomingPath, 'utf8'));
+existing.mcpServers ??= {};
+for (const [name, cfg] of Object.entries(incoming.mcpServers ?? {})) {
+  if (!existing.mcpServers[name]) {
+    existing.mcpServers[name] = cfg;
+    process.stderr.write(`  Added MCP server: ${name}\n`);
+  } else {
+    process.stderr.write(`  [ok] MCP server: ${name} (already configured)\n`);
+  }
+}
+fs.writeFileSync(existingPath, JSON.stringify(existing, null, 2) + '\n');
+EOF
+    rm "$tmp_file"
+    echo "  Updated ~/.claude/claude_code_config.json"
+  fi
+}
+
+setup_mcp_config
+
 echo "Done. Reload with: tmux source ~/.tmux.conf"

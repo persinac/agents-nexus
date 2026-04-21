@@ -51,6 +51,52 @@ check_cmd() {
   command -v "$1" &>/dev/null
 }
 
+# ── Python / uv ─────────────────────────────────────────────────
+PYTHON_VERSION="3.14"
+
+install_uv() {
+  if check_cmd uv; then echo "  [ok] uv"; return; fi
+  echo "  Installing uv..."
+  case "$OS" in
+    mac)     brew install uv ;;
+    linux)   curl -LsSf https://astral.sh/uv/install.sh | sh
+             export PATH="$HOME/.local/bin:$PATH" ;;
+    windows)
+      if check_cmd scoop; then scoop install uv
+      else
+        echo "  WARNING: scoop not found — install uv from https://docs.astral.sh/uv/"
+      fi ;;
+  esac
+}
+
+ensure_python() {
+  if ! check_cmd uv; then
+    echo "  WARNING: uv unavailable, skipping Python $PYTHON_VERSION install"
+    return
+  fi
+  if check_cmd python3; then
+    local major minor
+    major=$(python3 -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo 0)
+    minor=$(python3 -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo 0)
+    if [[ "$major" -eq 3 && "$minor" -ge 14 ]]; then
+      echo "  [ok] $(python3 --version)"; return
+    fi
+    echo "  python3 $major.$minor found, need $PYTHON_VERSION — installing via uv..."
+  else
+    echo "  python3 not found — installing $PYTHON_VERSION via uv..."
+  fi
+  uv python install "$PYTHON_VERSION"
+  local uv_py
+  uv_py=$(uv python find "$PYTHON_VERSION" 2>/dev/null) || return 0
+  mkdir -p "$HOME/.local/bin"
+  for name in python python3; do
+    printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$uv_py" > "$HOME/.local/bin/$name"
+    chmod +x "$HOME/.local/bin/$name"
+  done
+  echo "  -> ~/.local/bin/{python,python3} -> Python $PYTHON_VERSION (uv-managed)"
+  echo "     Ensure ~/.local/bin is early in your PATH"
+}
+
 install_deps_mac() {
   if ! check_cmd brew; then
     echo "Homebrew not found. Install it from https://brew.sh"
@@ -79,6 +125,9 @@ install_deps_mac() {
   else
     echo "  [ok] claude"
   fi
+
+  install_uv
+  ensure_python
 }
 
 install_deps_windows() {
@@ -113,6 +162,9 @@ install_deps_windows() {
   else
     echo "  [ok] claude"
   fi
+
+  install_uv
+  ensure_python
 }
 
 install_deps_linux() {
@@ -149,6 +201,71 @@ install_deps_linux() {
   else
     echo "  [ok] claude"
   fi
+
+  install_uv
+  ensure_python
+}
+
+setup_skills() {
+  local skills_src="$REPO_DIR/skills"
+  [ -d "$skills_src" ] || return 0
+  mkdir -p "$HOME/.claude/skills"
+  for skill_dir in "$skills_src"/*/; do
+    [ -d "$skill_dir" ] || continue
+    local name
+    name=$(basename "$skill_dir")
+    local target="$HOME/.claude/skills/$name"
+    local src
+    src="$(cd "$skill_dir" && pwd)"
+    if [ -L "$target" ]; then
+      ln -sf "$src" "$target"
+      echo "  [ok] skill: $name"
+    elif [ -d "$target" ]; then
+      rm -rf "$target"
+      ln -sf "$src" "$target"
+      echo "  -> ~/.claude/skills/$name (adopted from real dir)"
+    else
+      ln -sf "$src" "$target"
+      echo "  -> ~/.claude/skills/$name"
+    fi
+  done
+}
+
+validate_setup() {
+  local all_ok=true
+
+  if check_cmd uv; then
+    echo "  [ok] uv $(uv --version 2>&1)"
+  else
+    echo "  !! uv not found"
+    all_ok=false
+  fi
+
+  if check_cmd python3; then
+    echo "  [ok] $(python3 --version)"
+  else
+    echo "  !! python3 not in PATH (ensure ~/.local/bin is early in PATH)"
+    all_ok=false
+  fi
+
+  local mcp_config="$HOME/.claude/claude_code_config.json"
+  if [ ! -f "$mcp_config" ]; then
+    echo "  !! ~/.claude/claude_code_config.json not found"
+    all_ok=false
+  elif ! node -e "JSON.parse(require('fs').readFileSync('$mcp_config','utf8'))" 2>/dev/null; then
+    echo "  !! ~/.claude/claude_code_config.json is invalid JSON"
+    all_ok=false
+  else
+    echo "  [ok] ~/.claude/claude_code_config.json"
+    local spark_cmd agent_python
+    spark_cmd=$(node -e "const c=require('$mcp_config');process.stdout.write(c.mcpServers?.['guilty-spark']?.command??'')" 2>/dev/null)
+    agent_python=$(node -e "const c=require('$mcp_config');process.stdout.write(c.mcpServers?.['agent-memory']?.command??'')" 2>/dev/null)
+    [ -n "$spark_cmd"    ] && { [ -f "$spark_cmd"    ] && echo "  [ok] spark: $spark_cmd"          || echo "  !! spark binary not found: $spark_cmd"; }
+    [ -n "$agent_python" ] && { [ -f "$agent_python" ] && echo "  [ok] agent-memory: $agent_python" || echo "  !! agent-memory python not found: $agent_python"; }
+  fi
+
+  echo ""
+  $all_ok && echo "  All checks passed." || echo "  Some checks failed — see above."
 }
 
 case "$OS" in
@@ -184,11 +301,16 @@ fi
 
 echo ""
 
-# ── Step 3: Pixel Dashboard ───────────────────────────────────
+# ── Step 3: Global Claude skills ──────────────────────────────
+echo "── Step 3: Global Claude skills ─────────────────────────"
+setup_skills
+echo ""
+
+# ── Step 4: Pixel Dashboard ───────────────────────────────────
 if $SKIP_UI; then
-  echo "── Step 3: Pixel Dashboard (skipped) ──────────────────"
+  echo "── Step 4: Pixel Dashboard (skipped) ──────────────────"
 else
-  echo "── Step 3: Pixel Dashboard ────────────────────────────"
+  echo "── Step 4: Pixel Dashboard ────────────────────────────"
   DASHBOARD_DIR="$REPO_DIR/pixel-dashboard"
 
   if [ ! -d "$DASHBOARD_DIR" ]; then
@@ -202,6 +324,11 @@ else
   fi
 fi
 
+echo ""
+
+# ── Step 4: Validate ──────────────────────────────────────────
+echo "── Step 5: Validate ─────────────────────────────────────"
+validate_setup
 echo ""
 
 # ── Summary ────────────────────────────────────────────────────

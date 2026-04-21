@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "guilty-spark": {
+      "command": "__SPARK_CMD__",
+      "args": ["serve"]
+    },
+    "agent-memory": {
+      "command": "__AGENT_MEMORY_PYTHON__",
+      "args": ["-m", "agent_memory.server.mcp_server"],
+      "cwd": "__AGENT_MEMORY_DIR__"
+    }
+  }
+}
