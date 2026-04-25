@@ -8,3 +8,4 @@ dist/
 *.egg-info/
 .env
 config.yaml
+config.linux.yaml
