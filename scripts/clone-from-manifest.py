@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -43,7 +44,8 @@ def clone(url: str, target: Path, depth: int | None = None) -> bool:
         cmd += ["--depth", str(depth)]
     cmd += [url, str(target)]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
     if result.returncode != 0:
         print(f"  [FAIL] {target.name}: {result.stderr.strip()}")
         return False
