@@ -221,6 +221,44 @@ tasks:
       - docker compose ps langfuse-web langfuse-worker langfuse-postgres langfuse-redis langfuse-clickhouse langfuse-minio
 
   # =============================================================================
+  # GitLab jobs
+  # =============================================================================
+
+  gl:reviews:
+    desc: Show open MRs where you're a reviewer, priority-sorted
+    cmds:
+      - uv run scripts/gl-review-queue.py {{.CLI_ARGS}}
+
+  gl:reviews:daily:
+    desc: Show review queue and append to today's Obsidian daily note
+    cmds:
+      - uv run scripts/gl-review-queue.py --daily {{.CLI_ARGS}}
+
+  # =============================================================================
+  # Obsidian jobs
+  # =============================================================================
+
+  obs:tag:
+    desc: Enhance Obsidian notes with tags via Claude Haiku (incremental by default)
+    cmds:
+      - uv run scripts/obs-tag-enhance.py {{.CLI_ARGS}}
+
+  obs:tag:dry:
+    desc: Preview tag enhancement without writing
+    cmds:
+      - uv run scripts/obs-tag-enhance.py --dry-run {{.CLI_ARGS}}
+
+  obs:decay:
+    desc: Flag stale notes and archive 90d+ old notes
+    cmds:
+      - uv run scripts/obs-decay-monitor.py {{.CLI_ARGS}}
+
+  obs:decay:dry:
+    desc: Preview decay monitor without writing or archiving
+    cmds:
+      - uv run scripts/obs-decay-monitor.py --dry-run {{.CLI_ARGS}}
+
+  # =============================================================================
   # Autostart (macOS launchd)
   # =============================================================================
 
@@ -239,3 +277,19 @@ tasks:
     cmds:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.docker.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.docker.plist
+
+  launchd:install:gl-reviews:
+    desc: Install launchd agent to write GitLab review queue to daily note at 8:05am on weekdays
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.gl-reviews.plist > ~/Library/LaunchAgents/com.agents-nexus.gl-reviews.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.gl-reviews.plist
+      - echo "Installed — review queue runs weekdays at 8:05am (logs at /tmp/agents-nexus-gl-reviews.log)"
+
+  launchd:uninstall:gl-reviews:
+    desc: Remove the GitLab review queue launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.gl-reviews.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.gl-reviews.plist
