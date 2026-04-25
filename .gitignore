@@ -31,3 +31,5 @@ Thumbs.db
 scripts/clone-urls.txt
 scripts/*.log
 scripts/.obs-tag-state.json
+
+repos-manifest.yaml
