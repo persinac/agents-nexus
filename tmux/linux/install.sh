@@ -120,8 +120,6 @@ fi
 # Set up MCP config
 setup_mcp_config() {
   local config_file="$HOME/.claude/claude_code_config.json"
-  local spark_cmd
-  spark_cmd=$(command -v spark 2>/dev/null || echo "")
 
   local agent_memory_dir="$NEXUS_DIR/mnemon"
   local agent_memory_python="$agent_memory_dir/.venv/bin/python3"
@@ -130,12 +128,17 @@ setup_mcp_config() {
     echo "  WARNING: mnemon venv not found at $agent_memory_python — run 'uv venv && uv pip install -e .' in mnemon/ first"
   fi
 
+  # On Linux (mini PC), Spark runs in Docker — use SSE transport.
+  # On Mac, Spark is a CLI binary — use stdio transport.
   local mcp_config
+  local spark_cmd
+  spark_cmd=$(command -v spark 2>/dev/null || echo "")
+
   if [ -n "$spark_cmd" ]; then
     mcp_config=$(cat <<MCPEOF
 {
   "mcpServers": {
-    "guilty-spark": {
+    "spark": {
       "command": "$spark_cmd",
       "args": ["serve"]
     },
@@ -152,6 +155,10 @@ MCPEOF
     mcp_config=$(cat <<MCPEOF
 {
   "mcpServers": {
+    "spark": {
+      "type": "sse",
+      "url": "http://localhost:8343/sse"
+    },
     "agent-memory": {
       "command": "$agent_memory_python",
       "args": ["-m", "agent_memory.server.mcp_server"],
@@ -167,7 +174,9 @@ MCPEOF
     echo "$mcp_config" > "$config_file"
     echo "  Created ~/.claude/claude_code_config.json"
   else
-    echo "  ~/.claude/claude_code_config.json already exists — skipping"
+    cp "$config_file" "${config_file}.bak"
+    echo "$mcp_config" > "$config_file"
+    echo "  Updated ~/.claude/claude_code_config.json (backup at claude_code_config.json.bak)"
   fi
 }
 setup_mcp_config
