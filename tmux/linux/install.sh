@@ -39,6 +39,8 @@ REPO_DIR="\${REPO_DIR:-$HOME/repos}"
 NOTES_DIR="\${NOTES_DIR:-$HOME/notes}"
 AGENTS_NEXUS_DIR="\${AGENTS_NEXUS_DIR:-$NEXUS_DIR}"
 EXTRA_REPO_DIRS="\${EXTRA_REPO_DIRS:-}"
+VAULT_DIR="\${VAULT_DIR:-$HOME/vault}"
+CHECKPOINT_DIR="\${CHECKPOINT_DIR:-$HOME/vault/Checkpoints}"
 EOF
   echo "Created ~/.tmux/env.sh"
 else
@@ -54,6 +56,14 @@ else
     echo "EXTRA_REPO_DIRS=\"\${EXTRA_REPO_DIRS:-}\"" >> "$ENV_FILE"
     echo "Added EXTRA_REPO_DIRS to ~/.tmux/env.sh"
   }
+  grep -q "VAULT_DIR" "$ENV_FILE" || {
+    echo "VAULT_DIR=\"\${VAULT_DIR:-\$HOME/vault}\"" >> "$ENV_FILE"
+    echo "Added VAULT_DIR to ~/.tmux/env.sh"
+  }
+  grep -q "CHECKPOINT_DIR" "$ENV_FILE" || {
+    echo "CHECKPOINT_DIR=\"\${CHECKPOINT_DIR:-\$HOME/vault/Checkpoints}\"" >> "$ENV_FILE"
+    echo "Added CHECKPOINT_DIR to ~/.tmux/env.sh"
+  }
 fi
 
 # Install systemd user units
@@ -64,7 +74,12 @@ for unit in "$SCRIPT_DIR"/systemd/*.service "$SCRIPT_DIR"/systemd/*.timer; do
   sed -e "s|__HOME__|$HOME|g" -e "s|__AGENTS_NEXUS_DIR__|$NEXUS_DIR|g" \
     "$unit" > "$HOME/.config/systemd/user/$name"
   systemctl --user enable "$name" 2>/dev/null || true
-  echo "  Enabled systemd unit: $name"
+  if [[ "$name" == *.timer ]]; then
+    systemctl --user start "$name" 2>/dev/null || true
+    echo "  Enabled + started systemd timer: $name"
+  else
+    echo "  Enabled systemd unit: $name"
+  fi
 done
 systemctl --user daemon-reload
 

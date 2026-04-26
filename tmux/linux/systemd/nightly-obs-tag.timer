@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly obs-tag at 16:15 UTC (10:15 AM MT) — 4hr gap after Spark
+
+[Timer]
+OnCalendar=*-*-* 16:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

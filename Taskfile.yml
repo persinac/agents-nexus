@@ -175,6 +175,11 @@ tasks:
   # Spark (semantic repo search)
   # =============================================================================
 
+  spark:pipeline:
+    desc: Run the full Spark nightly pipeline (reclaim + synthesize)
+    cmds:
+      - bash spark/scripts/spark-pipeline.sh {{.CLI_ARGS}}
+
   spark:reclaim:
     desc: Full index rebuild (runs inside the spark container)
     cmds:
@@ -233,6 +238,27 @@ tasks:
     desc: Show review queue and append to today's Obsidian daily note
     cmds:
       - uv run scripts/gl-review-queue.py --daily {{.CLI_ARGS}}
+
+  # =============================================================================
+  # Nightly pipeline
+  # =============================================================================
+
+  nightly:sync:
+    desc: Sync all repos under $REPO_DIR (stash, fetch, pull default branch)
+    cmds:
+      - bash scripts/repo-sync.sh {{.CLI_ARGS}}
+
+  nightly:vault-commit:
+    desc: Auto-commit and push vault changes
+    cmds:
+      - bash scripts/vault-commit.sh {{.CLI_ARGS}}
+
+  nightly:all:
+    desc: Run the full nightly pipeline (repo sync → vault commit → spark)
+    cmds:
+      - task: nightly:sync
+      - task: nightly:vault-commit
+      - task: spark:pipeline
 
   # =============================================================================
   # Obsidian jobs

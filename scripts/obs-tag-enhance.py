@@ -22,7 +22,7 @@ from pathlib import Path
 import anthropic
 import yaml
 
-VAULT_DIR = Path.home() / "obs-garner" / "Garner"
+VAULT_DIR = Path(os.environ.get("VAULT_DIR", Path.home() / "obs-garner" / "Garner"))
 STATE_FILE = Path(__file__).parent / ".obs-tag-state.json"
 BATCH_SIZE = 8
 

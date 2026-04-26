@@ -15,6 +15,7 @@ Run with --dry-run to preview without writing anything.
 """
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -24,7 +25,7 @@ from pathlib import Path
 
 import yaml
 
-VAULT_DIR = Path.home() / "obs-garner" / "Garner"
+VAULT_DIR = Path(os.environ.get("VAULT_DIR", Path.home() / "obs-garner" / "Garner"))
 ARCHIVE_SUBDIR = "Archive"
 DEFAULT_STALE_DAYS = 30
 DEFAULT_ARCHIVE_DAYS = 180

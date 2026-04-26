@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly Obsidian note tagging via Claude Haiku
+
+[Service]
+Type=oneshot
+WorkingDirectory=__AGENTS_NEXUS_DIR__
+ExecStart=/bin/bash -c 'source __HOME__/.tmux/env.sh 2>/dev/null; uv run scripts/obs-tag-enhance.py'
+Environment=HOME=__HOME__
+Environment=VAULT_DIR=__HOME__/vault
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1800

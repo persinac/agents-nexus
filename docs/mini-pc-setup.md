@@ -10,15 +10,15 @@ over Tailscale.
 | Phase | Status |
 |-------|--------|
 | 1. OS & Base Setup | :white_check_mark: Done — Ubuntu 25.04, hostname `nexus`, SSH, static IP `192.168.4.94` |
-| 2. Install Dependencies | :white_check_mark: Done — Docker, fnm/Node, uv, Task, Claude Code, Tailscale (`100.75.154.84`) |
-| 3. Clone & Configure | :arrow_left: **Up next** |
-| 4. Docker Stack | Pending |
-| 5. Langfuse Observability | Pending |
-| 6. Caddy Reverse Proxy | Pending |
-| 7. Autostart (systemd) | Pending |
-| 8. tmux Layer | Pending |
-| 9. API Key Rotation | Pending |
-| 10. Client Machine Setup | Pending |
+| 2. Install Dependencies | :white_check_mark: Done — Docker, fnm/Node, uv, Task, Claude Code, Tailscale (`100.75.154.84`), gh, Caddy |
+| 3. Clone & Configure | :white_check_mark: Done — repos cloned via `clone-from-manifest.py` into categorized dirs (personal/cackalacky/flashback-fleet/community) |
+| 4. Docker Stack | :white_check_mark: Done — Ollama, Spark, mnemon-flush, dashboard all healthy. Spark reindex complete |
+| 5. Langfuse Observability | :white_check_mark: Done — all 6 containers healthy, account + project created, API keys wired into .env |
+| 6. Caddy Reverse Proxy | :white_check_mark: Done — path-based routing at `http://100.75.154.84` |
+| 7. Autostart (systemd) | :white_check_mark: Done — Docker stack, arbiter, flush timer, spark nightly reindex all enabled |
+| 8. tmux Layer | :white_check_mark: Done — Linux install script, hooks, bashrc functions, systemd user units |
+| 9. API Key Rotation | :white_check_mark: Ready — infrastructure in place (`usekey`/`whichkey`/`keys`), activate when needed |
+| 10. Client Machine Setup | :white_check_mark: Done — SSH config, MCP servers (spark SSE + agent-memory over SSH) in `~/.claude.json` |
 
 **Pre-work completed:** Repo discovery pipeline built (`scripts/`), manifest
 generated with rule-based + AI tags (`repos-manifest.yaml`), reference repos

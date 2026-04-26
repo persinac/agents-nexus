@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly obs-decay on Sundays at 16:15 UTC (10:15 AM MT)
+
+[Timer]
+OnCalendar=Sun *-*-* 16:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

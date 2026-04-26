@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Spark reclaim + decision synthesis
+After=nightly-repo-sync.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash __AGENTS_NEXUS_DIR__/spark/scripts/spark-pipeline.sh
+Environment=HOME=__HOME__
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=3600

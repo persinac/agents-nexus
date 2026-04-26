@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: Save the current conversation context as a checkpoint note to ~/garner/notes/. Invoke when the user wants to save progress, bookmark a session, or preserve context before switching tasks.
+description: Save the current conversation context as a checkpoint note. Writes to $CHECKPOINT_DIR (default ~/garner/notes/). Invoke when the user wants to save progress, bookmark a session, or preserve context before switching tasks.
 disable-model-invocation: true
 user-invocable: true
 allowed-tools: Bash, Write, Read, Glob, mcp__agent-memory__create_note, mcp__agent-memory__log_event
@@ -9,7 +9,9 @@ argument-hint: "[optional label]"
 
 # Save Conversation Checkpoint
 
-Save a structured summary of the current conversation to `~/garner/notes/`.
+Save a structured summary of the current conversation to the checkpoint directory.
+
+The checkpoint directory is determined by the `CHECKPOINT_DIR` environment variable. If unset, it defaults to `~/garner/notes/`.
 
 ## Variables
 
@@ -18,10 +20,11 @@ Save a structured summary of the current conversation to `~/garner/notes/`.
 - **Branch:** !`git branch --show-current 2>/dev/null || echo "n/a"`
 - **Git status (staged + unstaged):** !`git diff --stat HEAD 2>/dev/null | tail -1`
 - **Label:** $ARGUMENTS
+- **Checkpoint dir:** !`echo "${CHECKPOINT_DIR:-$HOME/garner/notes}"`
 
 ## Instructions
 
-1. Derive the filename as `~/garner/notes/<YYYY-MM-DD>-<project>-checkpoint.md` using the date and project name above.
+1. Derive the filename as `<checkpoint-dir>/<YYYY-MM-DD>-<project>-checkpoint.md` using the checkpoint dir, date, and project name above.
 
 2. Check if the file already exists using the Read tool.
 
