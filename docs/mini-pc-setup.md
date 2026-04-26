@@ -68,7 +68,8 @@ sudo apt install -y \
   git curl wget unzip \
   tmux fzf \
   build-essential \
-  ca-certificates gnupg lsb-release
+  ca-certificates gnupg lsb-release \
+  postgresql-client
 ```
 
 ### 2.2 Docker
@@ -182,7 +183,7 @@ task spark:reclaim    # full index of all repos — takes a while
 
 ```bash
 task docker:status              # all containers healthy
-curl localhost:8343/health      # spark alive
+curl localhost:8343/webhook/status  # spark alive
 curl localhost:8421             # dashboard serves HTML
 curl localhost:11434/api/tags   # ollama has nomic-embed-text
 ```
@@ -223,6 +224,11 @@ task langfuse:status      # verify all healthy
 2. Create an account — this is the local admin, no external auth needed
 3. Create a new project (e.g. `agents-nexus`)
 4. Go to **Settings → API Keys** and create a key pair
+
+> **Note:** Langfuse redirects to `localhost` after sign-up/login because
+> `NEXTAUTH_URL` defaults to `http://localhost:3000`. For remote access,
+> set `NEXTAUTH_URL=http://100.75.154.84:3000` in `.env` and restart
+> Langfuse.
 
 ### 5.4 Wire up mnemon tracing
 

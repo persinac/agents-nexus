@@ -1,0 +1,14 @@
+[Unit]
+Description=agents-nexus stack (arbiter + mnemon)
+After=network.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__AGENTS_NEXUS_DIR__
+ExecStart=/bin/bash -c 'task up'
+ExecStop=/bin/bash -c 'task kill && docker compose down'
+Environment=HOME=__HOME__
+
+[Install]
+WantedBy=default.target
