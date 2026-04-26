@@ -7,6 +7,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NEXUS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MAC_DIR="$SCRIPT_DIR/../mac"
 
+# Ensure ~/.tmux is owned by the current user (may be root-owned from prior sudo)
+if [ -d "$HOME/.tmux" ] && [ "$(stat -c %u "$HOME/.tmux")" != "$(id -u)" ]; then
+  sudo chown -R "$(id -u):$(id -g)" "$HOME/.tmux"
+  echo "Fixed ~/.tmux ownership"
+fi
+
 # Symlink tmux config (identical to mac)
 ln -sf "$MAC_DIR/tmux.conf" "$HOME/.tmux.conf"
 
