@@ -57,6 +57,10 @@ else
   else
     echo "~/.tmux/env.sh already exists — verify REPO_DIR/NOTES_DIR/EXTRA_REPO_DIRS are correct"
   fi
+  if ! grep -q "CHECKPOINT_DIR" "$ENV_FILE"; then
+    echo "CHECKPOINT_DIR=\"\${CHECKPOINT_DIR:-\$HOME/garner/notes}\"" >> "$ENV_FILE"
+    echo "Added CHECKPOINT_DIR to ~/.tmux/env.sh"
+  fi
 fi
 
 mkdir -p "$HOME/.claude"
