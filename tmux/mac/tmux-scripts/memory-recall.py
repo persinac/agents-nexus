@@ -33,9 +33,11 @@ def load_env():
 
 
 def db_url() -> str | None:
+    import re
     url = os.environ.get("DATABASE_URL", "")
     if not url:
         return None
+    url = re.sub(r'[&?]search_path=[^&]*', '', url)
     if "sslmode" not in url:
         sep = "&" if "?" in url else "?"
         url += f"{sep}sslmode=require"

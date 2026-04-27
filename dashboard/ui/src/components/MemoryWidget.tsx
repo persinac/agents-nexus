@@ -152,7 +152,7 @@ export function MemoryWidget({ onClose }: MemoryWidgetProps) {
   const fetchNotes = useCallback(() => {
     setNotesLoading(true);
     setNotesError(false);
-    fetch(`${apiBase()}/api/memory?project=general`)
+    fetch(`${apiBase()}/api/memory`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((data: MemoryNote[]) => { setNotes(data); setNotesLoading(false); setNotesFetched(true); })
       .catch(() => { setNotesError(true); setNotesLoading(false); });
