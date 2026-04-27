@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS agents.memory_nodes (
     content         TEXT        NOT NULL,
     title           TEXT,
     tags            TEXT[]      NOT NULL DEFAULT '{}',
-    embedding       vector(1536),          -- pgvector; NULL until embeddings enabled
+    embedding       vector(768),           -- pgvector (Ollama nomic-embed-text); NULL until embeddings enabled
     attributes      JSONB       NOT NULL DEFAULT '{}',
     source_job_id   TEXT,
     source_agent_role TEXT,
