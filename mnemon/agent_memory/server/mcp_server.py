@@ -112,6 +112,40 @@ async def _embed(text: str) -> list[float] | None:
         return None
 
 
+# ── Langfuse observability ────────────────────────────────────────────────────
+# Enabled when LANGFUSE_SECRET_KEY is set. No-op otherwise.
+
+_langfuse_ok = False
+_langfuse_client = None
+try:
+    if os.environ.get("LANGFUSE_SECRET_KEY"):
+        from langfuse import observe as _observe, get_client as _get_langfuse
+        _langfuse_ok = True
+        _langfuse_client = _get_langfuse()
+        logger.info("agent-memory: Langfuse tracing enabled")
+except ImportError:
+    pass
+
+
+def traced(fn):
+    """Decorator: wrap with Langfuse @observe if available, otherwise passthrough."""
+    if not _langfuse_ok:
+        return fn
+    import functools
+    observed = _observe(as_type="tool")(fn)
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        project = kwargs.get("project", "")
+        session_id = kwargs.get("session_id", "")
+        if project and _langfuse_client:
+            _langfuse_client.update_current_span(
+                metadata={"project": project, "session_id": session_id},
+            )
+        return await observed(*args, **kwargs)
+    return wrapper
+
+
 # ── Server ────────────────────────────────────────────────────────────────────
 
 from fastmcp import FastMCP  # noqa: E402
@@ -123,6 +157,7 @@ mcp = FastMCP("agent-memory")
 
 
 @mcp.tool()
+@traced
 async def log_event(
     event_type: str,
     project: str,
@@ -172,6 +207,7 @@ async def log_event(
 
 
 @mcp.tool()
+@traced
 async def create_note(
     content: str,
     project: str,
@@ -252,6 +288,7 @@ async def create_note(
 
 
 @mcp.tool()
+@traced
 async def query_notes(
     project: str,
     tags: list[str] | None = None,
@@ -308,6 +345,7 @@ async def query_notes(
 
 
 @mcp.tool()
+@traced
 async def search_similar(
     query: str,
     project: str,
@@ -356,6 +394,7 @@ async def search_similar(
 
 
 @mcp.tool()
+@traced
 async def query_entity(
     name: str,
     project: str,
@@ -421,6 +460,7 @@ async def query_entity(
 
 
 @mcp.tool()
+@traced
 async def recent_events(
     project: str,
     event_type: str | None = None,
@@ -475,6 +515,7 @@ async def recent_events(
 
 
 @mcp.tool()
+@traced
 async def query_session(
     session_id: str,
     project: str,

@@ -99,6 +99,9 @@ services:
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8330"
       OLLAMA_API_BASE: http://ollama:11434
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     ports:
       - "${MNEMON_MCP_PORT:-8330}:8330"
     command: ["uv", "run", "python", "-m", "agent_memory.server.mcp_server"]
