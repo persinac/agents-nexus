@@ -117,14 +117,14 @@ async def _embed(text: str) -> list[float] | None:
 
 _langfuse_ok = False
 _langfuse_client = None
-try:
-    if os.environ.get("LANGFUSE_SECRET_KEY"):
+if os.environ.get("LANGFUSE_SECRET_KEY"):
+    try:
         from langfuse import observe as _observe, get_client as _get_langfuse
-        _langfuse_ok = True
         _langfuse_client = _get_langfuse()
-        logger.info("agent-memory: Langfuse tracing enabled")
-except ImportError:
-    pass
+        _langfuse_ok = True
+        logger.warning("agent-memory: Langfuse tracing enabled")
+    except Exception as exc:
+        logger.warning("agent-memory: Langfuse init failed: %s", exc)
 
 
 def traced(fn):
