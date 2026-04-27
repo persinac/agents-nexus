@@ -154,6 +154,15 @@ NODEOF
 }
 setup_mcp_config
 
+# Symlink skills to ~/.claude/skills so they're available in all projects
+mkdir -p "$HOME/.claude/skills"
+for skill_dir in "$NEXUS_DIR"/skills/*/; do
+  [ -d "$skill_dir" ] || continue
+  name=$(basename "$skill_dir")
+  ln -sf "$skill_dir" "$HOME/.claude/skills/$name"
+  echo "  Linked skill: $name"
+done
+
 # Source bashrc
 MARKER="# agent-orchestration"
 if ! grep -qF "$MARKER" "$HOME/.bashrc" 2>/dev/null; then

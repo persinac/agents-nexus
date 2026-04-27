@@ -191,4 +191,13 @@ EOF
 
 setup_mcp_config
 
+# Symlink skills to ~/.claude/skills so they're available in all projects
+mkdir -p "$HOME/.claude/skills"
+for skill_dir in "$NEXUS_DIR"/skills/*/; do
+  [ -d "$skill_dir" ] || continue
+  name=$(basename "$skill_dir")
+  ln -sf "$skill_dir" "$HOME/.claude/skills/$name"
+  echo "  Linked skill: $name"
+done
+
 echo "Done. Reload with: tmux source ~/.tmux.conf"
