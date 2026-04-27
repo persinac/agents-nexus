@@ -119,7 +119,7 @@ _langfuse_ok = False
 _langfuse_client = None
 if os.environ.get("LANGFUSE_SECRET_KEY"):
     try:
-        from langfuse import observe as _observe, get_client as _get_langfuse
+        from langfuse import get_client as _get_langfuse
         _langfuse_client = _get_langfuse()
         _langfuse_ok = True
         logger.warning("agent-memory: Langfuse tracing enabled")
@@ -127,17 +127,17 @@ if os.environ.get("LANGFUSE_SECRET_KEY"):
         logger.warning("agent-memory: Langfuse init failed: %s", exc)
 
 
-def traced(fn):
-    """Decorator: wrap with Langfuse @observe. Preserves original signature for FastMCP."""
-    if not _langfuse_ok:
-        return fn
-    return _observe(as_type="tool")(fn)
-
-
-def _lf_meta(**kwargs):
-    """Update current Langfuse span with project/session metadata. No-op if disabled."""
-    if _langfuse_ok and _langfuse_client:
-        _langfuse_client.update_current_span(metadata=kwargs)
+def _lf_trace(name: str, **kwargs):
+    """Log a tool invocation to Langfuse. No-op if disabled."""
+    if not _langfuse_ok or not _langfuse_client:
+        return
+    try:
+        with _langfuse_client.start_as_current_observation(
+            name=name, as_type="tool", input=kwargs, metadata=kwargs,
+        ):
+            pass
+    except Exception:
+        pass
 
 
 # ── Server ────────────────────────────────────────────────────────────────────
@@ -151,7 +151,6 @@ mcp = FastMCP("agent-memory")
 
 
 @mcp.tool()
-@traced
 async def log_event(
     event_type: str,
     project: str,
@@ -176,7 +175,7 @@ async def log_event(
     agent_slot: tmux window index (from the agent registry)
     session_id: Claude session ID if available
     """
-    _lf_meta(project=project, session_id=session_id, event_type=event_type)
+    _lf_trace("log_event", project=project, session_id=session_id, event_type=event_type)
     pool = await _get_pool()
     event_id = uuid.uuid4().hex[:12]
     async with pool.connection() as conn, conn.cursor() as cur:
@@ -202,7 +201,6 @@ async def log_event(
 
 
 @mcp.tool()
-@traced
 async def create_note(
     content: str,
     project: str,
@@ -231,7 +229,7 @@ async def create_note(
                 the same session with temporal edges, so the session's knowledge
                 arc is traversable. Pass CLAUDE_SESSION_ID env var if available.
     """
-    _lf_meta(project=project, session_id=session_id)
+    _lf_trace("create_note", project=project, session_id=session_id)
     from agent_memory.entity_extraction import extract_entities
     from agent_memory.tags import normalize_tags
     from agent_memory.types import MemoryNode
@@ -284,7 +282,6 @@ async def create_note(
 
 
 @mcp.tool()
-@traced
 async def query_notes(
     project: str,
     tags: list[str] | None = None,
@@ -297,7 +294,7 @@ async def query_notes(
 
     Results are ordered most-recent first.
     """
-    _lf_meta(project=project, tags=tags)
+    _lf_trace("query_notes", project=project, tags=tags)
     store = await _get_store()
     pool = await _get_pool()
     if tags:
@@ -342,7 +339,6 @@ async def query_notes(
 
 
 @mcp.tool()
-@traced
 async def search_similar(
     query: str,
     project: str,
@@ -359,7 +355,7 @@ async def search_similar(
     Falls back to recency-sorted results if embeddings are unavailable
     (no OPENAI_API_KEY set, or no notes have been embedded yet).
     """
-    _lf_meta(project=project, query=query)
+    _lf_trace("search_similar", project=project, query=query)
     embedding = await _embed(query)
     if embedding is None:
         # Graceful degradation: return most recent notes with a warning
@@ -392,7 +388,6 @@ async def search_similar(
 
 
 @mcp.tool()
-@traced
 async def query_entity(
     name: str,
     project: str,
@@ -409,7 +404,7 @@ async def query_entity(
     An empty notes list means the entity has been seen but no notes reference it yet.
     A null entity means the name has never been recorded — returns an empty notes list.
     """
-    _lf_meta(project=project, entity=name)
+    _lf_trace("query_entity", project=project, entity=name)
     # Entity metadata
     store = await _get_store()
     pool = await _get_pool()
@@ -459,7 +454,6 @@ async def query_entity(
 
 
 @mcp.tool()
-@traced
 async def recent_events(
     project: str,
     event_type: str | None = None,
@@ -474,7 +468,7 @@ async def recent_events(
 
     event_type filter is optional. Results are newest first.
     """
-    _lf_meta(project=project, event_type=event_type)
+    _lf_trace("recent_events", project=project, event_type=event_type)
     params: list[Any] = [project, hours]
     type_clause = ""
     if event_type:
@@ -515,7 +509,6 @@ async def recent_events(
 
 
 @mcp.tool()
-@traced
 async def query_session(
     session_id: str,
     project: str,
@@ -527,7 +520,7 @@ async def query_session(
 
     session_id: the Claude session ID (CLAUDE_SESSION_ID env var)
     """
-    _lf_meta(project=project, session_id=session_id)
+    _lf_trace("query_session", project=project, session_id=session_id)
     pool = await _get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
