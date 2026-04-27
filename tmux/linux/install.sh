@@ -117,67 +117,40 @@ EOF
   echo "Merged claude-settings.json into ~/.claude/settings.json (backup at settings.json.bak)"
 fi
 
-# Set up MCP config
+# Merge MCP servers into ~/.claude/settings.json
 setup_mcp_config() {
-  local config_file="$HOME/.claude/claude_code_config.json"
-
+  local settings_file="$HOME/.claude/settings.json"
   local agent_memory_dir="$NEXUS_DIR/mnemon"
   local agent_memory_python="$agent_memory_dir/.venv/bin/python3"
 
   if [ ! -x "$agent_memory_python" ]; then
-    echo "  WARNING: mnemon venv not found at $agent_memory_python — run 'uv venv && uv pip install -e .' in mnemon/ first"
+    echo "  WARNING: mnemon venv not found at $agent_memory_python — run 'uv sync --extra mcp' in mnemon/ first"
   fi
 
   # On Linux (mini PC), Spark runs in Docker — use SSE transport.
   # On Mac, Spark is a CLI binary — use stdio transport.
-  local mcp_config
   local spark_cmd
   spark_cmd=$(command -v spark 2>/dev/null || echo "")
 
-  if [ -n "$spark_cmd" ]; then
-    mcp_config=$(cat <<MCPEOF
-{
-  "mcpServers": {
-    "spark": {
-      "command": "$spark_cmd",
-      "args": ["serve"]
-    },
-    "agent-memory": {
-      "command": "$agent_memory_python",
-      "args": ["-m", "agent_memory.server.mcp_server"],
-      "cwd": "$agent_memory_dir"
-    }
-  }
+  cp "$settings_file" "${settings_file}.mcp-bak"
+  node - "$settings_file" "$agent_memory_python" "$agent_memory_dir" "$spark_cmd" <<'NODEOF'
+const [,, settingsPath, memoryPython, memoryDir, sparkCmd] = process.argv;
+const fs = require('fs');
+const cfg = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+cfg.mcpServers ??= {};
+if (sparkCmd) {
+  cfg.mcpServers.spark = { command: sparkCmd, args: ["serve"] };
+} else {
+  cfg.mcpServers.spark = { type: "sse", url: "http://localhost:8343/sse" };
 }
-MCPEOF
-)
-  else
-    mcp_config=$(cat <<MCPEOF
-{
-  "mcpServers": {
-    "spark": {
-      "type": "sse",
-      "url": "http://localhost:8343/sse"
-    },
-    "agent-memory": {
-      "command": "$agent_memory_python",
-      "args": ["-m", "agent_memory.server.mcp_server"],
-      "cwd": "$agent_memory_dir"
-    }
-  }
-}
-MCPEOF
-)
-  fi
-
-  if [ ! -f "$config_file" ]; then
-    echo "$mcp_config" > "$config_file"
-    echo "  Created ~/.claude/claude_code_config.json"
-  else
-    cp "$config_file" "${config_file}.bak"
-    echo "$mcp_config" > "$config_file"
-    echo "  Updated ~/.claude/claude_code_config.json (backup at claude_code_config.json.bak)"
-  fi
+cfg.mcpServers["agent-memory"] = {
+  command: memoryPython,
+  args: ["-m", "agent_memory.server.mcp_server"],
+  cwd: memoryDir,
+};
+fs.writeFileSync(settingsPath, JSON.stringify(cfg, null, 2) + '\n');
+NODEOF
+  echo "  Merged MCP servers (spark + agent-memory) into ~/.claude/settings.json"
 }
 setup_mcp_config
 
