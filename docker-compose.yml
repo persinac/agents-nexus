@@ -2,7 +2,7 @@ name: agents-nexus
 
 # Knowledge stack: Ollama, Spark, mnemon flush daemon, dashboard UI.
 # Postgres is cloud-hosted (DigitalOcean) — set DATABASE_URL in .env.
-# Arbiter runs natively (needs tmux socket) — start with: task arbiter:start
+# Arbiter runs as a systemd user service (needs host tmux socket)
 #
 # First-time setup:
 #   cp .env.example .env && $EDITOR .env

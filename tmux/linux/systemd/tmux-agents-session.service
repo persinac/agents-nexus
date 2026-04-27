@@ -1,0 +1,12 @@
+[Unit]
+Description=Create tmux agents session (lightweight, no Claude processes)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/tmux new-session -d -s agents
+ExecStop=/usr/bin/tmux kill-session -t agents
+Environment=HOME=__HOME__
+
+[Install]
+WantedBy=default.target

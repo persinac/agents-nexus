@@ -1,5 +1,5 @@
 [Unit]
-Description=agents-nexus stack (arbiter + mnemon)
+Description=agents-nexus stack (docker compose + mnemon)
 After=network.target docker.service
 
 [Service]

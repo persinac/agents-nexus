@@ -105,20 +105,19 @@ tasks:
   # =============================================================================
 
   kill:
-    desc: Kill arbiter and mnemon MCP server (dashboard runs in Docker)
+    desc: Kill mnemon MCP server (arbiter runs via systemd, dashboard in Docker)
     cmds:
-      - pkill -f "agents-nexus/arbiter/index.js" || true
       - pkill -f "agent_memory.server.mcp_server" || true
-      - echo "All services stopped."
+      - echo "Mnemon stopped. Arbiter: systemctl --user stop arbiter"
 
   up:
-    desc: Start docker stack + arbiter and mnemon in the background (logs in /tmp)
+    desc: Start docker stack + mnemon in the background (arbiter runs via systemd)
     cmds:
       - docker compose up -d
       - cmd: |
-          nohup bash -c 'cd {{.TASKFILE_DIR}}/arbiter && node --watch index.js' > /tmp/arbiter.log 2>&1 &
           nohup bash -c 'cd {{.TASKFILE_DIR}}/mnemon && uv run agent-memory-serve' > /tmp/mnemon.log 2>&1 &
-          echo "Started. Logs: /tmp/arbiter.log  /tmp/mnemon.log"
+          echo "Started mnemon. Log: /tmp/mnemon.log"
+          echo "Arbiter runs via systemd: systemctl --user status arbiter"
 
   restart:
     desc: Kill and restart all services (arbiter, dashboard, mnemon)
