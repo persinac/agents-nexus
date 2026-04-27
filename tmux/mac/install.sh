@@ -204,4 +204,25 @@ for skill_dir in "$NEXUS_DIR"/skills/*/; do
   echo "  Linked skill: $name"
 done
 
+# Symlink commands to ~/.claude/commands (e.g. opsx slash commands)
+mkdir -p "$HOME/.claude/commands"
+for cmd_dir in "$NEXUS_DIR"/commands/*/; do
+  [ -d "$cmd_dir" ] || continue
+  name=$(basename "$cmd_dir")
+  ln -sf "$cmd_dir" "$HOME/.claude/commands/$name"
+  echo "  Linked command: $name"
+done
+
+# Install OpenSpec CLI if not present
+if ! command -v openspec &>/dev/null; then
+  if command -v npm &>/dev/null; then
+    npm install -g @fission-ai/openspec@latest
+    echo "  Installed OpenSpec CLI"
+  else
+    echo "  WARNING: npm not found — install OpenSpec manually: npm install -g @fission-ai/openspec"
+  fi
+else
+  echo "  OpenSpec CLI already installed: $(openspec --version 2>/dev/null || echo 'ok')"
+fi
+
 echo "Done. Reload with: tmux source ~/.tmux.conf"
