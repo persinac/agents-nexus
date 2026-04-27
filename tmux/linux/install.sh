@@ -67,11 +67,14 @@ else
 fi
 
 # Install systemd user units
+# Resolve real node binary path (fnm uses per-shell shims that systemd can't see)
+NODE_BIN="$(readlink -f "$(command -v node 2>/dev/null)" 2>/dev/null || echo "/usr/bin/node")"
+
 mkdir -p "$HOME/.config/systemd/user"
 for unit in "$SCRIPT_DIR"/systemd/*.service "$SCRIPT_DIR"/systemd/*.timer; do
   [ -f "$unit" ] || continue
   name=$(basename "$unit")
-  sed -e "s|__HOME__|$HOME|g" -e "s|__AGENTS_NEXUS_DIR__|$NEXUS_DIR|g" \
+  sed -e "s|__HOME__|$HOME|g" -e "s|__AGENTS_NEXUS_DIR__|$NEXUS_DIR|g" -e "s|__NODE_BIN__|$NODE_BIN|g" \
     "$unit" > "$HOME/.config/systemd/user/$name"
   systemctl --user enable "$name" 2>/dev/null || true
   if [[ "$name" == *.timer ]]; then
