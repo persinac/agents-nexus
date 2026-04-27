@@ -14,6 +14,7 @@ Tools:
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -114,30 +115,36 @@ async def _embed(text: str) -> list[float] | None:
 
 # ── Langfuse observability ────────────────────────────────────────────────────
 # Enabled when LANGFUSE_SECRET_KEY is set. No-op otherwise.
+# Uses @observe decorator for OOTB tracing — wraps tool functions so inputs,
+# outputs, and timing are captured automatically with proper trace hierarchy.
 
-_langfuse_ok = False
-_langfuse_client = None
+_langfuse_observe = None
 if os.environ.get("LANGFUSE_SECRET_KEY"):
     try:
-        from langfuse import get_client as _get_langfuse
-        _langfuse_client = _get_langfuse()
-        _langfuse_ok = True
+        from langfuse import observe as _langfuse_observe_import
+        _langfuse_observe = _langfuse_observe_import
         logger.warning("agent-memory: Langfuse tracing enabled")
     except Exception as exc:
         logger.warning("agent-memory: Langfuse init failed: %s", exc)
 
 
-def _lf_trace(name: str, **kwargs):
-    """Log a tool invocation to Langfuse. No-op if disabled."""
-    if not _langfuse_ok or not _langfuse_client:
-        return
-    try:
-        with _langfuse_client.start_as_current_observation(
-            name=name, as_type="tool", input=kwargs, metadata=kwargs,
-        ):
-            pass
-    except Exception:
-        pass
+def _observe(as_type: str = "tool"):
+    """Return @observe decorator with session_id wiring. No-op if Langfuse disabled."""
+    if _langfuse_observe is None:
+        return lambda fn: fn
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def with_session(*args, **kwargs):
+            session_id = kwargs.get("session_id")
+            if session_id:
+                from opentelemetry import trace as _otel_trace
+                _otel_trace.get_current_span().set_attribute("langfuse.session.id", session_id)
+            return await fn(*args, **kwargs)
+
+        return _langfuse_observe(as_type=as_type)(with_session)
+
+    return decorator
 
 
 # ── Server ────────────────────────────────────────────────────────────────────
@@ -151,6 +158,7 @@ mcp = FastMCP("agent-memory")
 
 
 @mcp.tool()
+@_observe()
 async def log_event(
     event_type: str,
     project: str,
@@ -175,7 +183,6 @@ async def log_event(
     agent_slot: tmux window index (from the agent registry)
     session_id: Claude session ID if available
     """
-    _lf_trace("log_event", project=project, session_id=session_id, event_type=event_type)
     pool = await _get_pool()
     event_id = uuid.uuid4().hex[:12]
     async with pool.connection() as conn, conn.cursor() as cur:
@@ -201,6 +208,7 @@ async def log_event(
 
 
 @mcp.tool()
+@_observe()
 async def create_note(
     content: str,
     project: str,
@@ -229,7 +237,6 @@ async def create_note(
                 the same session with temporal edges, so the session's knowledge
                 arc is traversable. Pass CLAUDE_SESSION_ID env var if available.
     """
-    _lf_trace("create_note", project=project, session_id=session_id)
     from agent_memory.entity_extraction import extract_entities
     from agent_memory.tags import normalize_tags
     from agent_memory.types import MemoryNode
@@ -282,6 +289,7 @@ async def create_note(
 
 
 @mcp.tool()
+@_observe()
 async def query_notes(
     project: str,
     tags: list[str] | None = None,
@@ -294,7 +302,6 @@ async def query_notes(
 
     Results are ordered most-recent first.
     """
-    _lf_trace("query_notes", project=project, tags=tags)
     store = await _get_store()
     pool = await _get_pool()
     if tags:
@@ -339,6 +346,7 @@ async def query_notes(
 
 
 @mcp.tool()
+@_observe()
 async def search_similar(
     query: str,
     project: str,
@@ -355,7 +363,6 @@ async def search_similar(
     Falls back to recency-sorted results if embeddings are unavailable
     (no OPENAI_API_KEY set, or no notes have been embedded yet).
     """
-    _lf_trace("search_similar", project=project, query=query)
     embedding = await _embed(query)
     if embedding is None:
         # Graceful degradation: return most recent notes with a warning
@@ -388,6 +395,7 @@ async def search_similar(
 
 
 @mcp.tool()
+@_observe()
 async def query_entity(
     name: str,
     project: str,
@@ -404,7 +412,6 @@ async def query_entity(
     An empty notes list means the entity has been seen but no notes reference it yet.
     A null entity means the name has never been recorded — returns an empty notes list.
     """
-    _lf_trace("query_entity", project=project, entity=name)
     # Entity metadata
     store = await _get_store()
     pool = await _get_pool()
@@ -454,6 +461,7 @@ async def query_entity(
 
 
 @mcp.tool()
+@_observe()
 async def recent_events(
     project: str,
     event_type: str | None = None,
@@ -468,7 +476,6 @@ async def recent_events(
 
     event_type filter is optional. Results are newest first.
     """
-    _lf_trace("recent_events", project=project, event_type=event_type)
     params: list[Any] = [project, hours]
     type_clause = ""
     if event_type:
@@ -509,6 +516,7 @@ async def recent_events(
 
 
 @mcp.tool()
+@_observe()
 async def query_session(
     session_id: str,
     project: str,
@@ -520,7 +528,6 @@ async def query_session(
 
     session_id: the Claude session ID (CLAUDE_SESSION_ID env var)
     """
-    _lf_trace("query_session", project=project, session_id=session_id)
     pool = await _get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
