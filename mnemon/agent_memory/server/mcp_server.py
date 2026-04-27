@@ -34,15 +34,26 @@ _pool_lock = None  # asyncio.Lock — created lazily (no event loop at import ti
 
 
 def _db_url() -> str:
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
     url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not url:
         raise RuntimeError(
             "DATABASE_URL environment variable is required. "
             "Set it in the project .env or export it before starting the server."
         )
-    if "sslmode" not in url:
-        sep = "&" if "?" in url else "?"
-        url += f"{sep}sslmode=require"
+    # psycopg rejects non-libpq params (e.g. search_path) in the URI.
+    # Move search_path into the libpq options parameter.
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    if "search_path" in params:
+        schema = params.pop("search_path")[0]
+        existing_opts = params.get("options", [""])[0]
+        params["options"] = [f"{existing_opts} -csearch_path={schema}".strip()]
+    if "sslmode" not in params:
+        params["sslmode"] = ["require"]
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    url = urlunparse(parsed._replace(query=new_query))
     return url
 
 
