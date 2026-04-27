@@ -121,23 +121,17 @@ EOF
 fi
 
 # Merge MCP servers into ~/.claude/settings.json
+# Both Spark and agent-memory run as always-on Docker services with SSE transport.
 setup_mcp_config() {
   local settings_file="$HOME/.claude/settings.json"
-  local agent_memory_dir="$NEXUS_DIR/mnemon"
-  local agent_memory_python="$agent_memory_dir/.venv/bin/python3"
 
-  if [ ! -x "$agent_memory_python" ]; then
-    echo "  WARNING: mnemon venv not found at $agent_memory_python — run 'uv sync --extra mcp' in mnemon/ first"
-  fi
-
-  # On Linux (mini PC), Spark runs in Docker — use SSE transport.
-  # On Mac, Spark is a CLI binary — use stdio transport.
+  # On Mac, Spark is a CLI binary — use stdio. On Linux, both are Docker SSE.
   local spark_cmd
   spark_cmd=$(command -v spark 2>/dev/null || echo "")
 
   cp "$settings_file" "${settings_file}.mcp-bak"
-  node - "$settings_file" "$agent_memory_python" "$agent_memory_dir" "$spark_cmd" <<'NODEOF'
-const [,, settingsPath, memoryPython, memoryDir, sparkCmd] = process.argv;
+  node - "$settings_file" "$spark_cmd" <<'NODEOF'
+const [,, settingsPath, sparkCmd] = process.argv;
 const fs = require('fs');
 const cfg = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
 cfg.mcpServers ??= {};
@@ -146,11 +140,7 @@ if (sparkCmd) {
 } else {
   cfg.mcpServers.spark = { type: "sse", url: "http://localhost:8343/sse" };
 }
-cfg.mcpServers["agent-memory"] = {
-  command: memoryPython,
-  args: ["-m", "agent_memory.server.mcp_server"],
-  cwd: memoryDir,
-};
+cfg.mcpServers["agent-memory"] = { type: "sse", url: "http://localhost:8330/sse" };
 fs.writeFileSync(settingsPath, JSON.stringify(cfg, null, 2) + '\n');
 NODEOF
   echo "  Merged MCP servers (spark + agent-memory) into ~/.claude/settings.json"

@@ -504,7 +504,14 @@ async def query_session(
 
 
 def main():
-    """Start the MCP server (stdio transport — Claude Code spawns this process)."""
+    """Start the MCP server.
+
+    Transport is selected via MCP_TRANSPORT env var:
+      - "stdio"  (default) — Claude Code spawns this process
+      - "sse"              — long-running HTTP server (Docker / systemd)
+
+    SSE mode reads MCP_HOST (default 0.0.0.0) and MCP_PORT (default 8330).
+    """
     # Load .env from project root if present
     _env_path = Path(__file__).parent.parent.parent / ".env"
     if _env_path.exists():
@@ -515,7 +522,14 @@ def main():
             pass  # python-dotenv optional — fall back to env vars already set
 
     logging.basicConfig(level=logging.WARNING)
-    mcp.run(transport="stdio")
+
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "sse":
+        host = os.environ.get("MCP_HOST", "0.0.0.0")
+        port = int(os.environ.get("MCP_PORT", "8330"))
+        mcp.run(transport="sse", host=host, port=port)
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
