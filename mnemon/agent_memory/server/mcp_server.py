@@ -136,10 +136,15 @@ def _observe(as_type: str = "tool"):
     def decorator(fn):
         @functools.wraps(fn)
         async def with_session(*args, **kwargs):
+            from opentelemetry import trace as _otel_trace
+            span = _otel_trace.get_current_span()
+            # Set the trace name — otherwise it inherits from the upstream
+            # FastMCP/SSE span (which Langfuse doesn't export) and shows
+            # as "undefined" in the UI.
+            span.set_attribute("langfuse.trace.name", fn.__name__)
             session_id = kwargs.get("session_id")
             if session_id:
-                from opentelemetry import trace as _otel_trace
-                _otel_trace.get_current_span().set_attribute("langfuse.session.id", session_id)
+                span.set_attribute("langfuse.session.id", session_id)
             return await fn(*args, **kwargs)
 
         return _langfuse_observe(as_type=as_type)(with_session)
