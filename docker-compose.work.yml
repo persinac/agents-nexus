@@ -136,6 +136,31 @@ services:
       postgres:
         condition: service_healthy
 
+  # mnemon MCP server — always-on SSE endpoint for agent-memory tools
+  mnemon-mcp:
+    build:
+      context: .
+      dockerfile: docker/mnemon.Dockerfile
+    container_name: nexus-mnemon-mcp
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agents}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-agents}?sslmode=disable&search_path=agents
+      MCP_TRANSPORT: sse
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8330"
+      OLLAMA_API_BASE: http://ollama:11434
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    ports:
+      - "${MNEMON_MCP_PORT:-8330}:8330"
+    command: ["uv", "run", "python", "-m", "agent_memory.server.mcp_server"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
   # ── Dashboard ────────────────────────────────────────────────────────────
 
   dashboard:
@@ -146,6 +171,26 @@ services:
     restart: always
     ports:
       - "${DASHBOARD_PORT:-8421}:80"
+
+  # ── LLM Gateway ──────────────────────────────────────────────────────────
+
+  # LiteLLM Proxy — Anthropic-compatible passthrough at /v1/messages.
+  # Claude Code points ANTHROPIC_BASE_URL here so every turn is logged to Langfuse.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: nexus-litellm
+    restart: always
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY in .env}
+      ANTHROPIC_API_BASE: ${ANTHROPIC_API_BASE:-https://api.anthropic.com}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: http://langfuse-web:3000
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
 
   # ── Langfuse (optional observability) ────────────────────────────────────
   # Start with: docker compose -f docker-compose.work.yml --profile langfuse up -d

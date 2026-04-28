@@ -121,6 +121,26 @@ services:
     ports:
       - "${DASHBOARD_PORT:-8421}:80"
 
+  # ── LLM Gateway ──────────────────────────────────────────────────────────
+
+  # LiteLLM Proxy — Anthropic-compatible passthrough at /v1/messages.
+  # Claude Code points ANTHROPIC_BASE_URL here so every turn is logged to Langfuse.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: nexus-litellm
+    restart: always
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY in .env}
+      ANTHROPIC_API_BASE: ${ANTHROPIC_API_BASE:-https://api.anthropic.com}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: http://langfuse-web:3000
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+
   # ── Langfuse (optional observability) ────────────────────────────────────
   # Only starts with the "langfuse" profile — plain `task up` won't touch these.
   # To start:  task langfuse:up

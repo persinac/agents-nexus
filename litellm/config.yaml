@@ -1,0 +1,11 @@
+model_list:
+  - model_name: "*"
+    litellm_params:
+      model: "anthropic/*"
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: os.environ/ANTHROPIC_API_BASE
+
+litellm_settings:
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+  drop_params: true
