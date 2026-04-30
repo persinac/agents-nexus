@@ -187,6 +187,9 @@ services:
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_HOST: http://langfuse-web:3000
+      # SDK default rejects items > 1 MB. Self-hosted Langfuse accepts much
+      # larger; bump to 2 MB so our 750 KB-per-field _preview cap leaves headroom.
+      LANGFUSE_MAX_EVENT_SIZE_BYTES: "2000000"
     ports:
       - "${PROXY_PORT:-4000}:4000"
 

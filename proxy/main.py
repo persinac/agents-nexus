@@ -290,21 +290,24 @@ async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: st
         log.warning("langfuse stream log failed: %s", e)
 
 
-LANGFUSE_CAP = 2 * 1024 * 1024   # 2 MB ingest limit
-HEAD_BYTES = 1024 * 1024         # keep first 1 MB
-TAIL_BYTES = 999 * 1024          # keep last 999 KB
+# Langfuse rejects whole items > ~2 MB (input + output + envelope). Cap each
+# field at 750 KB so a worst-case input+output stays under ~1.5 MB; the SDK's
+# placeholder ("<truncated due to size exceeding limit>") never kicks in.
+LANGFUSE_FIELD_CAP = 750 * 1024
+HEAD_BYTES = 450 * 1024
+TAIL_BYTES = 300 * 1024
+TRUNC_MARKER = "\n... [truncated by proxy] ...\n"
 
 
 def _preview(value) -> str:
-    """Render value as a string. If it'd exceed the Langfuse 2 MB cap, keep
-    the first 1 MB and last 999 KB with a marker between them."""
+    """Render value as a string. If oversize, keep first 450 KB + last 300 KB."""
     s = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     data = s.encode("utf-8")
-    if len(data) <= LANGFUSE_CAP:
+    if len(data) <= LANGFUSE_FIELD_CAP:
         return s
     head = data[:HEAD_BYTES].decode("utf-8", errors="replace")
     tail = data[-TAIL_BYTES:].decode("utf-8", errors="replace")
-    return f"{head}\n...\n{tail}"
+    return f"{head}{TRUNC_MARKER}{tail}"
 
 
 def _emit_trace(
