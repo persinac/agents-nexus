@@ -87,6 +87,22 @@ tasks:
           PSQL_URL=$(echo "$DATABASE_URL" | sed 's/[&?]search_path=[^&]*//')
           PGOPTIONS="-c search_path=agents,public" psql "$PSQL_URL" -f migrations/001_initial_schema.sql
 
+  mnemon:cloud-migrate:
+    desc: Migrate memory_nodes, memory_entities, memory_links from cloud Postgres to local
+    cmds:
+      - cmd: |
+          set -e
+          LOCAL=$(echo "$DATABASE_URL" | sed 's/[&?]search_path=[^&]*//')
+          CLOUD=$(echo "$CLOUD_DATABASE_URL" | sed 's/[&?]search_path=[^&]*//')
+          for table in memory_entities memory_nodes memory_links; do
+            echo "→ migrating agents.$table ..."
+            docker run --rm postgres:15 pg_dump "$CLOUD" \
+              --data-only --table="agents.$table" \
+              --no-owner --no-acl \
+              | PGOPTIONS="-c search_path=agents,public" psql "$LOCAL"
+          done
+          echo "Done."
+
   mnemon:test:
     desc: Run mnemon tests
     dir: mnemon
@@ -105,19 +121,22 @@ tasks:
   # =============================================================================
 
   kill:
-    desc: Kill mnemon MCP server (arbiter runs via systemd, dashboard in Docker)
+    desc: Kill arbiter tmux window and mnemon MCP server
     cmds:
+      - tmux kill-window -t ${TMUX_SESSION:-agents}:arbiter 2>/dev/null || true
       - pkill -f "agent_memory.server.mcp_server" || true
-      - echo "Mnemon stopped. Arbiter: systemctl --user stop arbiter"
 
   up:
-    desc: Start docker stack + mnemon in the background (arbiter runs via systemd)
+    desc: Start docker stack, arbiter (tmux window), and mnemon in the background
     cmds:
       - docker compose up -d
       - cmd: |
+          tmux new-window -d -t "${TMUX_SESSION:-agents}:" -n arbiter "cd {{.TASKFILE_DIR}} && task arbiter:start" 2>/dev/null \
+            || echo "Warning: could not spawn arbiter tmux window — is the '${TMUX_SESSION:-agents}' session running?"
+          echo "Arbiter started in tmux window 'arbiter' (attach: tmux select-window -t ${TMUX_SESSION:-agents}:arbiter)"
+      - cmd: |
           nohup bash -c 'cd {{.TASKFILE_DIR}}/mnemon && uv run agent-memory-serve' > /tmp/mnemon.log 2>&1 &
           echo "Started mnemon. Log: /tmp/mnemon.log"
-          echo "Arbiter runs via systemd: systemctl --user status arbiter"
 
   restart:
     desc: Kill and restart all services (arbiter, dashboard, mnemon)
@@ -127,9 +146,9 @@ tasks:
       - task: up
 
   logs:
-    desc: Tail arbiter and mnemon logs (Ctrl-C to stop)
+    desc: Tail mnemon log (arbiter output is in tmux window 'agents:arbiter')
     cmds:
-      - tail -f /tmp/arbiter.log /tmp/mnemon.log
+      - tail -f /tmp/mnemon.log
 
   # =============================================================================
   # Docker Compose (knowledge stack)
@@ -238,6 +257,16 @@ tasks:
     cmds:
       - uv run scripts/gl-review-queue.py --daily {{.CLI_ARGS}}
 
+  gl:reviews:prune:
+    desc: Remove yourself as reviewer from MRs older than 6mo (--min-age N to override)
+    cmds:
+      - uv run scripts/gl-review-prune.py {{.CLI_ARGS}}
+
+  gl:reviews:prune:dry:
+    desc: Preview stale MRs that would be pruned without making changes
+    cmds:
+      - uv run scripts/gl-review-prune.py --dry-run {{.CLI_ARGS}}
+
   # =============================================================================
   # Nightly pipeline
   # =============================================================================
@@ -318,3 +347,51 @@ tasks:
     cmds:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.gl-reviews.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.gl-reviews.plist
+
+  launchd:install:obs-tag:
+    desc: Install launchd agent to run obs:tag daily at 6:30am (after obs:tidy)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.obs-tag.plist > ~/Library/LaunchAgents/com.agents-nexus.obs-tag.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.obs-tag.plist
+      - echo "Installed — obs:tag runs daily at 6:30am (logs at /tmp/agents-nexus-obs-tag.log)"
+
+  launchd:uninstall:obs-tag:
+    desc: Remove the obs:tag launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.obs-tag.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.obs-tag.plist
+
+  launchd:install:obs-decay:
+    desc: Install launchd agent to run obs:decay weekly on Sundays at noon
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.obs-decay.plist > ~/Library/LaunchAgents/com.agents-nexus.obs-decay.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.obs-decay.plist
+      - echo "Installed — obs:decay runs Sundays at noon (logs at /tmp/agents-nexus-obs-decay.log)"
+
+  launchd:uninstall:obs-decay:
+    desc: Remove the obs:decay launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.obs-decay.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.obs-decay.plist
+
+  launchd:install:gl-reviews-prune:
+    desc: Install launchd agent to prune stale reviewer assignments daily at 4pm
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.gl-reviews-prune.plist > ~/Library/LaunchAgents/com.agents-nexus.gl-reviews-prune.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.gl-reviews-prune.plist
+      - echo "Installed — reviewer prune runs daily at 4pm (logs at /tmp/agents-nexus-gl-reviews-prune.log)"
+
+  launchd:uninstall:gl-reviews-prune:
+    desc: Remove the GitLab reviewer prune launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.gl-reviews-prune.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.gl-reviews-prune.plist

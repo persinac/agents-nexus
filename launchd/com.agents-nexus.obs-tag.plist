@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.obs-tag</string>
+
+    <!-- Run as a login shell so ~/.zprofile is sourced.
+         Guard: skip if more than 30min past scheduled time (laptop was sleeping) -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>cd __AGENTS_NEXUS_DIR__ &amp;&amp; [[ $(date +%H) -eq 6 ]] &amp;&amp; task obs:tag || echo "Skipped — wrong hour on wake"</string>
+    </array>
+
+    <!-- Daily at 06:30, after obs:tidy (06:00) -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>6</integer>
+        <key>Minute</key><integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-obs-tag.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-obs-tag.log</string>
+</dict>
+</plist>

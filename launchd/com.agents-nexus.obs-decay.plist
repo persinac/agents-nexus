@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.obs-decay</string>
+
+    <!-- Run as a login shell so ~/.zprofile is sourced.
+         Guard: skip if more than 30min past scheduled time (laptop was sleeping) -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>cd __AGENTS_NEXUS_DIR__ &amp;&amp; [[ $(date +%H) -eq 12 ]] &amp;&amp; task obs:decay || echo "Skipped — wrong hour on wake"</string>
+    </array>
+
+    <!-- Sundays at 12:00 MT -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key><integer>0</integer>
+        <key>Hour</key><integer>12</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-obs-decay.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-obs-decay.log</string>
+</dict>
+</plist>
