@@ -290,6 +290,23 @@ async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: st
         log.warning("langfuse stream log failed: %s", e)
 
 
+LANGFUSE_CAP = 2 * 1024 * 1024   # 2 MB ingest limit
+HEAD_BYTES = 1024 * 1024         # keep first 1 MB
+TAIL_BYTES = 999 * 1024          # keep last 999 KB
+
+
+def _preview(value) -> str:
+    """Render value as a string. If it'd exceed the Langfuse 2 MB cap, keep
+    the first 1 MB and last 999 KB with a marker between them."""
+    s = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    data = s.encode("utf-8")
+    if len(data) <= LANGFUSE_CAP:
+        return s
+    head = data[:HEAD_BYTES].decode("utf-8", errors="replace")
+    tail = data[-TAIL_BYTES:].decode("utf-8", errors="replace")
+    return f"{head}\n...\n{tail}"
+
+
 def _emit_trace(
     *,
     name: str,
@@ -300,18 +317,19 @@ def _emit_trace(
     metadata: dict,
 ) -> None:
     """Create the trace + child generation with input/output set on both."""
-    messages = body.get("messages")
+    input_preview = _preview(body.get("messages"))
+    output_preview = _preview(output)
     trace = lf.trace(
         name=session_id or "claude-code",
         session_id=session_id,
-        input=messages,
-        output=output,
+        input=input_preview,
+        output=output_preview,
     )
     trace.generation(
         name=name,
         model=body.get("model"),
-        input=messages,
-        output=output,
+        input=input_preview,
+        output=output_preview,
         usage=usage,
         metadata=metadata,
     )
