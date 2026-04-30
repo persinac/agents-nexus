@@ -1,13 +1,14 @@
 # Personal Setup
 
-Local stack: agents-nexus + Langfuse + LiteLLM. LiteLLM upstreams directly to
-Anthropic. Every Claude Code turn flows through LiteLLM and gets logged to
-your self-hosted Langfuse with model, token, cache, and cost fields populated.
+Local stack: agents-nexus + Langfuse + a transparent Anthropic proxy. The proxy
+upstreams directly to Anthropic. Every Claude Code turn flows through it and
+gets logged to your self-hosted Langfuse with model, token, cache, and cost
+fields populated.
 
 ```
-  claude code  ──►  litellm (:4000)  ──►  api.anthropic.com
-                          │
-                          └────────►  langfuse (:3000)
+  claude code  ──►  proxy (:4000)  ──►  api.anthropic.com
+                         │
+                         └────────►  langfuse (:3000)
 ```
 
 ## Prerequisites
@@ -65,24 +66,24 @@ Or via `task`: `task up && task langfuse:up && task ollama:init`.
 Containers you should see:
 
 - `nexus-ollama`, `nexus-spark`, `nexus-mnemon-mcp`, `nexus-mnemon-flush`,
-  `nexus-dashboard`, `nexus-litellm`
+  `nexus-dashboard`, `nexus-proxy`
 - `langfuse-web`, `langfuse-worker`, `langfuse-postgres`, `langfuse-redis`,
   `langfuse-clickhouse`, `langfuse-minio`
 
-## 3. Wire Langfuse keys into LiteLLM
+## 3. Wire Langfuse keys into the proxy
 
 1. Open `http://localhost:3000`. Create a user, then create a project.
 2. Project Settings → **API Keys** → **Create new key**.
 3. Copy the `pk-lf-...` value into `.env` as `LANGFUSE_PUBLIC_KEY`, and the
    `sk-lf-...` value as `LANGFUSE_SECRET_KEY`.
-4. Recreate LiteLLM so it picks up the new env:
+4. Recreate the proxy so it picks up the new env:
 
 ```bash
-docker compose up -d --force-recreate litellm
+docker compose up -d --force-recreate proxy
 ```
 
-In `docker logs nexus-litellm` you should see
-`Initialized Success Callbacks - ['langfuse']`.
+`docker logs nexus-proxy` should show the FastAPI startup line and no errors
+on subsequent /v1/messages traffic.
 
 ## 4. Verify end-to-end
 
@@ -101,20 +102,20 @@ curl -s http://localhost:4000/v1/messages \
   }'
 ```
 
-Wait ~10 seconds, refresh Langfuse — a trace named `litellm-anthropic_messages`
-should appear with model, token counts, and cost.
+Wait ~10 seconds, refresh Langfuse — a trace named `claude-code` should
+appear with model, token counts, and cost.
 
-## 5. Route Claude Code through LiteLLM
+## 5. Route Claude Code through the proxy
 
 Add this to your shell init for the launching shell — `~/.tmux/env.sh` if you
 use the included tmux launchers, or `~/.zshrc` / `~/.bashrc` otherwise:
 
 ```bash
-# Route Anthropic API through local LiteLLM when reachable. Falls through to
+# Route Anthropic API through the local proxy when reachable. Falls through to
 # direct Anthropic if the gateway is down so claude keeps working.
-PERSONAL_LITELLM_URL="${PERSONAL_LITELLM_URL:-http://localhost:4000}"
-if curl -sf -m 0.3 "$PERSONAL_LITELLM_URL/health/liveliness" >/dev/null 2>&1; then
-  export ANTHROPIC_BASE_URL="$PERSONAL_LITELLM_URL"
+PERSONAL_PROXY_URL="${PERSONAL_PROXY_URL:-http://localhost:4000}"
+if curl -sf -m 0.3 "$PERSONAL_PROXY_URL/health/liveliness" >/dev/null 2>&1; then
+  export ANTHROPIC_BASE_URL="$PERSONAL_PROXY_URL"
 else
   unset ANTHROPIC_BASE_URL
 fi
@@ -130,7 +131,7 @@ When the agents-nexus stack runs on a different host than where Claude Code
 launches, override the URL before sourcing the snippet above:
 
 ```bash
-export PERSONAL_LITELLM_URL="http://<host-or-tailscale-ip>:4000"
+export PERSONAL_PROXY_URL="http://<host-or-tailscale-ip>:4000"
 ```
 
 The health check still gates the export, so claude falls back to direct
@@ -138,13 +139,11 @@ Anthropic if the remote host is unreachable.
 
 ## Troubleshooting
 
-- **No trace appears in Langfuse**: Check `docker logs nexus-litellm` for
-  `Initialized Success Callbacks - ['langfuse']`. If missing, the
-  `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` env vars aren't set in the
-  container — recreate it after editing `.env`.
+- **No trace appears in Langfuse**: Check `docker logs nexus-proxy` for
+  langfuse-related warnings. If `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`
+  aren't set in the container, recreate it after editing `.env`.
 - **Trace is named `undefined` in the UI**: applies only to mnemon MCP tool
-  traces, not LiteLLM. The trace name is set via the `langfuse.trace.name`
-  OTel attribute in the wrapper.
+  traces. The proxy sets the trace name via `langfuse.trace.name`.
 - **Port collision** (4000, 3000, 8330, etc.): adjust the matching `*_PORT`
   variable in `.env`.
 - **Container can't reach `langfuse-web`**: services share an implicit

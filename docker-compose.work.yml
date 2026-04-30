@@ -174,23 +174,21 @@ services:
 
   # ── LLM Gateway ──────────────────────────────────────────────────────────
 
-  # LiteLLM Proxy — Anthropic-compatible passthrough at /v1/messages.
-  # Claude Code points ANTHROPIC_BASE_URL here so every turn is logged to Langfuse.
-  litellm:
-    image: ghcr.io/berriai/litellm:main-stable
-    container_name: nexus-litellm
+  # Transparent proxy — passes all headers (including Claude Code OAuth) to
+  # Bifrost unchanged, then logs each /v1/messages call to Langfuse.
+  # Claude Code points ANTHROPIC_BASE_URL here (http://localhost:4000).
+  proxy:
+    build:
+      context: ./proxy
+    container_name: nexus-proxy
     restart: always
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY in .env}
-      ANTHROPIC_API_BASE: ${ANTHROPIC_API_BASE:-https://api.anthropic.com}
+      ANTHROPIC_API_BASE: ${ANTHROPIC_API_BASE:?Set ANTHROPIC_API_BASE in .env}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_HOST: http://langfuse-web:3000
-    volumes:
-      - ./litellm/config.yaml:/app/config.yaml:ro
     ports:
-      - "${LITELLM_PORT:-4000}:4000"
-    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+      - "${PROXY_PORT:-4000}:4000"
 
   # ── Langfuse (optional observability) ────────────────────────────────────
   # Start with: docker compose -f docker-compose.work.yml --profile langfuse up -d
