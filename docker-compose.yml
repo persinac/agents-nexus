@@ -191,6 +191,22 @@ services:
     ports:
       - "${LANGFUSE_MINIO_PORT:-9094}:9000"
 
+  langfuse-minio-init:
+    image: cgr.dev/chainguard/minio
+    profiles: ["langfuse"]
+    container_name: langfuse-minio-init
+    restart: "no"
+    depends_on:
+      langfuse-minio:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sleep 2
+        /usr/bin/mc alias set local http://langfuse-minio:9000 minio miniosecret
+        /usr/bin/mc mb --ignore-existing local/langfuse
+        echo "[langfuse] bucket ready"
+
   langfuse-clickhouse:
     image: clickhouse/clickhouse-server
     profiles: ["langfuse"]
@@ -259,6 +275,8 @@ services:
         condition: service_healthy
       langfuse-clickhouse:
         condition: service_healthy
+      langfuse-minio-init:
+        condition: service_completed_successfully
 
   langfuse-worker:
     image: langfuse/langfuse-worker:3
@@ -307,6 +325,8 @@ services:
         condition: service_healthy
       langfuse-clickhouse:
         condition: service_healthy
+      langfuse-minio-init:
+        condition: service_completed_successfully
 
 volumes:
   ollama-data:
