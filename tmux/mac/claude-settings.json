@@ -56,7 +56,10 @@
       "Bash(env)",
       "Bash(grep *)",
       "Bash(uv run *)",
-      "Bash($HOME/.tmux/agent-send.sh *)"
+      "Bash($HOME/.tmux/agent-send.sh *)",
+      "Bash($HOME/.tmux/agent-registry.sh *)",
+      "mcp__spark__*",
+      "mcp__agent-memory__*"
     ]
   }
 }
