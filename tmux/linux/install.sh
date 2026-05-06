@@ -31,23 +31,23 @@ for script in "$MAC_DIR"/tmux-scripts/*.sh "$MAC_DIR"/tmux-scripts/*.py; do
   fi
 done
 
-# Write machine-specific env (sourced by tmux scripts at runtime)
+# Write machine-specific env (sourced by tmux scripts at runtime).
+# NOTES_DIR is intentionally not seeded — open-claude.sh now resolves
+# CHECKPOINT_DIR first and only falls back to NOTES_DIR for older installs.
 ENV_FILE="$HOME/.tmux/env.sh"
 if [ ! -f "$ENV_FILE" ]; then
   cat > "$ENV_FILE" <<EOF
 REPO_DIR="\${REPO_DIR:-$HOME/repos}"
-NOTES_DIR="\${NOTES_DIR:-$HOME/notes}"
 AGENTS_NEXUS_DIR="\${AGENTS_NEXUS_DIR:-$NEXUS_DIR}"
 EXTRA_REPO_DIRS="\${EXTRA_REPO_DIRS:-}"
 VAULT_DIR="\${VAULT_DIR:-$HOME/vault}"
 CHECKPOINT_DIR="\${CHECKPOINT_DIR:-$HOME/vault/Checkpoints}"
+ANTHROPIC_BASE_URL="\${ANTHROPIC_BASE_URL:-http://localhost:4000}"
+CLAUDE_MODEL="\${CLAUDE_MODEL:-claude-opus-4-7}"
+CLAUDE_EFFORT="\${CLAUDE_EFFORT:-high}"
 EOF
   echo "Created ~/.tmux/env.sh"
 else
-  grep -q "NOTES_DIR" "$ENV_FILE" || {
-    echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/notes}\"" >> "$ENV_FILE"
-    echo "Added NOTES_DIR to ~/.tmux/env.sh"
-  }
   grep -q "AGENTS_NEXUS_DIR" "$ENV_FILE" || {
     echo "AGENTS_NEXUS_DIR=\"\${AGENTS_NEXUS_DIR:-$NEXUS_DIR}\"" >> "$ENV_FILE"
     echo "Added AGENTS_NEXUS_DIR to ~/.tmux/env.sh"
@@ -63,6 +63,18 @@ else
   grep -q "CHECKPOINT_DIR" "$ENV_FILE" || {
     echo "CHECKPOINT_DIR=\"\${CHECKPOINT_DIR:-\$HOME/vault/Checkpoints}\"" >> "$ENV_FILE"
     echo "Added CHECKPOINT_DIR to ~/.tmux/env.sh"
+  }
+  grep -q "ANTHROPIC_BASE_URL" "$ENV_FILE" || {
+    echo "ANTHROPIC_BASE_URL=\"\${ANTHROPIC_BASE_URL:-http://localhost:4000}\"" >> "$ENV_FILE"
+    echo "Added ANTHROPIC_BASE_URL to ~/.tmux/env.sh"
+  }
+  grep -q "CLAUDE_MODEL" "$ENV_FILE" || {
+    echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-7}\"" >> "$ENV_FILE"
+    echo "Added CLAUDE_MODEL to ~/.tmux/env.sh"
+  }
+  grep -q "CLAUDE_EFFORT" "$ENV_FILE" || {
+    echo "CLAUDE_EFFORT=\"\${CLAUDE_EFFORT:-high}\"" >> "$ENV_FILE"
+    echo "Added CLAUDE_EFFORT to ~/.tmux/env.sh"
   }
 fi
 
@@ -122,8 +134,37 @@ fi
 
 # Merge MCP servers into ~/.claude/settings.json
 # Both Spark and agent-memory run as always-on Docker services with SSE transport.
+
+# Probe an HTTP(S) endpoint and report reachability without blocking on SSE
+# connections (which would never close on their own). Returns 0 if the server
+# answered 200, 1 otherwise.
+check_mcp_endpoint() {
+  local url=$1
+  local name=$2
+  local code
+  # curl writes the HTTP code before --max-time fires; on connection failure it
+  # writes "000". The trailing `|| true` keeps a non-zero curl exit (e.g. 28 on
+  # SSE timeout) from triggering set -e. The default-fallback handles the rare
+  # case where curl produces no output at all.
+  code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 2 "$url" 2>/dev/null || true)
+  code="${code:-000}"
+  if [[ "$code" == 2* ]]; then
+    echo "  [ok]   $name reachable at $url (HTTP $code)"
+    return 0
+  else
+    echo "  [warn] $name NOT reachable at $url (HTTP $code) — config will still be written"
+    echo "         Start the agents-nexus stack with: cd $NEXUS_DIR && docker compose up -d"
+    return 1
+  fi
+}
+
 setup_mcp_config() {
   local settings_file="$HOME/.claude/settings.json"
+
+  # Verify the docker MCP services are actually up before wiring them in.
+  echo "Checking agents-nexus MCP service reachability..."
+  check_mcp_endpoint "http://localhost:8343/sse" "Spark MCP" || true
+  check_mcp_endpoint "http://localhost:8330/sse" "agent-memory MCP" || true
 
   # On Mac, Spark is a CLI binary — use stdio. On Linux, both are Docker SSE.
   local spark_cmd
