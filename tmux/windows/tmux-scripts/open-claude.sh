@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Launch claude with recent checkpoint context injected as the opening message.
-# Reads checkpoint notes from $NOTES_DIR for the current repo (past 3 days).
+# Reads checkpoint notes from $CHECKPOINT_DIR (or legacy $NOTES_DIR) for the current repo (past 3 days).
 # Also registers this agent in the shared registry (~/.tmux/registry/) and
 # injects agent communication tool instructions into the startup prompt.
 # Falls back to plain `claude` if no notes found.
 
-NOTES_DIR="${NOTES_DIR:-$HOME/notes}"
+# Resolve checkpoint source — prefer CHECKPOINT_DIR (matches the writer skill);
+# fall back to NOTES_DIR for back-compat with older env.sh installs.
+CHECKPOINT_SRC="${CHECKPOINT_DIR:-${NOTES_DIR:-$HOME/vault/Checkpoints}}"
 REPO_PATH="${PWD}"
 project_slug="${PROJECT_SLUG:-$(basename "$REPO_PATH")}"
 
@@ -49,7 +51,7 @@ if [ -n "$cutoff" ]; then
     if [[ "$date_part" > "$cutoff" || "$date_part" = "$cutoff" ]]; then
       context+="$(cat "$f")"$'\n\n'
     fi
-  done < <(ls -1 "$NOTES_DIR"/*-${project_slug}-checkpoint.md 2>/dev/null | sort)
+  done < <(ls -1 "$CHECKPOINT_SRC"/*-${project_slug}-checkpoint.md 2>/dev/null | sort)
 fi
 
 # ── Agent communication tools ─────────────────────────────────────────────
