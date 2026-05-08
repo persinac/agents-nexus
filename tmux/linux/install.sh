@@ -78,6 +78,16 @@ else
   }
 fi
 
+# Enable systemd lingering so the user slice (and tmux, Claude, Docker, etc.)
+# survives SSH disconnects. Without this, systemd tears down user-*.slice when
+# the last login session ends, killing all background processes.
+if [[ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" != "Linger=yes" ]]; then
+  sudo loginctl enable-linger "$USER"
+  echo "Enabled systemd linger for $USER"
+else
+  echo "Systemd linger already enabled"
+fi
+
 # Install systemd user units
 # Resolve real node binary path (fnm uses per-shell shims that systemd can't see)
 NODE_BIN="$(readlink -f "$(command -v node 2>/dev/null)" 2>/dev/null || echo "/usr/bin/node")"
