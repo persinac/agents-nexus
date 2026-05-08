@@ -1,4 +1,4 @@
 fastapi==0.115.12
 httpx==0.28.1
-langfuse==2.59.7
+langfuse==4.6.1
 uvicorn==0.34.2

@@ -16,14 +16,14 @@ from typing import AsyncGenerator
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
-from langfuse import Langfuse
+from langfuse import get_client, propagate_attributes
 
 log = logging.getLogger("proxy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 UPSTREAM = os.environ["ANTHROPIC_API_BASE"].rstrip("/")
 FALLBACK_UPSTREAM = "https://api.anthropic.com"
-lf = Langfuse()
+langfuse = get_client()
 
 app = FastAPI()
 client = httpx.AsyncClient(timeout=600.0)
@@ -32,6 +32,7 @@ client = httpx.AsyncClient(timeout=600.0)
 @app.on_event("shutdown")
 async def _close_client() -> None:
     await client.aclose()
+    langfuse.shutdown()
 
 # Headers that must not be forwarded (HTTP/1.1 hop-by-hop + size management)
 _HOP_BY_HOP = {"host", "content-length", "transfer-encoding", "connection", "keep-alive"}
@@ -202,7 +203,7 @@ def _pick_output(summary: dict) -> str | dict:
 
 async def _log_generation(body: dict, response: dict, t0: float, session_id: str | None) -> None:
     try:
-        usage = response.get("usage", {})
+        usage = response.get("usage", {}) or {}
         summary = _summarize_blocks(response.get("content", []))
         output = _pick_output(summary)
 
@@ -211,20 +212,32 @@ async def _log_generation(body: dict, response: dict, t0: float, session_id: str
             session_id=session_id,
             body=body,
             output=output,
-            usage={
-                "input": usage.get("input_tokens"),
-                "output": usage.get("output_tokens"),
-            },
+            usage_details=_usage_details(usage),
             metadata={"latency_ms": round((time.monotonic() - t0) * 1000)},
         )
     except Exception as e:
         log.warning("langfuse log failed: %s", e)
 
 
+def _usage_details(usage: dict) -> dict:
+    """Map Anthropic's usage shape to Langfuse usage_details with cache buckets.
+
+    Anthropic reports input_tokens excluding cached portions, plus separate
+    cache_creation_input_tokens and cache_read_input_tokens. Langfuse prices
+    each bucket independently when the model has matching keys configured.
+    """
+    return {
+        "input": usage.get("input_tokens", 0) or 0,
+        "output": usage.get("output_tokens", 0) or 0,
+        "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0) or 0,
+        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0) or 0,
+    }
+
+
 async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: str | None) -> None:
     try:
         raw = b"".join(chunks).decode("utf-8", errors="replace")
-        input_tokens = output_tokens = 0
+        usage_acc: dict = {}
         blocks: list[dict] = []
         current: dict | None = None
         json_buf: list[str] = []
@@ -242,7 +255,8 @@ async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: st
 
             ev_type = ev.get("type")
             if ev_type == "message_start":
-                input_tokens = ev.get("message", {}).get("usage", {}).get("input_tokens", 0)
+                u = ev.get("message", {}).get("usage", {}) or {}
+                _merge_usage(usage_acc, u)
             elif ev_type == "content_block_start":
                 cb = ev.get("content_block", {})
                 current = dict(cb)
@@ -270,7 +284,7 @@ async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: st
                     current = None
                     json_buf = []
             elif ev_type == "message_delta":
-                output_tokens = ev.get("usage", {}).get("output_tokens", 0)
+                _merge_usage(usage_acc, ev.get("usage", {}) or {})
 
         summary = _summarize_blocks(blocks)
         output = _pick_output(summary)
@@ -280,7 +294,7 @@ async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: st
             session_id=session_id,
             body=body,
             output=output,
-            usage={"input": input_tokens, "output": output_tokens},
+            usage_details=_usage_details(usage_acc),
             metadata={
                 "latency_ms": round((time.monotonic() - t0) * 1000),
                 "stream": True,
@@ -288,6 +302,21 @@ async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: st
         )
     except Exception as e:
         log.warning("langfuse stream log failed: %s", e)
+
+
+def _merge_usage(acc: dict, u: dict) -> None:
+    """Last-write-wins for usage fields across stream events.
+
+    Anthropic populates message_start.message.usage with input + cache totals
+    (output_tokens=1 placeholder), then message_delta.usage with the final
+    output_tokens (and may revise input/cache totals). Keep the latest non-null
+    value per field so we end with the authoritative numbers.
+    """
+    for k in ("input_tokens", "output_tokens",
+              "cache_creation_input_tokens", "cache_read_input_tokens"):
+        v = u.get(k)
+        if v is not None:
+            acc[k] = v
 
 
 # Langfuse rejects whole items > ~2 MB (input + output + envelope). Cap each
@@ -316,24 +345,23 @@ def _emit_trace(
     session_id: str | None,
     body: dict,
     output: str | dict,
-    usage: dict,
+    usage_details: dict,
     metadata: dict,
 ) -> None:
-    """Create the trace + child generation with input/output set on both."""
+    """Emit a standalone generation observation (becomes its own trace root)."""
     input_preview = _preview(body.get("messages"))
     output_preview = _preview(output)
-    trace = lf.trace(
-        name=session_id or "claude-code",
-        session_id=session_id,
-        input=input_preview,
-        output=output_preview,
-    )
-    trace.generation(
-        name=name,
-        model=body.get("model"),
-        input=input_preview,
-        output=output_preview,
-        usage=usage,
-        metadata=metadata,
-    )
-    lf.flush()
+    trace_name = session_id or "claude-code"
+    with propagate_attributes(session_id=session_id, trace_name=trace_name):
+        gen = langfuse.start_observation(
+            as_type="generation",
+            name=name,
+            model=body.get("model"),
+            input=input_preview,
+            output=output_preview,
+            usage_details=usage_details,
+            metadata=metadata,
+        )
+        gen.set_trace_io(input=input_preview, output=output_preview)
+        gen.end()
+    langfuse.flush()
