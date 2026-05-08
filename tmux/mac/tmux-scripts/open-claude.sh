@@ -55,6 +55,19 @@ while IFS= read -r f; do
   fi
 done < <(ls -1 "$CHECKPOINT_SRC"/*-${project_slug}-checkpoint.md 2>/dev/null | sort)
 
+# ── Auto-cache recovery (previous session context) ───────────────────────
+CACHE_FILE="$HOME/.tmux/cache/${project_slug}.md"
+cache_section=""
+if [ -f "$CACHE_FILE" ]; then
+  cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE" 2>/dev/null || stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) ))
+  if [ "$cache_age" -lt 86400 ]; then
+    cache_section=$(cat "$CACHE_FILE")
+    mv "$CACHE_FILE" "${CACHE_FILE%.md}.used" 2>/dev/null
+  else
+    rm -f "$CACHE_FILE"
+  fi
+fi
+
 # ── Agent communication tools ─────────────────────────────────────────────
 REGISTRY_SCRIPT="$HOME/.tmux/agent-registry.sh"
 SEND_SCRIPT="$HOME/.tmux/agent-send.sh"
@@ -88,10 +101,14 @@ claude_args=()
 [ -n "$CLAUDE_EFFORT" ] && claude_args+=(--effort "$CLAUDE_EFFORT")
 
 # ── Launch claude with assembled context ───────────────────────────────────
-if [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ]; then
+if [ -n "$cache_section" ] || [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ]; then
   prompt=""
+  if [ -n "$cache_section" ]; then
+    prompt="Your previous session was interrupted. Here is the working context from that session — use it to pick up where you left off:"$'\n\n'"${cache_section}"
+  fi
   if [ -n "$context" ]; then
-    prompt="Here are recent checkpoint notes for this project (past 3 days). Please review them to get up to speed before we begin:"$'\n\n'"${context}"
+    [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
+    prompt="${prompt}Here are recent checkpoint notes for this project (past 3 days). Please review them to get up to speed before we begin:"$'\n\n'"${context}"
   fi
   if [ -n "$memory_section" ]; then
     [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'

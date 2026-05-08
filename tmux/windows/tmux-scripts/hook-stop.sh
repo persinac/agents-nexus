@@ -24,6 +24,9 @@ echo "$INPUT" | /c/msys64/usr/bin/bash.exe "$SCRIPT_DIR/hook-memory.sh" session_
 CWD=$(echo "$INPUT" | sed -n 's/.*"cwd" *: *"\([^"]*\)".*/\1/p' | head -1)
 log_debug "cwd: $CWD"
 
+# Chain auto-cache (snapshot conversation tail to ~/.tmux/cache/)
+/c/msys64/usr/bin/bash.exe "$SCRIPT_DIR/hook-autocache.sh" "$CWD" 2>/dev/null &
+
 # Find tmux binary
 TMUX_BIN="/usr/bin/tmux"
 [ -x "$TMUX_BIN" ] || TMUX_BIN="/c/msys64/usr/bin/tmux.exe"

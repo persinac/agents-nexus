@@ -9,6 +9,9 @@ INPUT=$(cat 2>/dev/null)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "$INPUT" | "$SCRIPT_DIR/hook-memory.sh" session_idle 2>/dev/null
 
+# Chain auto-cache (snapshot conversation tail to ~/.tmux/cache/)
+"$SCRIPT_DIR/hook-autocache.sh" "$PWD" 2>/dev/null &
+
 [ -n "$TMUX_PANE" ] || exit 0
 
 NOW=$(date +%s)
