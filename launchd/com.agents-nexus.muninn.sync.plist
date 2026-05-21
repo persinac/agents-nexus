@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Muninn launchd schedule — sync rM1 → Obsidian.
+
+  Install via the agents-nexus Taskfile:
+    task launchd:install:muninn
+    task launchd:uninstall:muninn
+
+  Tail logs:
+    tail -f /tmp/muninn-sync.log
+
+  Schedule: weekdays at 8/12/17:30 local (Mondays also 8:30, 9). Mondays get the
+  extra triggers because that's when stale weekend content is most likely to need
+  catching up; tweak StartCalendarInterval to match your actual workflow.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.agents-nexus.muninn.sync</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__AGENTS_NEXUS_DIR__/muninn/.venv/bin/muninn</string>
+    <string>sync</string>
+    <string>--folder</string>
+    <string>Work/</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__AGENTS_NEXUS_DIR__/muninn</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>1</integer></dict>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>30</integer><key>Weekday</key><integer>1</integer></dict>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>1</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>1</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer><key>Weekday</key><integer>1</integer></dict>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>2</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>2</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer><key>Weekday</key><integer>2</integer></dict>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>3</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>3</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer><key>Weekday</key><integer>3</integer></dict>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>4</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>4</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer><key>Weekday</key><integer>4</integer></dict>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>5</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>5</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer><key>Weekday</key><integer>5</integer></dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/muninn-sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/muninn-sync.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+</dict>
+</plist>

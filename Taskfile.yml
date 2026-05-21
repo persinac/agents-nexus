@@ -364,6 +364,22 @@ tasks:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.obs-tag.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.obs-tag.plist
 
+  launchd:install:muninn:
+    desc: Install launchd agent for muninn sync (rM1 → Obsidian) — weekdays 8/12/17:30
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.muninn.sync.plist > ~/Library/LaunchAgents/com.agents-nexus.muninn.sync.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.muninn.sync.plist
+      - echo "Installed — muninn syncs weekdays at 8/12/17:30 (logs at /tmp/muninn-sync.log)"
+
+  launchd:uninstall:muninn:
+    desc: Remove the muninn launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.muninn.sync.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.muninn.sync.plist
+
   launchd:install:obs-decay:
     desc: Install launchd agent to run obs:decay weekly on Sundays at noon
     vars:

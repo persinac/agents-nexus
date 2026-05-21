@@ -1,0 +1,18 @@
+# IDE
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+*.egg-info/
+
+# Muninn runtime files
+config.toml
+muninn.db
+~/.muninn/
+
+# macOS
+.DS_Store

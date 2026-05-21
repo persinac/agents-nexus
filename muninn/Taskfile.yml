@@ -1,0 +1,59 @@
+version: "3"
+
+tasks:
+  install:
+    desc: Install all dependencies and apply venv patches
+    cmds:
+      - uv sync --all-extras
+      - task: patch-deps
+
+  patch-deps:
+    desc: Patch installed packages for Python 3.14 compatibility
+    cmd: |
+      # rmrl uses pkg_resources (removed in setuptools 80+). Swap to importlib.metadata.
+      python -c "
+      import pathlib, re
+      p = pathlib.Path('.venv/lib').glob('python*/site-packages/rmrl/constants.py')
+      f = next(p, None)
+      if f is None:
+          print('rmrl constants.py not found — skipping patch')
+      else:
+          src = f.read_text()
+          if 'pkg_resources' in src:
+              src = src.replace('import pkg_resources\n', 'from importlib.metadata import version as _pkg_version\n')
+              src = src.replace(\"pkg_resources.get_distribution('rmrl').version\", \"_pkg_version('rmrl')\")
+              f.write_text(src)
+              print(f'Patched {f}')
+          else:
+              print(f'{f} already patched')
+      "
+
+  lint:
+    desc: Lint with ruff
+    cmd: uv run ruff check src/
+
+  format:
+    desc: Format with ruff
+    cmd: uv run ruff format src/
+
+  check:
+    desc: Lint + format check (no writes)
+    cmds:
+      - uv run ruff check src/
+      - uv run ruff format --check src/
+
+  test:
+    desc: Run tests
+    cmd: uv run pytest tests/ -v
+
+  run:
+    desc: Run muninn (pass args via CLI_ARGS)
+    cmd: uv run muninn {{.CLI_ARGS}}
+
+  sync:
+    desc: Run muninn sync
+    cmd: uv run muninn sync {{.CLI_ARGS}}
+
+  dry-run:
+    desc: Run muninn sync --dry-run
+    cmd: uv run muninn sync --dry-run

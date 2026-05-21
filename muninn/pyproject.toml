@@ -1,0 +1,42 @@
+[project]
+name = "muninn"
+version = "0.1.0"
+description = "Sync and digitize reMarkable 1 notebooks into Obsidian"
+requires-python = ">=3.14"
+dependencies = [
+    "anthropic>=0.49.0",
+    "boto3>=1.38.0",
+    "click>=8.1.0",
+    "pdf2image>=1.17.0",
+    "requests>=2.32.0",
+    "rmrl>=0.2.1",
+    "rmscene>=0.8.0",
+]
+
+[project.scripts]
+muninn = "muninn.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/muninn"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.11.0",
+    "setuptools>=82.0.1",
+]
+
+[tool.uv]
+# rmrl pins reportlab<4.0 but 3.x won't build. Override to use 4.x prebuilt wheel.
+override-dependencies = ["reportlab>=4.0"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

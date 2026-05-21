@@ -1,0 +1,88 @@
+# Muninn configuration example
+# Copy to config.toml and fill in your values.
+# config.toml is gitignored — never commit credentials.
+
+[ssh]
+# Hostname or IP of your reMarkable 1.
+# Can be a local network address or a Tailscale MagicDNS hostname.
+host = "remarkable.tail12345.ts.net"
+port = 22
+username = "root"
+identity_file = "~/.ssh/id_rsa_remarkable"
+# Seconds to wait before treating the device as unreachable.
+timeout = 10
+
+[sync]
+# Local directory where pulled notebook files are staged before processing.
+staging_dir = "~/.muninn/staging"
+# Path to rclone binary (must be installed on host; system dep, not via uv).
+rclone_bin = "rclone"
+
+[ocr]
+# Set to true to enable handwriting transcription.
+enabled = true
+# Which OCR backend to use:
+#   "claude"   — render strokes to PNG locally, send to Claude vision (default).
+#                Requires [vision].api_key or ANTHROPIC_API_KEY env var.
+#                Handles v6 .rm files and scrolled/extended pages.
+#   "myscript" — submit strokes to MyScript iink Cloud (requires keys below).
+provider = "claude"
+# MyScript credentials — only needed when provider = "myscript".
+# application_key = "YOUR_MYSCRIPT_APPLICATION_KEY"
+# hmac_key = "YOUR_MYSCRIPT_HMAC_KEY"
+
+[vision]
+# Anthropic API key — used by ocr.provider = "claude" and by drawing descriptions.
+# If left as the placeholder, the ANTHROPIC_API_KEY env var is used instead.
+api_key = "YOUR_ANTHROPIC_API_KEY"
+# Set to true to enable Claude vision descriptions for drawings (Phase 5).
+enabled = false
+# Optional: override the prompt used for drawing descriptions.
+# drawing_prompt = "Describe any diagrams, sketches, or drawings on this page."
+# Optional: override the model used for OCR and drawing descriptions.
+# model = "claude-opus-4-7"
+# Optional: override the OCR prompt sent for handwriting transcription.
+# ocr_prompt = "Transcribe the handwritten text..."
+
+[storage]
+# Set to true to upload PDFs and PNGs to S3.
+enabled = true
+bucket = "my-muninn-bucket"
+# Optional: set for non-AWS S3-compatible endpoints (e.g. Cloudflare R2, MinIO).
+# endpoint = "https://your-account.r2.cloudflarestorage.com"
+# AWS region (ignored when endpoint is set).
+region = "us-east-1"
+
+# Define one or more Obsidian vaults.
+# Exactly one vault must have default = true.
+# Notebooks whose rm_folder matches a prefix in `folders` are routed to that vault.
+# First match wins; unmatched notebooks go to the default vault.
+
+[[vaults]]
+name = "personal"
+path = "~/Documents/ObsidianPersonal"
+default = true
+# Optional subfolder inside the vault where Muninn notes are written.
+subfolder = "Muninn"
+
+[[vaults]]
+name = "work"
+path = "~/Documents/ObsidianWork"
+default = false
+subfolder = "Muninn"
+# Notebooks in these reMarkable folders are routed to this vault.
+folders = ["Work/", "Garner/"]
+
+# Daily-note merge: after sync, parse the rM "Daily" notebook into TODO /
+# Questions / Notes sections and merge them into the matching dated daily
+# note in the target vault (e.g. ~/Documents/ObsidianWork/Garner/Daily Notes/2026-05-19.md).
+[daily_merge]
+enabled = false
+# Title of the rM notebook to treat as the daily source.
+source_notebook = "Daily"
+# Name of a [[vaults]] entry where the dated daily notes live.
+target_vault = "work"
+# Path within the vault to the date-named daily notes directory.
+target_dir = "Garner/Daily Notes"
+# Optional: model override (defaults to [vision].model).
+# model = "claude-opus-4-7"
