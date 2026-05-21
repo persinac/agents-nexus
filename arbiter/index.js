@@ -362,6 +362,137 @@ function poll() {
   }
 }
 
+// ── Timers / scheduled jobs ──────────────────────────────────────
+// On macOS we read launchd plists from ~/Library/LaunchAgents and surface
+// every job whose label starts with com.agents-nexus. — i.e. the jobs
+// installed via `task launchd:install:*`. On Linux we fall through to the
+// existing systemctl --user list-timers path further down.
+
+const LAUNCHD_LABEL_RE = /^com\.agents-nexus\.[a-zA-Z0-9._-]+$/;
+const DESCRIPTIONS_PATH = resolve(__dirname, '..', 'launchd', 'descriptions.json');
+
+function _loadDescriptions() {
+  try {
+    return JSON.parse(readFileSync(DESCRIPTIONS_PATH, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function _humanizeDelta(ms) {
+  if (!ms || ms < 0) return '';
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const parts = [];
+  if (d) parts.push(`${d}d`);
+  if (h) parts.push(`${h}h`);
+  if (m && !d) parts.push(`${m}m`);
+  return 'in ' + (parts.join(' ') || '<1m');
+}
+
+function _computeNextLaunchdRun(plistData) {
+  const sci = plistData.StartCalendarInterval;
+  if (!sci) return null;
+  const entries = Array.isArray(sci) ? sci : [sci];
+  const now = new Date();
+  let soonest = null;
+  for (const entry of entries) {
+    // Search up to 8 days ahead so weekday-pinned schedules always resolve.
+    for (let offset = 0; offset < 8; offset++) {
+      const c = new Date(now);
+      c.setDate(now.getDate() + offset);
+      if (entry.Hour !== undefined) c.setHours(entry.Hour);
+      if (entry.Minute !== undefined) c.setMinutes(entry.Minute);
+      c.setSeconds(0, 0);
+      if (entry.Weekday !== undefined && c.getDay() !== entry.Weekday) continue;
+      if (entry.Day !== undefined && c.getDate() !== entry.Day) continue;
+      if (entry.Month !== undefined && c.getMonth() !== entry.Month - 1) continue;
+      if (c <= now) continue;
+      if (!soonest || c < soonest) soonest = c;
+      break;
+    }
+  }
+  return soonest;
+}
+
+function _launchctlStatus(label) {
+  try {
+    const out = execSync(`launchctl list ${label} 2>/dev/null`, { encoding: 'utf8', timeout: 2000 });
+    const exit = out.match(/"LastExitStatus"\s*=\s*(\d+)/);
+    const pid = out.match(/"PID"\s*=\s*(\d+)/);
+    return {
+      exit: exit ? parseInt(exit[1], 10) : null,
+      pid: pid ? parseInt(pid[1], 10) : null,
+    };
+  } catch {
+    return { exit: null, pid: null };
+  }
+}
+
+function _loadPlistJson(path) {
+  try {
+    const json = execSync(`plutil -convert json -o - "${path}"`, { encoding: 'utf8', timeout: 2000 });
+    return JSON.parse(json);
+  } catch { return null; }
+}
+
+function listMacosTimers() {
+  const launchAgentsDir = join(HOME, 'Library', 'LaunchAgents');
+  if (!existsSync(launchAgentsDir)) return [];
+  const descriptions = _loadDescriptions();
+  const timers = [];
+  for (const fname of readdirSync(launchAgentsDir)) {
+    if (!fname.startsWith('com.agents-nexus.') || !fname.endsWith('.plist')) continue;
+    const path = join(launchAgentsDir, fname);
+    const data = _loadPlistJson(path);
+    if (!data) continue;
+    const label = data.Label || fname.replace(/\.plist$/, '');
+    const programArgs = data.ProgramArguments || [];
+    const description = descriptions[label]
+      || (programArgs.length ? programArgs[programArgs.length - 1].split('/').pop() : null);
+    const status = _launchctlStatus(label);
+    let result = 'unknown';
+    if (status.exit === 0) result = 'success';
+    else if (status.exit !== null && status.exit !== 0) result = `exit-code ${status.exit}`;
+    let nextRun = '';
+    let leftUntil = '';
+    const nextDate = _computeNextLaunchdRun(data);
+    if (nextDate) {
+      nextRun = nextDate.toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+      leftUntil = _humanizeDelta(nextDate.getTime() - Date.now());
+    } else if (data.StartInterval) {
+      const sec = data.StartInterval;
+      nextRun = sec >= 60 ? `every ${Math.round(sec / 60)}m` : `every ${sec}s`;
+      leftUntil = nextRun;
+    }
+    // Best-effort lastRun: StandardOutPath mtime is touched on every fire
+    let lastRun = null;
+    if (data.StandardOutPath) {
+      try {
+        const st = statSync(data.StandardOutPath);
+        lastRun = st.mtime.toISOString();
+      } catch {}
+    }
+    timers.push({
+      name: label, nextRun, leftUntil, lastRun, result,
+      active: status.pid !== null || status.exit !== null,
+      description,
+    });
+  }
+  // Sort by upcoming-ness: anything with a leftUntil first, then by label
+  timers.sort((a, b) => {
+    if (a.leftUntil && !b.leftUntil) return -1;
+    if (!a.leftUntil && b.leftUntil) return 1;
+    return a.name.localeCompare(b.name);
+  });
+  return timers;
+}
+
 // ── HTTP + WebSocket server ──────────────────────────────────────
 
 const httpServer = http.createServer((req, res) => {
@@ -475,10 +606,21 @@ const httpServer = http.createServer((req, res) => {
       } catch {}
 
       let timerCount = 0;
-      try {
-        const out = execSync('systemctl --user list-timers --no-pager --no-legend 2>/dev/null', { encoding: 'utf8', timeout: 5000 });
-        timerCount = out.trim().split('\n').filter(l => l.trim()).length;
-      } catch {}
+      if (process.platform === 'darwin') {
+        try {
+          const dir = join(HOME, 'Library', 'LaunchAgents');
+          if (existsSync(dir)) {
+            timerCount = readdirSync(dir).filter(f =>
+              f.startsWith('com.agents-nexus.') && f.endsWith('.plist')
+            ).length;
+          }
+        } catch {}
+      } else {
+        try {
+          const out = execSync('systemctl --user list-timers --no-pager --no-legend 2>/dev/null', { encoding: 'utf8', timeout: 5000 });
+          timerCount = out.trim().split('\n').filter(l => l.trim()).length;
+        } catch {}
+      }
 
       res.end(JSON.stringify({
         arbiter: true, docker, tmux, database,
@@ -550,8 +692,57 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
+  if (url.pathname === '/api/system/timers/log') {
+    corsJson();
+    const label = url.searchParams.get('label') || '';
+    const lines = Math.min(parseInt(url.searchParams.get('lines') || '200', 10) || 200, 1000);
+    if (!LAUNCHD_LABEL_RE.test(label)) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: 'invalid label' }));
+      return;
+    }
+    if (process.platform !== 'darwin') {
+      res.statusCode = 501;
+      res.end(JSON.stringify({ error: 'log fetch only implemented for macOS launchd' }));
+      return;
+    }
+    const plistPath = join(HOME, 'Library', 'LaunchAgents', `${label}.plist`);
+    if (!existsSync(plistPath)) {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: 'plist not found' }));
+      return;
+    }
+    const data = _loadPlistJson(plistPath);
+    const logPath = data?.StandardOutPath || data?.StandardErrorPath;
+    if (!logPath) {
+      res.end(JSON.stringify({ label, path: null, content: '', mtime: null, note: 'no StandardOutPath/StandardErrorPath in plist' }));
+      return;
+    }
+    if (!existsSync(logPath)) {
+      res.end(JSON.stringify({ label, path: logPath, content: '', mtime: null, note: 'log file does not exist yet (job may not have fired)' }));
+      return;
+    }
+    let content = '';
+    let mtime = null;
+    try {
+      content = execSync(`tail -n ${lines} "${logPath}" 2>/dev/null`, { encoding: 'utf8', timeout: 3000, maxBuffer: 2 * 1024 * 1024 });
+      mtime = statSync(logPath).mtime.toISOString();
+    } catch (err) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ label, path: logPath, error: String(err.message || err) }));
+      return;
+    }
+    res.end(JSON.stringify({ label, path: logPath, mtime, lines, content }));
+    return;
+  }
+
   if (url.pathname === '/api/system/timers') {
     corsJson();
+    if (process.platform === 'darwin') {
+      try { res.end(JSON.stringify(listMacosTimers())); }
+      catch { res.end('[]'); }
+      return;
+    }
     try {
       const lines = execSync('systemctl --user list-timers --all --no-pager --no-legend 2>/dev/null', { encoding: 'utf8', timeout: 5000 }).trim();
       const timers = [];

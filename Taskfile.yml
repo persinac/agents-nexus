@@ -380,10 +380,9 @@ tasks:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.muninn.sync.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.muninn.sync.plist
 
-  # Personal launchd jobs — plists for cron-style work that lives outside any
-  # specific repo (obs-digest/tidy from ~/.local/bin, svc-chatbot helpers from
-  # ~/bin, devn-relay socat). Stored here for source control / reformat
-  # recovery; scripts they reference stay at their original paths.
+  # Personal launchd jobs — machine-specific plists that don't fit the standard
+  # com.agents-nexus.* pattern (today: just devn-relay, the always-on socat
+  # tunnel). Stored here for source control / reformat recovery.
   launchd:install:personal:
     desc: Install all personal launchd jobs from launchd/personal/
     cmds:
@@ -437,3 +436,110 @@ tasks:
     cmds:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.gl-reviews-prune.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.gl-reviews-prune.plist
+
+  launchd:install:obs-digest:
+    desc: Install launchd agent to run obs-digest weekdays at 7:00am
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.obs-digest.plist > ~/Library/LaunchAgents/com.agents-nexus.obs-digest.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.obs-digest.plist
+      - echo "Installed — obs-digest runs weekdays at 7:00am (logs at /tmp/agents-nexus-obs-digest.log)"
+
+  launchd:uninstall:obs-digest:
+    desc: Remove the obs-digest launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.obs-digest.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.obs-digest.plist
+
+  launchd:install:obs-tidy:
+    desc: Install launchd agent to run obs-tidy daily at 6:00am
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.obs-tidy.plist > ~/Library/LaunchAgents/com.agents-nexus.obs-tidy.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.obs-tidy.plist
+      - echo "Installed — obs-tidy runs daily at 6:00am (logs at /tmp/agents-nexus-obs-tidy.log)"
+
+  launchd:uninstall:obs-tidy:
+    desc: Remove the obs-tidy launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.obs-tidy.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.obs-tidy.plist
+
+  launchd:install:svc-chatbot-mr-labels:
+    desc: Install launchd agent to auto-label svc-chatbot MRs every 4h at :07
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.svc-chatbot-mr-labels.plist > ~/Library/LaunchAgents/com.agents-nexus.svc-chatbot-mr-labels.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.svc-chatbot-mr-labels.plist
+      - echo "Installed — svc-chatbot MR labels run every 4h at :07 (logs at /tmp/agents-nexus-svc-chatbot-mr-labels.log)"
+
+  launchd:uninstall:svc-chatbot-mr-labels:
+    desc: Remove the svc-chatbot-mr-labels launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.svc-chatbot-mr-labels.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.svc-chatbot-mr-labels.plist
+
+  launchd:install:svc-chatbot-rebase:
+    desc: Install launchd agent to auto-rebase the svc-chatbot typed-tool-results branch weekdays at 7:13am
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.svc-chatbot-rebase.plist > ~/Library/LaunchAgents/com.agents-nexus.svc-chatbot-rebase.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.svc-chatbot-rebase.plist
+      - echo "Installed — svc-chatbot rebase runs weekdays at 7:13am (logs at /tmp/agents-nexus-svc-chatbot-rebase.log)"
+
+  launchd:uninstall:svc-chatbot-rebase:
+    desc: Remove the svc-chatbot-rebase launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.svc-chatbot-rebase.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.svc-chatbot-rebase.plist
+
+  launchd:install:guilty-spark-nightly:
+    desc: Install launchd agent to run the guilty-spark pipeline (reclaim + synthesize) nightly at 2am
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.guilty-spark.nightly.plist > ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist
+      - echo "Installed — guilty-spark nightly runs at 2am (logs at /tmp/agents-nexus-guilty-spark-nightly.log)"
+
+  launchd:uninstall:guilty-spark-nightly:
+    desc: Remove the guilty-spark nightly launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist
+
+  launchd:install:all:
+    desc: Install every com.agents-nexus.* launchd job in launchd/*.plist
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - |
+        for p in launchd/com.agents-nexus.*.plist; do
+          name=$(basename "$p")
+          sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" "$p" > ~/Library/LaunchAgents/"$name"
+          launchctl load ~/Library/LaunchAgents/"$name" 2>/dev/null \
+            || launchctl load -w ~/Library/LaunchAgents/"$name" \
+            || echo "  warn: failed to load $name (may already be loaded)"
+          echo "  installed: $name"
+        done
+
+  launchd:uninstall:all:
+    desc: Uninstall every com.agents-nexus.* launchd job
+    cmds:
+      - |
+        for p in launchd/com.agents-nexus.*.plist; do
+          name=$(basename "$p")
+          launchctl unload ~/Library/LaunchAgents/"$name" 2>/dev/null || true
+          rm -f ~/Library/LaunchAgents/"$name"
+          echo "  removed: $name"
+        done

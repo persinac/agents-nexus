@@ -93,6 +93,26 @@ async function fetchJson<T>(path: string): Promise<T | null> {
   }
 }
 
+export interface TimerLog {
+  label: string;
+  path: string | null;
+  mtime: string | null;
+  content: string;
+  note?: string;
+  error?: string;
+}
+
+export async function fetchTimerLog(label: string, lines = 200): Promise<TimerLog | null> {
+  try {
+    const params = new URLSearchParams({ label, lines: String(lines) });
+    const res = await fetch(`${apiBase()}/api/system/timers/log?${params}`);
+    if (!res.ok) return { label, path: null, mtime: null, content: '', error: `HTTP ${res.status}` };
+    return await res.json() as TimerLog;
+  } catch (err) {
+    return { label, path: null, mtime: null, content: '', error: String(err) };
+  }
+}
+
 export function useCommandCenterData(enabled: boolean): CommandCenterData {
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [agents, setAgents] = useState<AgentInfo[] | null>(null);

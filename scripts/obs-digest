@@ -1,0 +1,101 @@
+#!/bin/bash
+set -euo pipefail
+
+# Load agents-nexus .env for SLACK_OBS_TIDY_WEBHOOK and similar
+NEXUS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$NEXUS_DIR/.env" ]; then
+  set -a; . "$NEXUS_DIR/.env"; set +a
+fi
+
+VAULT="/Users/alex.persinger@getgarner.com/obs-garner/Garner"
+CLAUDE="/Users/alex.persinger@getgarner.com/.local/bin/claude"
+
+# Previous business day (Monday reads Friday)
+DOW=$(date +%u)  # 1=Mon ... 7=Sun
+if [ "$DOW" -eq 1 ]; then
+  PREV_DATE=$(date -v-3d +%Y-%m-%d)
+else
+  PREV_DATE=$(date -v-1d +%Y-%m-%d)
+fi
+NEXT_DATE=$(date -j -v+1d -f "%Y-%m-%d" "$PREV_DATE" +"%Y-%m-%d")
+DAY_LABEL=$(date -j -f "%Y-%m-%d" "$PREV_DATE" +"%a %b %-d")
+
+DAILY_NOTE="$VAULT/Daily Notes/$PREV_DATE.md"
+
+# All .md files modified on PREV_DATE, excluding tidy reports
+MODIFIED_FILES=$(find "$VAULT" -name "*.md" \
+  -newermt "$PREV_DATE 00:00:00" \
+  ! -newermt "$NEXT_DATE 00:00:00" \
+  ! -path "*/Archive/tidy-reports/*" \
+  2>/dev/null | sort)
+
+if [ -z "$MODIFIED_FILES" ] && [ ! -f "$DAILY_NOTE" ]; then
+  echo "No notes found for $PREV_DATE — skipping digest."
+  exit 0
+fi
+
+# Build context into a temp file to safely handle special characters
+CONTEXT_FILE=$(mktemp /tmp/obs-digest-context.XXXXXX)
+PROMPT_FILE=$(mktemp /tmp/obs-digest-prompt.XXXXXX)
+trap "rm -f $CONTEXT_FILE $PROMPT_FILE" EXIT
+
+echo "Notes from $PREV_DATE:" >> "$CONTEXT_FILE"
+echo "" >> "$CONTEXT_FILE"
+
+if [ -f "$DAILY_NOTE" ]; then
+  echo "=== Daily Note ===" >> "$CONTEXT_FILE"
+  cat "$DAILY_NOTE" >> "$CONTEXT_FILE"
+  echo "" >> "$CONTEXT_FILE"
+fi
+
+while IFS= read -r f; do
+  [[ "$f" == "$DAILY_NOTE" ]] && continue
+  echo "=== $(basename "$f" .md) ===" >> "$CONTEXT_FILE"
+  cat "$f" >> "$CONTEXT_FILE"
+  echo "" >> "$CONTEXT_FILE"
+done <<< "$MODIFIED_FILES"
+
+# Build prompt file (avoids heredoc-in-subshell quoting issues)
+cat > "$PROMPT_FILE" << 'PROMPT'
+You are a sharp, no-nonsense EA briefing your principal at the start of their day.
+Your job is not to summarize — it is to surface what matters and put them in the right headspace.
+
+Respond with exactly three sections using these bold headers:
+
+*Yesterday*
+*On you today*
+*Thinking required*
+
+Section rules:
+
+*Yesterday* — 3-5 •s max. What actually moved? Skip meetings that were just FYI. Flag anything that landed differently than expected. Lead with outcomes, not activities.
+
+*On you today* — The most important section. List people or things blocked waiting on this person. Surface any commitments they made (explicit or implied) that aren't yet tracked. Call out anything time-sensitive. Order by urgency. 3-5 •s max.
+
+*Thinking required* — Open questions, unresolved tradeoffs, things flagged as unclear or "needs more thought." Not tasks — things that require a decision or deeper reasoning before action. 2-3 •s max.
+
+Tone: direct, slightly assertive. Write like someone who has read their notes and is handing them a briefing card, not recapping their day back to them.
+Use plain • character (•) only. No sub-•s, no markdown beyond the bold headers, no preamble, no sign-off.
+If a section has nothing, write: • Nothing pressing.
+
+---
+PROMPT
+
+# Run Claude — prompt + context via stdin
+DIGEST=$(cat "$PROMPT_FILE" "$CONTEXT_FILE" | "$CLAUDE" --print --dangerously-skip-permissions --add-dir "$VAULT" 2>>/tmp/obs-digest.log) || true
+
+if [ -z "$DIGEST" ]; then
+  echo "Claude returned empty digest for $PREV_DATE — check /tmp/obs-digest.log"
+  exit 1
+fi
+
+# Slack DM
+if [ -n "${SLACK_OBS_TIDY_WEBHOOK:-}" ]; then
+  PAYLOAD=$(jq -n --arg title "*Daily Digest — $DAY_LABEL*" --arg body "$DIGEST" \
+    '{"text": ($title + "\n\n" + $body)}')
+  curl -s -X POST "$SLACK_OBS_TIDY_WEBHOOK" \
+    -H 'Content-type: application/json' \
+    -d "$PAYLOAD" > /dev/null
+fi
+
+echo "Digest sent for $PREV_DATE ($DAY_LABEL)"

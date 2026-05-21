@@ -128,25 +128,24 @@ Captured from `~/Library/LaunchAgents/` on this Mac. Some live in agents-nexus, 
 | `com.agents-nexus.gl-reviews-prune.plist` | daily 16:00 | `task gl:reviews:prune` | **missing systemd unit** |
 | `com.agents-nexus.obs-tag.plist` | daily 06:30 | `task obs:tag` | `nightly-obs-tag.{service,timer}` ✓ |
 | `com.agents-nexus.obs-decay.plist` | Sun 12:00 | `task obs:decay` | `weekly-obs-decay.{service,timer}` ✓ |
+| `com.agents-nexus.muninn.sync.plist` | weekdays 08/12/17:30 (Mon also 08:30, 09) | `muninn sync --folder Work/` | **missing systemd unit** |
+| `com.agents-nexus.obs-digest.plist` | weekdays 07:00 | `scripts/obs-digest` (Slack digest) | **missing systemd unit** |
+| `com.agents-nexus.obs-tidy.plist` | daily 06:00 | `scripts/obs-tidy` (vault cleanup + Slack summary) | **missing systemd unit** |
+| `com.agents-nexus.svc-chatbot-mr-labels.plist` | every 4 h at :07 | `scripts/svc-chatbot-mr-labels.sh` | **missing systemd unit** |
+| `com.agents-nexus.svc-chatbot-rebase.plist` | weekdays 07:13 | `scripts/svc-chatbot-rebase.sh` (currently failing — see below) | **missing systemd unit** |
+| `com.agents-nexus.guilty-spark.nightly.plist` | daily 02:00 | `spark/scripts/spark-pipeline.sh` (currently failing — see below) | `nightly-spark.{service,timer}` exists; confirm script path |
 
 ### Jobs sourced from sibling repos (would need Linux ports)
 
 | Plist | Source repo | Schedule | What it runs | Linux status |
 |---|---|---|---|---|
-| `com.garner.agent-memory.flush.plist` | `claude-agents-tmux/mac/launchd/` | every 120 s | `~/.tmux/flush-events.sh` | **no systemd unit** — flush should run on the mini-PC where mnemon lives |
-| `com.garner.guilty-spark.nightly.plist` | `guilty-spark/launchd/` | daily 02:00 | `guilty-spark/scripts/spark-pipeline.sh` | `nightly-spark.{service,timer}` exists in agents-nexus — confirm it points at the right script (might need updating in the guilty-spark repo) |
+| `com.agents-nexus.agent-memory.flush.plist` | `agents-nexus/tmux/mac/launchd/` | every 120 s | `~/.tmux/flush-events.sh` | **no systemd unit** — flush should run on the mini-PC where mnemon lives |
 
 ### Jobs not sourced from any repo (only on Mac filesystem)
 
-These were created ad-hoc on the Mac and aren't checked into anything:
-
 | Plist | Schedule | What it runs | Notes |
 |---|---|---|---|
-| `com.alex.obs-tidy.plist` | daily 06:00 | `~/.local/bin/obs-tidy` | Cleans obsidian vault, posts a Slack summary via `SLACK_OBS_TIDY_WEBHOOK` env. **Script lives only at `~/.local/bin/obs-tidy` (3.5 KB bash, calls Claude CLI against `~/obs-garner/Garner`).** |
-| `com.alex.obs-digest.plist` | Mon–Fri 07:00 | `~/.local/bin/obs-digest` | Digests previous business day's notes, posts to Slack via the same webhook. Reads `~/obs-garner/Garner`. |
-| `com.garner.devn-relay.plist` | KeepAlive (always-on) | `socat TCP-LISTEN:54777 → 127.0.0.1:54776` | The relay that exposes the corporate Bifrost-style devn proxy on the LAN — this is the upstream the FastAPI proxy points at via `ANTHROPIC_API_BASE`. |
-
-For these, the question is more "should this be in a repo at all" than "Linux port" — currently if this Mac dies, the scripts and plists are gone.
+| `com.garner.devn-relay.plist` | KeepAlive (always-on) | `socat TCP-LISTEN:54777 → 127.0.0.1:54776` | The relay that exposes the corporate Bifrost-style devn proxy on the LAN — this is the upstream the FastAPI proxy points at via `ANTHROPIC_API_BASE`. Lives at `launchd/personal/com.garner.devn-relay.plist` in this repo (machine-specific holder), so it survives a reformat even though it's not under the `com.agents-nexus.*` namespace. |
 
 ### Homebrew-managed (not user-controlled scheduling)
 
@@ -158,17 +157,15 @@ For these, the question is more "should this be in a repo at all" than "Linux po
 
 1. **`agents-nexus/launchd/` jobs** — straightforward port. Add `nightly-gl-reviews.{service,timer}` and `nightly-gl-reviews-prune.{service,timer}` to `tmux/linux/systemd/`, mirroring the existing `nightly-obs-tag` files. Update `install.sh` to enable them.
 
-2. **`com.garner.agent-memory.flush.plist`** — once the mini-PC is the canonical mnemon host, add a `agent-memory-flush.{service,timer}` (every 2 min) under `tmux/linux/systemd/` and check the source plist into `claude-agents-tmux` properly. Mac can stop running it.
+2. **`com.agents-nexus.agent-memory.flush.plist`** — once the mini-PC is the canonical mnemon host, add a `agent-memory-flush.{service,timer}` (every 2 min) under `tmux/linux/systemd/`. Source plist now lives at `agents-nexus/tmux/mac/launchd/` (moved out of the claude-agents-tmux repo).
 
-3. **`com.garner.guilty-spark.nightly.plist`** — the guilty-spark repo owns this. If the mini-PC takes over spark indexing (per PLAN.md), port it to a systemd timer in *that* repo, not agents-nexus.
+3. **`com.agents-nexus.guilty-spark.nightly.plist`** — ✓ migrated. Plist now lives at `agents-nexus/launchd/`, script reused from `agents-nexus/spark/scripts/spark-pipeline.sh` (identical canonical copy already in repo). Job currently fails on Mac because the script expects a local `.venv` in the spark repo, but spark runs in Docker here — failure preserved during migration; fix is a separate work item.
 
-4. **`com.alex.obs-{tidy,digest}.plist` + the `~/.local/bin` scripts** — these are real automation that should be in a repo. Two options:
-   - Move scripts into `agents-nexus/scripts/` and the plists into `agents-nexus/launchd/`. Add `obs:tidy` / `obs:digest` Taskfile entries. Then they're symmetric with the others and Linux gets them for free.
-   - Leave them ad-hoc, but at minimum back them up somewhere.
+4. ✓ **`com.alex.obs-{tidy,digest}.plist` + `com.alexpersinger.svc-chatbot-{rebase,mr-labels}.plist`** — migrated. Scripts moved to `agents-nexus/scripts/`, plists relabeled to `com.agents-nexus.*` and templated with `__AGENTS_NEXUS_DIR__`. `task launchd:install:all` installs the whole set.
 
-   Either way, **the Slack webhook URL is currently hardcoded in the plist `EnvironmentVariables` block.** Don't commit the plists with the URL inline — move the webhook to `.env` (or `~/.tmux/env.sh`) and reference `${SLACK_OBS_TIDY_WEBHOOK}` in the plist. Rotate the webhook once committed since it's been visible in plain text on disk.
+   **Open follow-up:** the Slack webhook URL is still hardcoded in `com.agents-nexus.obs-{tidy,digest}.plist`. Move to `.env` and rotate the webhook — the URL has been committed in plain text.
 
-5. **`com.garner.devn-relay.plist`** — Mac-only (it's the bridge to the corporate dev network's proxy). No Linux equivalent needed unless the mini-PC also needs to reach corporate Bifrost, which probably isn't the case at home.
+5. **`com.garner.devn-relay.plist`** — Mac-only (it's the bridge to the corporate dev network's proxy). Now lives at `agents-nexus/launchd/personal/com.garner.devn-relay.plist` so it survives reformat, but stays out of the `com.agents-nexus.*` namespace. No Linux equivalent needed unless the mini-PC also needs to reach corporate Bifrost, which probably isn't the case at home.
 
 6. **`homebrew.mxcl.ollama.plist`** — Mac has both a native and Docker Ollama running. Pick one; the Docker one is what the rest of the stack already uses. If you stop the brew service, free up port 11434 collisions and reduce memory load.
 

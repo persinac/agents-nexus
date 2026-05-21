@@ -3,13 +3,14 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.alexpersinger.svc-chatbot-mr-labels</string>
+    <string>com.agents-nexus.svc-chatbot-mr-labels</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/alex.persinger@getgarner.com/bin/svc-chatbot-mr-labels.sh</string>
+        <string>__AGENTS_NEXUS_DIR__/scripts/svc-chatbot-mr-labels.sh</string>
     </array>
 
+    <!-- Every 4 hours at :07 -->
     <key>StartCalendarInterval</key>
     <array>
         <dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>7</integer></dict>
@@ -20,20 +21,20 @@
         <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>7</integer></dict>
     </array>
 
-    <key>RunAtLoad</key>
-    <false/>
-
-    <key>StandardOutPath</key>
-    <string>/Users/alex.persinger@getgarner.com/Library/Logs/svc-chatbot-mr-labels.out</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/alex.persinger@getgarner.com/Library/Logs/svc-chatbot-mr-labels.err</string>
-
     <key>EnvironmentVariables</key>
     <dict>
-        <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>/Users/alex.persinger@getgarner.com</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-svc-chatbot-mr-labels.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-svc-chatbot-mr-labels.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
 </dict>
 </plist>

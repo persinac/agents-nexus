@@ -1,0 +1,77 @@
+#!/bin/bash
+set -euo pipefail
+
+# Load agents-nexus .env for SLACK_OBS_TIDY_WEBHOOK and similar
+NEXUS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$NEXUS_DIR/.env" ]; then
+  set -a; . "$NEXUS_DIR/.env"; set +a
+fi
+
+VAULT="/Users/alex.persinger@getgarner.com/obs-garner/Garner"
+REPORTS_DIR="$VAULT/Archive/tidy-reports"
+TIMESTAMP=$(date +%Y-%m-%d_%H-%M)
+REPORT_FILE="$REPORTS_DIR/$TIMESTAMP.md"
+CLAUDE="/Users/alex.persinger@getgarner.com/.local/bin/claude"
+
+mkdir -p "$REPORTS_DIR"
+cd "$VAULT"
+
+# Snapshot any user edits before tidy runs
+git add -A
+if ! git diff --cached --quiet; then
+  git commit -m "pre-tidy snapshot $TIMESTAMP"
+fi
+
+# Run non-interactive tidy (prompt via stdin; stderr to log to avoid hook noise)
+TIDY_OUTPUT=$(cat <<'PROMPT' | "$CLAUDE" --print --dangerously-skip-permissions --add-dir "$VAULT" 2>>/tmp/obs-tidy.log
+Perform a conservative, automated tidy pass on the Obsidian vault. Make changes directly — do NOT ask for confirmation.
+
+Safe operations only:
+1. Fix broken wikilinks: if a [[Link]] points to a note that doesn't exist and there's an obvious match (case difference, minor rename), fix it. Otherwise leave it and note it in your report.
+2. Normalize tags: fix inconsistencies like #todos→#todo, deduplicate exact duplicates within a file.
+3. Daily Notes hygiene: if any Daily Notes/YYYY-MM-DD.md is missing its 'previous [[YYYY-MM-DD]]' backlink on the first line, add it pointing to the prior note.
+
+Do NOT: rename or move files, reorganize folders, delete anything, or add new content beyond the above.
+
+After making changes, print a brief summary of exactly what you changed and what you flagged but left alone.
+PROMPT
+) || true
+
+# Capture diff of what claude changed
+DIFF_OUTPUT=$(git diff HEAD 2>/dev/null || echo "No tracked changes.")
+
+# Write the report
+cat > "$REPORT_FILE" << EOF
+# Vault Tidy Report — $TIMESTAMP
+
+## Summary
+$TIDY_OUTPUT
+
+## File Diff
+\`\`\`diff
+$DIFF_OUTPUT
+\`\`\`
+
+## Revert
+\`\`\`bash
+cd $VAULT && git reset --hard HEAD~1
+\`\`\`
+EOF
+
+# Commit tidy changes (if any)
+git add -A
+if ! git diff --cached --quiet; then
+  git commit -m "obs:tidy $TIMESTAMP"
+  STATUS="Changes committed. Report: \`$REPORT_FILE\`"
+  echo "Tidy complete — $STATUS"
+else
+  STATUS="No changes needed."
+  echo "Tidy complete — $STATUS"
+fi
+
+# Slack DM notification
+if [ -n "${SLACK_OBS_TIDY_WEBHOOK:-}" ]; then
+  SUMMARY=$(echo "$TIDY_OUTPUT" | head -20)
+  PAYLOAD=$(printf '{"text":"*obs:tidy %s*\n%s\n\n_%s_"}' "$TIMESTAMP" "$SUMMARY" "$STATUS")
+  curl -s -X POST "$SLACK_OBS_TIDY_WEBHOOK" -H 'Content-type: application/json' -d "$PAYLOAD" > /dev/null
+fi

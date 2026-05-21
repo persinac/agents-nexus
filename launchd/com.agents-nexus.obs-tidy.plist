@@ -3,18 +3,20 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.alex.obs-tidy</string>
+    <string>com.agents-nexus.obs-tidy</string>
+
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/alex.persinger@getgarner.com/.local/bin/obs-tidy</string>
+        <string>__AGENTS_NEXUS_DIR__/scripts/obs-tidy</string>
     </array>
+
+    <!-- Daily at 06:00 -->
     <key>StartCalendarInterval</key>
     <dict>
-        <key>Hour</key>
-        <integer>6</integer>
-        <key>Minute</key>
-        <integer>0</integer>
+        <key>Hour</key><integer>6</integer>
+        <key>Minute</key><integer>0</integer>
     </dict>
+
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
@@ -22,10 +24,12 @@
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/alex.persinger@getgarner.com/.local/bin</string>
     </dict>
+
     <key>StandardOutPath</key>
-    <string>/tmp/obs-tidy.log</string>
+    <string>/tmp/agents-nexus-obs-tidy.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/obs-tidy.log</string>
+    <string>/tmp/agents-nexus-obs-tidy.log</string>
+
     <key>RunAtLoad</key>
     <false/>
 </dict>
