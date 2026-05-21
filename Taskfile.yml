@@ -380,6 +380,32 @@ tasks:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.muninn.sync.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.muninn.sync.plist
 
+  # Personal launchd jobs — plists for cron-style work that lives outside any
+  # specific repo (obs-digest/tidy from ~/.local/bin, svc-chatbot helpers from
+  # ~/bin, devn-relay socat). Stored here for source control / reformat
+  # recovery; scripts they reference stay at their original paths.
+  launchd:install:personal:
+    desc: Install all personal launchd jobs from launchd/personal/
+    cmds:
+      - |
+        for p in launchd/personal/*.plist; do
+          name=$(basename "$p")
+          cp "$p" ~/Library/LaunchAgents/"$name"
+          launchctl load ~/Library/LaunchAgents/"$name" 2>/dev/null || launchctl load -w ~/Library/LaunchAgents/"$name" || echo "  warn: failed to load $name (may already be loaded)"
+          echo "  installed: $name"
+        done
+
+  launchd:uninstall:personal:
+    desc: Uninstall all personal launchd jobs
+    cmds:
+      - |
+        for p in launchd/personal/*.plist; do
+          name=$(basename "$p")
+          launchctl unload ~/Library/LaunchAgents/"$name" 2>/dev/null || true
+          rm -f ~/Library/LaunchAgents/"$name"
+          echo "  removed: $name"
+        done
+
   launchd:install:obs-decay:
     desc: Install launchd agent to run obs:decay weekly on Sundays at noon
     vars:
