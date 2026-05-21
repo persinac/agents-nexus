@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toMajorMinor } from './changelogData.js';
 import { BottomToolbar } from './components/BottomToolbar.js';
 import { ChangelogModal } from './components/ChangelogModal.js';
+import { CommandCenter } from './components/CommandCenter.js';
 import { DebugView } from './components/DebugView.js';
 import { MemoryWidget } from './components/MemoryWidget.js';
 import { VersionIndicator } from './components/VersionIndicator.js';
@@ -164,6 +165,7 @@ function App() {
   const [isDebugMode, setIsDebugMode] = useState(false);
   const [alwaysShowOverlay, setAlwaysShowOverlay] = useState(false);
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
+  const [isCommandCenterOpen, setIsCommandCenterOpen] = useState(false);
 
   const currentMajorMinor = toMajorMinor(extensionVersion);
 
@@ -310,6 +312,8 @@ function App() {
         externalAssetDirectories={externalAssetDirectories}
         isMemoryOpen={isMemoryOpen}
         onToggleMemory={() => setIsMemoryOpen((v) => !v)}
+        isCommandCenterOpen={isCommandCenterOpen}
+        onToggleCommandCenter={() => setIsCommandCenterOpen((v) => !v)}
       />
 
       <VersionIndicator
@@ -408,6 +412,10 @@ function App() {
 
       {isMemoryOpen && (
         <MemoryWidget onClose={() => setIsMemoryOpen(false)} />
+      )}
+
+      {isCommandCenterOpen && (
+        <CommandCenter onClose={() => setIsCommandCenterOpen(false)} />
       )}
 
       {showMigrationNotice && (

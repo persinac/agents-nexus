@@ -16,6 +16,8 @@ interface BottomToolbarProps {
   externalAssetDirectories: string[];
   isMemoryOpen: boolean;
   onToggleMemory: () => void;
+  isCommandCenterOpen: boolean;
+  onToggleCommandCenter: () => void;
 }
 
 const panelStyle: React.CSSProperties = {
@@ -61,6 +63,8 @@ export function BottomToolbar({
   externalAssetDirectories,
   isMemoryOpen,
   onToggleMemory,
+  isCommandCenterOpen,
+  onToggleCommandCenter,
 }: BottomToolbarProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -270,6 +274,22 @@ export function BottomToolbar({
         title="Agent memory notes"
       >
         Memory
+      </button>
+      <button
+        onClick={onToggleCommandCenter}
+        onMouseEnter={() => setHovered('nexus')}
+        onMouseLeave={() => setHovered(null)}
+        style={
+          isCommandCenterOpen
+            ? { ...btnActive }
+            : {
+                ...btnBase,
+                background: hovered === 'nexus' ? 'var(--pixel-btn-hover-bg)' : btnBase.background,
+              }
+        }
+        title="Nexus command center"
+      >
+        Nexus
       </button>
       <div style={{ position: 'relative' }}>
         <button
