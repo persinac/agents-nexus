@@ -47,6 +47,11 @@ const TMUX_BIN = isWindows ? 'C:\\msys64\\usr\\bin\\tmux.exe' : 'tmux';
 const HOME = homedir();
 const CLAUDE_PROJECTS_DIR = join(HOME, '.claude', 'projects');
 
+// Command center paths
+const REGISTRY_DIR = join(HOME, '.tmux', 'registry');
+const CACHE_DIR = join(HOME, '.tmux', 'cache');
+const CHECKPOINT_DIR = process.env.CHECKPOINT_DIR || join(HOME, 'vault', 'Checkpoints');
+
 // Prefer the agent-memory venv python (has psycopg) over system python3
 const AGENTS_NEXUS_DIR = process.env.AGENTS_NEXUS_DIR || resolve(__dirname, '..');
 const AGENT_MEM_VENV = join(AGENTS_NEXUS_DIR, 'mnemon', '.venv');
@@ -63,7 +68,7 @@ const MEMORY_PYTHON = (() => {
 
 // ── State ────────────────────────────────────────────────────────
 
-/** @type {Map<number, {name: string, waiting: string, path: string, lastTool?: {toolId: string, status: string}}>} */
+/** @type {Map<number, {name: string, waiting: string, waitType: string, path: string, lastTool?: {toolId: string, status: string, toolName?: string, input?: object}}>} */
 const agents = new Map();
 
 /** @type {Map<string, {offset: number, activeTools: Set<string>}>} */
@@ -96,12 +101,12 @@ let nextToolId = 1;
 function tmuxListWindows() {
   try {
     const out = execSync(
-      `"${TMUX_BIN}" list-windows -t "${TMUX_SESSION}" -F "#{window_index}|#{window_name}|#{@waiting}|#{pane_current_path}|#{pane_current_command}"`,
+      `"${TMUX_BIN}" list-windows -t "${TMUX_SESSION}" -F "#{window_index}|#{window_name}|#{@waiting}|#{pane_current_path}|#{pane_current_command}|#{@wait_type}"`,
       { encoding: 'utf8', timeout: 2000 }
     ).trim();
     return out.split('\n').filter(Boolean).map(line => {
-      const [index, name, waiting, path, command] = line.split('|');
-      return { index: parseInt(index, 10), name, waiting, path, command };
+      const [index, name, waiting, path, command, waitType] = line.split('|');
+      return { index: parseInt(index, 10), name, waiting, path, command, waitType: waitType || '' };
     });
   } catch {
     return [];
@@ -280,7 +285,7 @@ function processTranscriptRecords(agentId, records) {
 
           // Track last tool so new clients can catch up
           const agent = agents.get(agentId);
-          if (agent) agent.lastTool = { toolId, status };
+          if (agent) agent.lastTool = { toolId, status, toolName, input };
 
           const state = transcriptState.get(`agent_${agentId}`);
           if (state) state.activeTools.add(toolId);
@@ -319,15 +324,16 @@ function poll() {
 
     if (!existing) {
       // New agent
-      agents.set(id, { name: win.name, waiting: win.waiting, path: win.path });
+      agents.set(id, { name: win.name, waiting: win.waiting, waitType: win.waitType, path: win.path });
       console.log(`[Poll] New agent ${id} (${win.name}) waiting="${win.waiting}" → ${status}`);
       broadcast({ type: 'agentCreated', id, folderName: win.name });
       broadcastStatus(id, status);
     } else {
       // Status changed?
       if (existing.waiting !== win.waiting) {
-        console.log(`[Poll] Agent ${id} (${win.name}) waiting="${existing.waiting}" → "${win.waiting}" (${status})`);
+        console.log(`[Poll] Agent ${id} (${win.name}) waiting="${existing.waiting}" → "${win.waiting}" (${status}) type=${win.waitType}`);
         existing.waiting = win.waiting;
+        existing.waitType = win.waitType;
         broadcastStatus(id, status);
       }
 
@@ -386,6 +392,261 @@ const httpServer = http.createServer((req, res) => {
         { encoding: 'utf8', timeout: 10000 }
       ).trim();
       res.end(out || '[]');
+    } catch {
+      res.end('[]');
+    }
+    return;
+  }
+
+  // ── Command Center API ──────────────────────────────────────────
+
+  const corsJson = () => {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  };
+
+  // CORS preflight for POST endpoints
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  // POST /api/agents/:id/respond — approve or deny a permission prompt
+  const respondMatch = url.pathname.match(/^\/api\/agents\/(\d+)\/respond$/);
+  if (respondMatch && req.method === 'POST') {
+    corsJson();
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { action } = JSON.parse(body);
+        const agentId = parseInt(respondMatch[1], 10);
+        const agent = agents.get(agentId);
+        if (!agent) {
+          res.end(JSON.stringify({ ok: false, error: 'agent not found' }));
+          return;
+        }
+        const wType = agent.waitType || 'permission_prompt';
+        console.log(`[Respond] Agent ${agentId} (${agent.name}): action=${action}, waiting=${agent.waiting}, type=${wType}`);
+        if (action === 'approve') {
+          if (wType === 'elicitation_dialog') {
+            // AskUserQuestion / edit acceptance — confirm with Enter
+            execSync(`"${TMUX_BIN}" send-keys -t "${TMUX_SESSION}:${agentId}" Enter`, { timeout: 3000 });
+          } else {
+            // Permission prompt — approve with 'y'
+            execSync(`"${TMUX_BIN}" send-keys -t "${TMUX_SESSION}:${agentId}" -l y`, { timeout: 3000 });
+          }
+        } else if (action === 'deny') {
+          execSync(`"${TMUX_BIN}" send-keys -t "${TMUX_SESSION}:${agentId}" Escape`, { timeout: 3000 });
+        } else {
+          res.end(JSON.stringify({ ok: false, error: 'action must be approve or deny' }));
+          return;
+        }
+        res.end(JSON.stringify({ ok: true, action, agentId }));
+      } catch (err) {
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/system/health') {
+    corsJson();
+    try {
+      let docker = false, containerCount = 0;
+      try {
+        const out = execSync('docker info --format "{{.ContainersRunning}}"', { encoding: 'utf8', timeout: 5000 }).trim();
+        docker = true;
+        containerCount = parseInt(out, 10) || 0;
+      } catch {}
+
+      let tmux = false;
+      try { execSync(`${TMUX_BIN} has-session -t ${TMUX_SESSION} 2>/dev/null`, { timeout: 3000 }); tmux = true; } catch {}
+
+      let database = false;
+      try {
+        const stats = execSync(`"${MEMORY_PYTHON}" "${MEMORY_STATS_SCRIPT}"`, { encoding: 'utf8', timeout: 10000 }).trim();
+        const parsed = JSON.parse(stats || '{}');
+        database = !parsed.error;
+      } catch {}
+
+      let timerCount = 0;
+      try {
+        const out = execSync('systemctl --user list-timers --no-pager --no-legend 2>/dev/null', { encoding: 'utf8', timeout: 5000 });
+        timerCount = out.trim().split('\n').filter(l => l.trim()).length;
+      } catch {}
+
+      res.end(JSON.stringify({
+        arbiter: true, docker, tmux, database,
+        agentCount: agents.size, containerCount, timerCount,
+      }));
+    } catch {
+      res.end('{"arbiter":true,"error":"health check failed"}');
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/system/agents') {
+    corsJson();
+    const result = [];
+    for (const [id, agent] of agents) {
+      let uptime = null;
+      try {
+        const files = existsSync(REGISTRY_DIR) ? readdirSync(REGISTRY_DIR) : [];
+        for (const f of files) {
+          const content = readFileSync(join(REGISTRY_DIR, f), 'utf8');
+          const slotMatch = content.match(/^SLOT=(\d+)/m);
+          if (slotMatch && parseInt(slotMatch[1], 10) === id) {
+            const atMatch = content.match(/^AT=(\d+)/m);
+            if (atMatch) uptime = Math.floor(Date.now() / 1000) - parseInt(atMatch[1], 10);
+            break;
+          }
+        }
+      } catch {}
+      const lt = agent.lastTool || null;
+      let toolDetail = null;
+      if (lt && agent.waiting === '1') {
+        toolDetail = { status: lt.status, toolName: lt.toolName || null };
+        if (lt.input) {
+          const inp = lt.input;
+          if (inp.file_path) toolDetail.file = inp.file_path;
+          if (inp.command) toolDetail.command = inp.command;
+          if (inp.pattern) toolDetail.pattern = inp.pattern;
+          if (inp.description) toolDetail.description = inp.description;
+        }
+      }
+      result.push({
+        id, name: agent.name, status: waitingToStatus(agent.waiting),
+        cwd: agent.path, uptime,
+        lastTool: lt ? { toolId: lt.toolId, status: lt.status } : null,
+        pendingTool: toolDetail,
+        waitType: agent.waiting === '1' ? (agent.waitType || 'permission_prompt') : null,
+      });
+    }
+    res.end(JSON.stringify(result));
+    return;
+  }
+
+  if (url.pathname === '/api/system/services') {
+    corsJson();
+    try {
+      const out = execSync('docker ps -a --format "{{json .}}"', { encoding: 'utf8', timeout: 10000 });
+      const containers = out.trim().split('\n').filter(l => l.trim()).map(line => {
+        const c = JSON.parse(line);
+        return {
+          name: c.Names, status: c.State || c.Status,
+          health: (c.Status || '').match(/\((healthy|unhealthy)\)/)?.[1] || 'none',
+          uptime: c.Status, ports: c.Ports || '', image: c.Image,
+        };
+      });
+      res.end(JSON.stringify(containers));
+    } catch {
+      res.end('[]');
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/system/timers') {
+    corsJson();
+    try {
+      const lines = execSync('systemctl --user list-timers --all --no-pager --no-legend 2>/dev/null', { encoding: 'utf8', timeout: 5000 }).trim();
+      const timers = [];
+      for (const line of lines.split('\n')) {
+        if (!line.trim()) continue;
+        const m = line.match(/(\S+\.timer)\s+(\S+\.service)\s*$/);
+        if (!m) continue;
+        const unitName = m[1].replace(/\.timer$/, '');
+        let result = 'unknown', lastRun = null, nextRun = '', leftUntil = '';
+        let timerDescription = '', serviceDescription = '';
+        try {
+          const show = execSync(`systemctl --user show ${unitName}.service --property=Result,ExecMainStartTimestamp,Description --no-pager 2>/dev/null`, { encoding: 'utf8', timeout: 3000 });
+          const resultMatch = show.match(/^Result=(.+)/m);
+          if (resultMatch) result = resultMatch[1];
+          const tsMatch = show.match(/^ExecMainStartTimestamp=(.+)/m);
+          if (tsMatch && tsMatch[1].trim()) lastRun = tsMatch[1].trim();
+          const descMatch = show.match(/^Description=(.+)/m);
+          if (descMatch) serviceDescription = descMatch[1].trim();
+        } catch {}
+        try {
+          const timerShow = execSync(`systemctl --user show ${unitName}.timer --property=NextElapseUSecRealtime,Description --no-pager 2>/dev/null`, { encoding: 'utf8', timeout: 3000 });
+          const nm = timerShow.match(/^NextElapseUSecRealtime=(.+)/m);
+          if (nm && nm[1].trim()) nextRun = nm[1].trim();
+          const descMatch = timerShow.match(/^Description=(.+)/m);
+          if (descMatch) timerDescription = descMatch[1].trim();
+        } catch {}
+        const prefix = line.substring(0, line.indexOf(m[1])).trim();
+        const cols = prefix.split(/\s{2,}/);
+        if (cols.length >= 2) leftUntil = cols[1];
+        timers.push({
+          name: unitName, nextRun, leftUntil, lastRun, result, active: true,
+          description: serviceDescription || timerDescription || null,
+        });
+      }
+      res.end(JSON.stringify(timers));
+    } catch {
+      res.end('[]');
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/system/cache') {
+    corsJson();
+    try {
+      if (!existsSync(CACHE_DIR)) { res.end('[]'); return; }
+      const files = readdirSync(CACHE_DIR);
+      const entries = [];
+      for (const f of files) {
+        if (!f.endsWith('.md')) continue;
+        const fp = join(CACHE_DIR, f);
+        const st = statSync(fp);
+        const ageSec = Math.floor((Date.now() - st.mtimeMs) / 1000);
+        entries.push({
+          project: f.replace(/\.md$/, ''), file: f,
+          size: st.size, mtime: st.mtime.toISOString(),
+          age: ageSec, stale: ageSec > 86400,
+        });
+      }
+      entries.sort((a, b) => a.age - b.age);
+      res.end(JSON.stringify(entries));
+    } catch {
+      res.end('[]');
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/checkpoints') {
+    corsJson();
+    try {
+      const days = parseInt(url.searchParams.get('days') || '7', 10);
+      const cutoff = Date.now() - days * 86400000;
+      if (!existsSync(CHECKPOINT_DIR)) { res.end('[]'); return; }
+      const files = readdirSync(CHECKPOINT_DIR).filter(f => f.endsWith('-checkpoint.md'));
+      const entries = [];
+      for (const f of files) {
+        const fp = join(CHECKPOINT_DIR, f);
+        const st = statSync(fp);
+        if (st.mtimeMs < cutoff) continue;
+        const dateMatch = f.match(/^(\d{4}-\d{2}-\d{2})-(.+)-checkpoint\.md$/);
+        let branch = null, changes = null;
+        try {
+          const head = readFileSync(fp, 'utf8').slice(0, 800);
+          const bm = head.match(/\*\*Branch:\*\*\s*(.+)/);
+          if (bm) branch = bm[1].trim();
+          const cm = head.match(/\*\*Changes:\*\*\s*(.+)/);
+          if (cm) changes = cm[1].trim();
+        } catch {}
+        entries.push({
+          date: dateMatch?.[1] || null, project: dateMatch?.[2] || f,
+          file: f, size: st.size, mtime: st.mtime.toISOString(),
+          branch, changes,
+        });
+      }
+      entries.sort((a, b) => new Date(b.mtime).getTime() - new Date(a.mtime).getTime());
+      res.end(JSON.stringify(entries));
     } catch {
       res.end('[]');
     }

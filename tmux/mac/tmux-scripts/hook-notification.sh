@@ -24,6 +24,7 @@ WNAME=$(tmux display-message -t "$TMUX_PANE" -p '#W' 2>/dev/null)
 
 tmux set-window-option -t "$TMUX_PANE" @waiting 1 2>/dev/null
 tmux set-option -w -t "$TMUX_PANE" @wait_since "$NOW" 2>/dev/null
+tmux set-option -w -t "$TMUX_PANE" @wait_type "$NTYPE" 2>/dev/null
 
 # macOS notification
 osascript -e "display notification \"Agent ${WNAME:-?} needs input ($NTYPE)\" with title \"Claude Code\" sound name \"Glass\"" 2>/dev/null &
