@@ -11,6 +11,12 @@ dependencies = [
     "requests>=2.32.0",
     "rmrl>=0.2.1",
     "rmscene>=0.8.0",
+    # rmrl 0.2.1 (abandoned, 2021) imports `pkg_resources` at the top of
+    # rmrl/constants.py. setuptools 82+ (Feb 2026) dropped the bundled
+    # `pkg_resources` module, breaking every rmrl conversion under
+    # Python 3.14. Pin to the last version that still bundles it until
+    # rmrl is patched or replaced.
+    "setuptools>=80,<82",
 ]
 
 [project.scripts]
@@ -28,7 +34,6 @@ dev = [
     "pytest>=8.0.0",
     "pytest-mock>=3.14.0",
     "ruff>=0.11.0",
-    "setuptools>=82.0.1",
 ]
 
 [tool.uv]
