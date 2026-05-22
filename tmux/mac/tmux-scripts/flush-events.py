@@ -17,22 +17,25 @@ from pathlib import Path
 
 
 def _db_url() -> str:
-    # Load .env from agent-memory project
-    agent_memory_dir = Path(
-        os.getenv("AGENT_MEMORY_DIR", Path(os.environ.get("AGENTS_NEXUS_DIR", Path.home() / "repos/agents-nexus")) / "mnemon")
-    )
-    env_file = agent_memory_dir / ".env"
-    if env_file.exists():
+    # DATABASE_URL lives in the repo-root .env (work machine -> local docker
+    # PG; personal machine -> cloud PG). Each machine's .env is gitignored
+    # and configured at setup time per README_SETUP_{WORK,PERSONAL}.md.
+    # Fall back to <mnemon>/.env for backward-compat with old setups.
+    nexus_dir = Path(os.environ.get("AGENTS_NEXUS_DIR", Path.home() / "repos/agents-nexus"))
+    mnemon_dir = Path(os.getenv("AGENT_MEMORY_DIR", nexus_dir / "mnemon"))
+    for env_file in (nexus_dir / ".env", mnemon_dir / ".env"):
+        if not env_file.exists():
+            continue
         try:
             from dotenv import load_dotenv
             load_dotenv(env_file)
         except ImportError:
-            # parse manually — dotenv may not always be importable
             for line in env_file.read_text().splitlines():
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
                     os.environ.setdefault(k.strip(), v.strip())
+        break  # first hit wins
 
     url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not url:
@@ -76,7 +79,8 @@ def main() -> int:
         with buffer.open("a") as f:
             f.write(flushing.read_text())
         flushing.unlink(missing_ok=True)
-        return 0
+        print(f"[memory-flush] no DATABASE_URL configured — {len(events)} event(s) returned to buffer", file=sys.stderr)
+        return 1
 
     try:
         import psycopg
