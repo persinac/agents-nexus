@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Run the full Guilty Spark nightly pipeline:
-#   1. spark reclaim   — full index rebuild across all repos
+#   1. spark sync       — incremental re-index of repos whose origin/HEAD has
+#                         moved since the last run (full reclaim on first run)
 #   2. spark synthesize — synthesize decision records from recent MRs
+#
+# Use `spark reclaim` directly (not this script) when you need a full index
+# rebuild — e.g. after a schema migration. Sync handles steady-state nightly.
 #
 # Usage:
 #   ./scripts/spark-pipeline.sh            # run with default 2-day lookback
@@ -31,9 +35,9 @@ fi
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] ── Guilty Spark pipeline starting ──"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] SPARK_DIR: $SPARK_DIR"
 
-# Step 1: Full index rebuild
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Step 1/2: reclaim (full index rebuild)..."
-"$SPARK_BIN" reclaim
+# Step 1: Incremental re-index (only repos whose origin/HEAD has moved)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Step 1/2: sync (incremental delta re-index)..."
+"$SPARK_BIN" sync
 
 # Step 2: Synthesize decisions from recent MRs
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Step 2/2: synthesize decisions (last ${DAYS} days)..."

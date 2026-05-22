@@ -7,7 +7,9 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger("spark.builder")
@@ -397,3 +399,176 @@ def activate_installation(
         logger.info("Indexed %d chunks for %s", len(chunks), installation)
 
     return {"installation": installation, "chunks": len(chunks)}
+
+
+# ── sync ─────────────────────────────────────────────────────────────
+
+
+def _git_head_ts(repo_dir: Path) -> int | None:
+    """Return the unix epoch of the local HEAD commit.
+
+    Spark sync compares this timestamp against the previously-indexed value
+    to decide whether a repo needs re-embedding. We deliberately do NOT
+    fetch from origin here — the spark container has /repos mounted
+    read-only and no git credentials. Keeping HEAD up to date is the host's
+    responsibility (typically via a separate nightly repo-sync job).
+
+    Returns None on any failure (missing HEAD, broken repo, etc.).
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_dir), "log", "-1", "--format=%ct", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+        return int(out.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def _git_clone_url(repo_dir: Path) -> str:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_dir), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        return out.stdout.strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return ""
+
+
+def sync_installations(
+    config: SparkConfig,
+    dry_run: bool = False,
+    path_filter: str | None = None,
+) -> dict[str, int]:
+    """Incremental sync: re-index only installations whose origin/HEAD has moved.
+
+    Discovers installations under config.installations_path, classifies each as
+    `up-to-date`, `changed`, `new`, `removed`, or `fetch-failed`, then runs
+    activate_installation() for changed/new and deletes rows for removed.
+    Per-installation failures are logged and skipped; one failure does not
+    abort the run.
+
+    When `path_filter` is set, only installations whose rel_path starts with
+    the prefix are considered. Useful for scoped verification or surgical
+    re-indexes; in this mode `removed` is never reported (we can't tell if a
+    repo outside the filter was actually deleted).
+
+    Returns a dict of classification counts. With dry_run=True, performs
+    classification only — no activation, no prune, no metadata write.
+    """
+    from spark.indexer.metadata import InstallationMeta, load_metadata, save_metadata
+
+    start = time.time()
+    meta = load_metadata(config.metadata_path)
+    discovered = _discover_installations(config)
+    if path_filter:
+        discovered = [(p, r) for p, r in discovered if r.startswith(path_filter)]
+    discovered_by_rel = {rel: repo_dir for repo_dir, rel in discovered}
+
+    if path_filter:
+        # Confine metadata operations to the filter scope so unrelated repos
+        # aren't classified as removed.
+        scoped_meta_keys = {k for k in meta.keys() if k.startswith(path_filter)}
+        known_rels = scoped_meta_keys
+    else:
+        known_rels = set(meta.keys())
+    found_rels = set(discovered_by_rel.keys())
+    new_rels = sorted(found_rels - known_rels)
+    removed_rels = sorted(known_rels - found_rels)
+    present_rels = sorted(found_rels & known_rels)
+
+    # Classification: "head-read-failed" replaces "fetch-failed" now that we
+    # only read local HEAD. Same shape externally so the summary line stays
+    # backward-compatible — failures are still rare and surfaced as warnings.
+    counts = {"up-to-date": 0, "changed": 0, "new": 0, "removed": 0, "fetch-failed": 0}
+    chunks_written = 0
+
+    # 1. New installations — full index
+    for rel in new_rels:
+        repo_dir = discovered_by_rel[rel]
+        logger.info("sync: %s -> new", rel)
+        if dry_run:
+            counts["new"] += 1
+            continue
+        try:
+            head_ts = _git_head_ts(repo_dir)
+            result = activate_installation(config, repo_dir, rel, verbose=False)
+            chunks_written += result.get("chunks", 0)
+            meta[rel] = InstallationMeta(
+                indexed_at=datetime.now(timezone.utc).isoformat(),
+                last_remote_ts=head_ts or 0,
+                clone_url=_git_clone_url(repo_dir),
+            )
+            counts["new"] += 1
+        except Exception as e:
+            logger.warning("sync: %s activation failed: %s", rel, e)
+
+    # 2. Present installations — compare local HEAD against stored timestamp
+    for rel in present_rels:
+        repo_dir = discovered_by_rel[rel]
+        head_ts = _git_head_ts(repo_dir)
+        if head_ts is None:
+            logger.warning("sync: %s -> head-read-failed (left at last indexed state)", rel)
+            counts["fetch-failed"] += 1
+            continue
+        prior = meta[rel]
+        if head_ts <= prior.last_remote_ts:
+            logger.info("sync: %s -> up-to-date", rel)
+            counts["up-to-date"] += 1
+            continue
+        logger.info("sync: %s -> changed (HEAD ts %d -> %d)", rel, prior.last_remote_ts, head_ts)
+        if dry_run:
+            counts["changed"] += 1
+            continue
+        try:
+            result = activate_installation(config, repo_dir, rel, verbose=False)
+            chunks_written += result.get("chunks", 0)
+            meta[rel] = InstallationMeta(
+                indexed_at=datetime.now(timezone.utc).isoformat(),
+                last_remote_ts=head_ts,
+                clone_url=_git_clone_url(repo_dir) or prior.clone_url,
+            )
+            counts["changed"] += 1
+        except Exception as e:
+            logger.warning("sync: %s activation failed: %s — prior metadata retained", rel, e)
+
+    # 3. Removed installations — prune from LanceDB and metadata
+    if removed_rels and not dry_run:
+        try:
+            db = lancedb.connect(str(config.index_path))
+            table = db.open_table(TABLE_NAME)
+        except Exception as e:
+            logger.warning("sync: cannot open LanceDB to prune removed installations: %s", e)
+            table = None
+        for rel in removed_rels:
+            logger.info("sync: %s -> removed", rel)
+            if table is None:
+                continue
+            try:
+                table.delete(f'installation_path = "{rel}"')
+                meta.pop(rel, None)
+                counts["removed"] += 1
+            except Exception as e:
+                logger.warning("sync: %s prune failed: %s — metadata entry retained for retry", rel, e)
+    elif dry_run:
+        for rel in removed_rels:
+            logger.info("sync: %s -> removed (dry-run)", rel)
+            counts["removed"] += 1
+
+    # 4. Persist + summary
+    if not dry_run:
+        try:
+            save_metadata(config.metadata_path, meta)
+        except OSError as e:
+            logger.error("sync: failed to write %s: %s", config.metadata_path, e)
+
+    elapsed = time.time() - start
+    logger.info(
+        "sync: complete up-to-date=%d changed=%d new=%d removed=%d fetch-failed=%d "
+        "chunks_written=%d elapsed=%.1fs%s",
+        counts["up-to-date"], counts["changed"], counts["new"],
+        counts["removed"], counts["fetch-failed"], chunks_written, elapsed,
+        " (dry-run)" if dry_run else "",
+    )
+    return counts

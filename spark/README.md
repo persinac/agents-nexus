@@ -21,6 +21,7 @@ AI-powered semantic search index for your repositories. Chunks, embeds, and inde
 | The MCP search tool | **spark** |
 | Full index rebuild | **reclaim** |
 | Single repo re-index | **activate** |
+| Incremental delta re-index | **sync** |
 | Repo summaries | **monitor-logs** |
 | A search query | **querying the installation** |
 
@@ -56,7 +57,13 @@ spark status
 # Re-index a single repo after changes
 spark activate svc-chatbot
 
-# Full rebuild
+# Incremental: re-index only repos whose origin/HEAD has moved since last run.
+# This is what the nightly cron uses. First run is a full reclaim (no prior
+# metadata); steady state runs in seconds-to-minutes.
+spark sync
+spark sync --dry-run        # classify only, no writes
+
+# Full rebuild — use after a schema migration or to recover a wiped index
 spark reclaim
 
 # Synthesize decision records from historical MRs (requires GitLab + decisions_enabled: true)

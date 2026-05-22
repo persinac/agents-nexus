@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 class SparkConfig:
     installations_path: Path
     index_path: Path
+    metadata_path: Path = field(init=False)
     embedding_model: str
     embedding_dimensions: int
     teams: dict[str, str]
@@ -96,6 +97,9 @@ class SparkConfig:
             mr_chunk_max_chars=raw.get("mr_chunk_max_chars", 900),
             max_chars_per_chunk=raw.get("max_chars_per_chunk", 1000),
         )
+
+    def __post_init__(self) -> None:
+        self.metadata_path = self.index_path / "installations.json"
 
     def resolve_team(self, relative_path: str) -> str:
         """Resolve a relative repo path to its team name."""

@@ -62,6 +62,31 @@ def activate(ctx: click.Context, repo_name: str) -> None:
 
 
 @cli.command()
+@click.option("--dry-run", is_flag=True, help="Classify only — skip activation, prune, and metadata write")
+@click.option("--path-filter", "-p", default=None, help="Only operate on installations under this path prefix (e.g., 'shared/libs')")
+@click.pass_context
+def sync(ctx: click.Context, dry_run: bool, path_filter: str | None) -> None:
+    """Incremental re-index driven by per-installation git deltas.
+
+    Walks every installation under installations_path, fetches each one's
+    origin and compares the resulting HEAD timestamp against the last index
+    timestamp stored in <index_path>/installations.json. Only repos whose
+    HEAD has moved are re-embedded. New repos are full-indexed; removed
+    repos have their chunks pruned from LanceDB.
+
+    First run treats every repo as new (equivalent to a reclaim) since
+    there's no prior metadata. Use `spark reclaim` for schema migrations
+    or disaster recovery.
+    """
+    from spark.indexer.builder import sync_installations
+
+    config = ctx.obj["config"]
+    counts = sync_installations(config, dry_run=dry_run, path_filter=path_filter)
+    summary = " ".join(f"{k}={v}" for k, v in counts.items())
+    click.echo(summary)
+
+
+@cli.command()
 @click.argument("query")
 @click.option("--top-k", "-k", default=10, help="Number of results")
 @click.option("--team", "-t", default=None, help="Filter by team name")

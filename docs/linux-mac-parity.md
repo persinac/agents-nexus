@@ -133,7 +133,7 @@ Captured from `~/Library/LaunchAgents/` on this Mac. Some live in agents-nexus, 
 | `com.agents-nexus.obs-tidy.plist` | daily 06:00 | `scripts/obs-tidy` (vault cleanup + Slack summary) | **missing systemd unit** |
 | `com.agents-nexus.svc-chatbot-mr-labels.plist` | every 4 h at :07 | `scripts/svc-chatbot-mr-labels.sh` | **missing systemd unit** |
 | `com.agents-nexus.svc-chatbot-rebase.plist` | weekdays 07:13 | `scripts/svc-chatbot-rebase.sh` (currently failing — see below) | **missing systemd unit** |
-| `com.agents-nexus.guilty-spark.nightly.plist` | daily 02:00 | `spark/scripts/spark-pipeline.sh` (currently failing — see below) | `nightly-spark.{service,timer}` exists; confirm script path |
+| `com.agents-nexus.guilty-spark.nightly.plist` | daily 02:00 | `spark/scripts/spark-pipeline.sh` (currently failing — see below) | `nightly-spark.{service,timer}` exists; confirm script path. Nightly entrypoint is now `spark sync` (incremental); `spark reclaim` is the schema-migration escape hatch. |
 
 ### Jobs sourced from sibling repos (would need Linux ports)
 
