@@ -117,6 +117,12 @@ services:
     ports:
       - "${SPARK_PORT:-8343}:8343"
     command: ["serve", "--transport", "sse", "--host", "0.0.0.0", "--port", "8343"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8343/sse', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     depends_on:
       ollama:
         condition: service_healthy
@@ -155,6 +161,12 @@ services:
     ports:
       - "${MNEMON_MCP_PORT:-8330}:8330"
     command: ["uv", "run", "python", "-m", "agent_memory.server.mcp_server"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8330/sse', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -171,6 +183,14 @@ services:
     restart: always
     ports:
       - "${DASHBOARD_PORT:-8421}:80"
+    healthcheck:
+      # 127.0.0.1, not localhost — musl resolver in alpine prefers ::1 and
+      # nginx only listens on IPv4.
+      test: ["CMD", "wget", "-O", "/dev/null", "-q", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   # ── LLM Gateway ──────────────────────────────────────────────────────────
 
@@ -192,6 +212,14 @@ services:
       LANGFUSE_MAX_EVENT_SIZE_BYTES: "2000000"
     ports:
       - "${PROXY_PORT:-4000}:4000"
+    healthcheck:
+      # Proxy serves an HTTP endpoint at /v1/messages; / returns 404 which
+      # still proves the listener is alive. Catch HTTPError to accept that.
+      test: ["CMD", "python3", "-c", "import urllib.request as r, urllib.error as e\ntry:\n    r.urlopen('http://localhost:4000/', timeout=2)\nexcept e.HTTPError:\n    pass"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── Langfuse (optional observability) ────────────────────────────────────
   # Start with: docker compose -f docker-compose.work.yml --profile langfuse up -d
