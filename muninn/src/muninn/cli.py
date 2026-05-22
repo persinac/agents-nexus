@@ -123,6 +123,7 @@ def sync(ctx, dry_run, folders, include_trash):
 
     success = 0
     errors = 0
+    skipped = 0
     for uuid in pending:
         title = rm_sync.notebook_title(staging_dir, uuid)
         rm_folder = folder_for(uuid)
@@ -132,8 +133,11 @@ def sync(ctx, dry_run, folders, include_trash):
         try:
             rm_paths = rm_sync.list_page_files(staging_dir, uuid)
             if not rm_paths:
-                log.warning("[%s] %r — no .rm pages, skipping", uuid[:8], title)
-                errors += 1
+                # No .rm pages = rM folder (organizational container) or an
+                # empty notebook. Neither is an error — count separately so
+                # the summary distinguishes "nothing to do" from real failures.
+                log.info("[%s] %r — no .rm pages (folder or empty notebook), skipping", uuid[:8], title)
+                skipped += 1
                 continue
 
             # Persist notebook + page rows up front so OCR caching works even
@@ -181,7 +185,10 @@ def sync(ctx, dry_run, folders, include_trash):
             log.error("[%s] Failed to process %r: %s", uuid[:8], title, exc)
             errors += 1
 
-    click.echo(f"\nDone: {success} processed, {errors} failed, {len(unchanged_uuids)} unchanged.")
+    click.echo(
+        f"\nDone: {success} processed, {errors} failed, {skipped} skipped, "
+        f"{len(unchanged_uuids)} unchanged."
+    )
 
 
 VALID_PROVIDERS = ("claude", "myscript")
