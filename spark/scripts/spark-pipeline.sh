@@ -24,23 +24,35 @@ set -a
 [ -f "$SPARK_DIR/.env" ] && source "$SPARK_DIR/.env"
 set +a
 
-# Use the project venv directly — no PATH guessing needed in cron/launchd
+# Pick a spark invocation method:
+#   1. Local venv at spark/.venv/bin/spark (personal-machine setup).
+#   2. Otherwise, the nexus-spark Docker container (work-machine setup —
+#      docker-compose.work.yml owns spark; no local Python venv exists).
 SPARK_BIN="$SPARK_DIR/.venv/bin/spark"
+SPARK_MODE=""
 
-if [ ! -x "$SPARK_BIN" ]; then
-  echo "ERROR: spark not found at $SPARK_BIN — run 'uv sync' in $SPARK_DIR first" >&2
+if [ -x "$SPARK_BIN" ]; then
+  SPARK_MODE="venv"
+  spark() { "$SPARK_BIN" "$@"; }
+elif command -v docker >/dev/null 2>&1 && [ "$(docker inspect -f '{{.State.Running}}' nexus-spark 2>/dev/null)" = "true" ]; then
+  SPARK_MODE="docker"
+  spark() { docker exec nexus-spark uv run spark "$@"; }
+else
+  echo "ERROR: spark is not available" >&2
+  echo "  - local venv missing: $SPARK_BIN (run 'uv sync' in $SPARK_DIR), or" >&2
+  echo "  - docker container 'nexus-spark' not running (start the stack)" >&2
   exit 1
 fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] ── Guilty Spark pipeline starting ──"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] SPARK_DIR: $SPARK_DIR"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] SPARK_DIR: $SPARK_DIR  (mode: $SPARK_MODE)"
 
 # Step 1: Incremental re-index (only repos whose origin/HEAD has moved)
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Step 1/2: sync (incremental delta re-index)..."
-"$SPARK_BIN" sync
+spark sync
 
 # Step 2: Synthesize decisions from recent MRs
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Step 2/2: synthesize decisions (last ${DAYS} days)..."
-"$SPARK_BIN" synthesize --all --days "$DAYS"
+spark synthesize --all --days "$DAYS"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] ── Pipeline complete ──"
