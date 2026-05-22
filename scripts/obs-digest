@@ -48,12 +48,16 @@ if [ -f "$DAILY_NOTE" ]; then
   echo "" >> "$CONTEXT_FILE"
 fi
 
-while IFS= read -r f; do
-  [[ "$f" == "$DAILY_NOTE" ]] && continue
-  echo "=== $(basename "$f" .md) ===" >> "$CONTEXT_FILE"
-  cat "$f" >> "$CONTEXT_FILE"
-  echo "" >> "$CONTEXT_FILE"
-done <<< "$MODIFIED_FILES"
+# Skip the loop entirely when there are no other modified files —
+# `<<< ""` still iterates once with f="" which makes `cat ""` fail under set -e.
+if [ -n "$MODIFIED_FILES" ]; then
+  while IFS= read -r f; do
+    [[ "$f" == "$DAILY_NOTE" ]] && continue
+    echo "=== $(basename "$f" .md) ===" >> "$CONTEXT_FILE"
+    cat "$f" >> "$CONTEXT_FILE"
+    echo "" >> "$CONTEXT_FILE"
+  done <<< "$MODIFIED_FILES"
+fi
 
 # Build prompt file (avoids heredoc-in-subshell quoting issues)
 cat > "$PROMPT_FILE" << 'PROMPT'
