@@ -2,7 +2,17 @@
 
 RTS-inspired multi-agent orchestration with a built-in knowledge stack. Run multiple Claude Code agents across repos simultaneously, persist memory across sessions, and semantically search your codebase — all from tmux.
 
-Multi-platform: macOS, Windows (MSYS2), Linux.
+Multi-platform: macOS and Linux. (A historical Windows/MSYS2 path exists but is no longer actively maintained.)
+
+## Quick start
+
+```bash
+git clone <this-repo> && cd agents-nexus
+./install.sh                  # interactive: deps, profile, .env, optional stack start
+./install.sh --profile work   # or jump straight to a named profile
+```
+
+See [`INSTALL.md`](INSTALL.md) for the full installer reference (every flag, every prompt, every file it writes). Use-case-specific gotchas live in [`README_SETUP_PERSONAL.md`](README_SETUP_PERSONAL.md) and [`README_SETUP_WORK.md`](README_SETUP_WORK.md).
 
 ## What's Inside
 
@@ -90,34 +100,27 @@ Ollama, Spark, the mnemon flush daemon, and the pixel dashboard all run as Docke
 ```bash
 cd ~/repos/agents-nexus
 
-# 1. Create your local env file
-cp .env.example .env
+# 1. Interactive installer — system deps, profile, .env, optional stack start.
+#    Generates a named profile (.env.<name>) and symlinks .env to it.
+./install.sh --profile personal
 
-# 2. Fill in secrets — key fields:
-#    DATABASE_URL  — connection string to your cloud Postgres
-#    GITLAB_TOKEN  — GitLab personal access token (for repo metadata)
-#    REPOS_PATH    — absolute path to your repos directory (no ~ expansion)
-#    HOST_TMUX_DIR — usually ~/.tmux
-$EDITOR .env
-
-# 3. Run database migrations
+# 2. Database migrations
 task mnemon:migrate
 
-# 4. Start Docker services (ollama, spark, mnemon-flush, dashboard)
-task docker:up
-
-# 5. Pull the embedding model into Ollama (once; ~270 MB)
+# 3. Pull the embedding model into Ollama (once; ~270 MB)
 task docker:init
 
-# 6. Start native services (arbiter + mnemon MCP) in the background
+# 4. Start native services (arbiter + mnemon MCP) in the background
 task up
 
-# 7. Build the Spark index (first run indexes all repos — takes a while)
+# 5. Build the Spark index (first run indexes all repos — takes a while)
 task spark:reclaim
 
-# 8. Wire autostart so the stack comes up after every reboot
+# 6. Wire autostart so the stack comes up after every reboot
 task launchd:install
 ```
+
+If you skipped the "start the stack now?" prompt in step 1, run `task docker:up` before step 2. To switch between profiles later use `./install.sh --switch <name>`. To paste in Langfuse API keys after the UI is up: `./install.sh --finish-langfuse`.
 
 ### Point Claude Code at the local services
 
@@ -199,18 +202,15 @@ LANGFUSE_SECRET_KEY=sk-lf-...
 
 ### Install
 
-One command — detects your OS, installs system deps, links configs, and sets up the pixel dashboard:
+One command — detects your OS, installs system deps, runs the interactive profile setup, links configs, and sets up the dashboard:
 
 ```bash
 cd ~/repos/agents-nexus
-./install.sh            # full install (deps + configs + dashboard)
-./install.sh --no-ui    # skip pixel dashboard setup
+./install.sh                     # full interactive install
+./install.sh --profile <name>    # name (or pre-select) the profile
 ```
 
-The installer handles macOS (Homebrew), Windows (MSYS2/pacman), and Linux (apt/dnf/pacman).
-
-> **Windows:** Requires [MSYS2](https://www.msys2.org/) (default: `C:\msys64`). Run inside an MSYS2 terminal.
-> MSYS2's `$HOME` is `/home/<user>` (`C:\msys64\home\<user>`), not `/c/Users/<user>`.
+Full flag reference, prompt-by-prompt walkthrough, and troubleshooting: **[INSTALL.md](INSTALL.md)**.
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) must be installed and on `PATH`.
 

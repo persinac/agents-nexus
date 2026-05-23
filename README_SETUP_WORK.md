@@ -27,26 +27,16 @@ observability on top of whatever the corporate gateway provides.
 
 ## 1. Configure the proxy to upstream to the gateway
 
-Edit `.env` and uncomment / set `ANTHROPIC_API_BASE`:
-
 ```bash
-ANTHROPIC_API_BASE=http://host.docker.internal:<port>/anthropic
+./install.sh --profile work
 ```
 
-Two things to get right:
+Select the **Corporate gateway upstream** peripheral when prompted. The installer asks for `ANTHROPIC_API_BASE` (e.g. `http://host.docker.internal:8787/anthropic`) and writes it into `.env.work`. Full installer mechanics: **[INSTALL.md](INSTALL.md)**.
 
-- **`host.docker.internal`** (not `localhost`). The proxy container needs to
-  reach the daemon on the host. On Docker Desktop this resolves to the host's
-  loopback interface even when the daemon is bound to `127.0.0.1`.
-- **The path suffix** matches the gateway's expected route. Bifrost-style
-  proxies expose `/anthropic/v1/messages`, so set `ANTHROPIC_API_BASE` to the
-  prefix without `/v1/messages` — the proxy will append it.
+Two things to get right when setting `ANTHROPIC_API_BASE`:
 
-Recreate the container so it picks up the new env:
-
-```bash
-docker compose up -d --force-recreate proxy
-```
+- **`host.docker.internal`** on Docker Desktop / macOS — the proxy container reaches the daemon on the host's loopback interface. On **Linux** this hostname doesn't auto-resolve; either add `extra_hosts: ["host.docker.internal:host-gateway"]` to the `proxy` service or use a routable IP. (The installer prints this reminder when you're on Linux.)
+- **The path suffix** matches the gateway's expected route. Bifrost-style proxies expose `/anthropic/v1/messages`, so set `ANTHROPIC_API_BASE` to the prefix without `/v1/messages` — the proxy appends it.
 
 Verify the env reached the container:
 
