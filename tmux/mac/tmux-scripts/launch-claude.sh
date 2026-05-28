@@ -84,19 +84,48 @@ if [[ "$selected" =~ ^\[([^]]+)\]\ (.+)$ ]]; then
   fi
 fi
 
-# Check if any tmux pane is already in this repo
+# Decide whether to reuse the existing checkout or branch off into a worktree.
+# A conflict only matters if ANOTHER LIVE AGENT is already working in this repo —
+# a stray shell, or the pane you launched from, shouldn't force a worktree.
+# Agents self-register in ~/.tmux/registry/ with PANE_ID + CWD, so check that
+# rather than raw pane paths (which can't tell an agent from any old shell).
 repo_path="$REPO_DIR/$selected"
-conflict=$(tmux list-panes -a -F '#{pane_current_path}' 2>/dev/null \
-  | grep -F "$repo_path" | head -1)
+self_pane="${TMUX_PANE:-}"
+REGISTRY_DIR="$HOME/.tmux/registry"
 
-if [ -z "$conflict" ]; then
-  # No conflict — launch normally
+agent_here=""
+if [ -d "$REGISTRY_DIR" ]; then
+  for f in "$REGISTRY_DIR"/*; do
+    [ -f "$f" ] || continue
+    pane_id=$(grep '^PANE_ID=' "$f" | cut -d= -f2)
+    cwd=$(grep '^CWD=' "$f" | cut -d= -f2)
+    [ -n "$self_pane" ] && [ "$pane_id" = "$self_pane" ] && continue       # skip ourselves
+    tmux display-message -t "$pane_id" -p '' >/dev/null 2>&1 || { rm -f "$f"; continue; }  # drop stale
+    case "$cwd" in
+      "$repo_path"|"$repo_path"/*) agent_here="$pane_id"; break ;;
+    esac
+  done
+fi
+
+if [ -z "$agent_here" ]; then
+  # No other agent in this repo — open an agent in the existing checkout.
   tmux new-window -d -n "$selected" -c "$repo_path" "$HOME/.tmux/open-claude.sh"
   exit 0
 fi
 
-# Conflict detected — offer worktree creation
+# Another agent is live here — reuse the checkout anyway, or branch off.
 current_branch=$(git -C "$repo_path" branch --show-current 2>/dev/null || echo "unknown")
+choice=$(
+  printf '%s\n' "open here anyway (branch: $current_branch)" "create new worktree…" \
+    | fzf --prompt="agent already in $selected> " --border=rounded \
+        --header="An agent is already working in $selected"
+)
+[ -z "$choice" ] && exit 0
+if [[ "$choice" == "open here anyway"* ]]; then
+  tmux new-window -d -n "$selected" -c "$repo_path" "$HOME/.tmux/open-claude.sh"
+  exit 0
+fi
+# Otherwise fall through to worktree creation below.
 
 # Prompt for branch name
 branch=$(
