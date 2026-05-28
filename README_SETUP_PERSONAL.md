@@ -22,36 +22,12 @@ fields populated.
 ## 1. Configure `.env`
 
 ```bash
-cp .env.example .env
-$EDITOR .env
+./install.sh --profile personal
 ```
 
-Required:
+Pick the **Langfuse** peripheral when prompted so the six stack secrets get generated for you. `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` come later in § 3.
 
-- `ANTHROPIC_API_KEY` — your Anthropic key (`sk-ant-...`)
-- `HOST_TMUX_DIR` — usually `~/.tmux`
-- `REPOS_PATH` — absolute path to a directory containing the repos you want
-  spark to index
-- `DATABASE_URL` — Postgres for memory storage. Either point at a cloud Postgres
-  here, or use `docker-compose.work.yml` instead — that compose file bundles a
-  local pgvector container so you don't need an external DB
-
-Generate fresh secrets for the Langfuse stack (do not reuse defaults):
-
-```bash
-LANGFUSE_NEXTAUTH_SECRET=$(openssl rand -base64 32)
-LANGFUSE_SALT=$(openssl rand -base64 32)
-LANGFUSE_ENCRYPTION_KEY=$(openssl rand -hex 32)   # must be 64 hex chars
-LANGFUSE_DB_PASSWORD=$(openssl rand -hex 16)
-LANGFUSE_REDIS_AUTH=$(openssl rand -hex 16)
-LANGFUSE_CLICKHOUSE_PASSWORD=$(openssl rand -hex 16)
-```
-
-Leave `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` blank for now — you'll fill
-them in after creating a Langfuse project (step 3).
-
-Leave `ANTHROPIC_API_BASE` commented out — it defaults to
-`https://api.anthropic.com`.
+Full installer reference — every flag, every prompt, the manual fallback — lives in **[INSTALL.md](INSTALL.md)**.
 
 ## 2. Bring up the stack
 
@@ -74,13 +50,9 @@ Containers you should see:
 
 1. Open `http://localhost:3000`. Create a user, then create a project.
 2. Project Settings → **API Keys** → **Create new key**.
-3. Copy the `pk-lf-...` value into `.env` as `LANGFUSE_PUBLIC_KEY`, and the
-   `sk-lf-...` value as `LANGFUSE_SECRET_KEY`.
-4. Recreate the proxy so it picks up the new env:
+3. `./install.sh --finish-langfuse` and paste the `pk-lf-...` / `sk-lf-...` values when prompted.
 
-```bash
-docker compose up -d --force-recreate proxy
-```
+See [INSTALL.md § Two-phase Langfuse setup](INSTALL.md#two-phase-langfuse-setup) for the manual equivalent.
 
 `docker logs nexus-proxy` should show the FastAPI startup line and no errors
 on subsequent /v1/messages traffic.

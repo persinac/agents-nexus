@@ -6,6 +6,9 @@
 !.env.*.example
 !*.env.example
 
+# Active-profile pointer written by install.sh
+.nexus-profile
+
 # Python
 __pycache__/
 *.pyc
