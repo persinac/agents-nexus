@@ -38,6 +38,7 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "REPO_DIR=\"\${REPO_DIR:-$REPO_DIR_DEFAULT}\"" > "$ENV_FILE"
   echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/notes}\"" >> "$ENV_FILE"
   echo "AGENTS_NEXUS_DIR=\"\${AGENTS_NEXUS_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}\"" >> "$ENV_FILE"
+  echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-8}\"" >> "$ENV_FILE"
   echo "Created ~/.tmux/env.sh (edit REPO_DIR/NOTES_DIR/AGENTS_NEXUS_DIR if your paths differ)"
 else
   # Add NOTES_DIR if missing
@@ -60,6 +61,11 @@ else
   if ! grep -q "CHECKPOINT_DIR" "$ENV_FILE"; then
     echo "CHECKPOINT_DIR=\"\${CHECKPOINT_DIR:-\$HOME/vault/Checkpoints}\"" >> "$ENV_FILE"
     echo "Added CHECKPOINT_DIR to ~/.tmux/env.sh"
+  fi
+  # Add CLAUDE_MODEL if missing
+  if ! grep -q "CLAUDE_MODEL" "$ENV_FILE"; then
+    echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-8}\"" >> "$ENV_FILE"
+    echo "Added CLAUDE_MODEL to ~/.tmux/env.sh"
   fi
 fi
 

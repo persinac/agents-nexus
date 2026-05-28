@@ -43,7 +43,7 @@ EXTRA_REPO_DIRS="\${EXTRA_REPO_DIRS:-}"
 VAULT_DIR="\${VAULT_DIR:-$HOME/vault}"
 CHECKPOINT_DIR="\${CHECKPOINT_DIR:-$HOME/vault/Checkpoints}"
 ANTHROPIC_BASE_URL="\${ANTHROPIC_BASE_URL:-http://localhost:4000}"
-CLAUDE_MODEL="\${CLAUDE_MODEL:-claude-opus-4-7}"
+CLAUDE_MODEL="\${CLAUDE_MODEL:-claude-opus-4-8}"
 CLAUDE_EFFORT="\${CLAUDE_EFFORT:-high}"
 EOF
   echo "Created ~/.tmux/env.sh"
@@ -69,7 +69,7 @@ else
     echo "Added ANTHROPIC_BASE_URL to ~/.tmux/env.sh"
   }
   grep -q "CLAUDE_MODEL" "$ENV_FILE" || {
-    echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-7}\"" >> "$ENV_FILE"
+    echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-8}\"" >> "$ENV_FILE"
     echo "Added CLAUDE_MODEL to ~/.tmux/env.sh"
   }
   grep -q "CLAUDE_EFFORT" "$ENV_FILE" || {
