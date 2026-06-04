@@ -11,10 +11,10 @@
         <string>__AGENTS_NEXUS_DIR__/spark/scripts/spark-pipeline.sh</string>
     </array>
 
-    <!-- Nightly at 02:00 -->
+    <!-- Nightly at 22:00 local (Mac typically awake; avoids on-wake CPU spike) -->
     <key>StartCalendarInterval</key>
     <dict>
-        <key>Hour</key><integer>2</integer>
+        <key>Hour</key><integer>22</integer>
         <key>Minute</key><integer>0</integer>
     </dict>
 
