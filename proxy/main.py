@@ -339,6 +339,47 @@ def _preview(value) -> str:
     return f"{head}{TRUNC_MARKER}{tail}"
 
 
+def _system_text(system) -> str | None:
+    """Normalize Anthropic's top-level `system` field to text.
+
+    It may be a plain string, or a list of content blocks
+    (e.g. [{"type": "text", "text": ..., "cache_control": ...}]).
+    Join the text of all text blocks; return None when absent/empty.
+    """
+    if not system:
+        return None
+    if isinstance(system, str):
+        return system or None
+    if isinstance(system, list):
+        text = "".join(
+            b.get("text", "")
+            for b in system
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+        return text or None
+    return None
+
+
+def _build_input(body: dict, session_id: str | None) -> list:
+    """Langfuse input = the messages array, with the system prompt prepended
+    as a synthetic role:'system' entry — but only for tagged requests.
+
+    Anthropic carries the system prompt as a top-level `system` field rather
+    than a message. We surface it as a role:'system' entry (logging only —
+    never forwarded upstream) so it renders above the messages, but ONLY when
+    the request opted in via a `sess/<name>/` prefix (session_id set). Untagged
+    traffic (e.g. default Claude Code) omits it to avoid persisting a large,
+    near-identical system prompt on every generation.
+    """
+    messages = body.get("messages") or []
+    if session_id is None:
+        return messages
+    system = _system_text(body.get("system"))
+    if system is not None:
+        return [{"role": "system", "content": system}] + messages
+    return messages
+
+
 def _emit_trace(
     *,
     name: str,
@@ -349,7 +390,7 @@ def _emit_trace(
     metadata: dict,
 ) -> None:
     """Emit a standalone generation observation (becomes its own trace root)."""
-    input_preview = _preview(body.get("messages"))
+    input_preview = _preview(_build_input(body, session_id))
     output_preview = _preview(output)
     trace_name = session_id or "claude-code"
     with propagate_attributes(session_id=session_id, trace_name=trace_name):
