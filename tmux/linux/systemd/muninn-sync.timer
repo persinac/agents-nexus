@@ -1,0 +1,13 @@
+[Unit]
+Description=muninn rM1 sync weekdays at 14:00/18:00/23:30 UTC (08:00/12:00/17:30 MT), plus Mon 14:30/15:00 UTC
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 14:00:00
+OnCalendar=Mon..Fri *-*-* 18:00:00
+OnCalendar=Mon..Fri *-*-* 23:30:00
+OnCalendar=Mon *-*-* 14:30:00
+OnCalendar=Mon *-*-* 15:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

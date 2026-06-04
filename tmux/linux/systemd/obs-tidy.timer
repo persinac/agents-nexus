@@ -1,0 +1,9 @@
+[Unit]
+Description=obs-tidy daily at 12:00 UTC (06:00 AM MT)
+
+[Timer]
+OnCalendar=*-*-* 12:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

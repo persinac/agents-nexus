@@ -5,7 +5,7 @@ State of affairs as of 2026-04-30. Mac is the daily driver and well-exercised; L
 ## TL;DR
 
 - The bulk of script parity is already handled by `tmux/linux/install.sh` — it symlinks **Mac's** tmux-scripts into `~/.tmux/` for any file Linux doesn't override. Only `hook-notification.sh` is overridden today.
-- The real gaps are: shell init (no `bashrc` analog of `tmux/mac/zshrc`), scheduling (launchd plists not yet ported to systemd timers), one missing systemd `*.timer` for `nightly-spark` siblings, and the **launcher source-of-truth split** that bit us this morning (`~/.tmux/open-claude.sh` on the Mac points at the `claude-agents-tmux` repo, not at `agents-nexus/tmux/mac/...`).
+- The real gaps are: shell init (no `bashrc` analog of `tmux/mac/zshrc`), scheduling (most launchd plists now ported to systemd timers — see Scheduling row; the GitLab `gl-reviews`/`gl-reviews-prune` and `svc-chatbot-*` jobs are intentionally **not** ported, since the mini-pc uses GitHub and doesn't check out the svc-chatbot repo), one missing systemd `*.timer` for `nightly-spark` siblings, and the **launcher source-of-truth split** that bit us this morning (`~/.tmux/open-claude.sh` on the Mac points at the `claude-agents-tmux` repo, not at `agents-nexus/tmux/mac/...`).
 - The mac copies of these scripts inside `agents-nexus/tmux/mac/tmux-scripts/` have **drifted** from the Mac runtime symlinked source. Linux currently inherits the stale versions through `install.sh`.
 
 ## What exists today
@@ -17,7 +17,7 @@ State of affairs as of 2026-04-30. Mac is the daily driver and well-exercised; L
 | Shell init | `tmux/mac/zshrc` | **missing** — PLAN.md describes a `bashrc` mirror |
 | `install.sh` | yes — copies scripts, loads launchd plists, writes env.sh | yes — symlinks scripts (Mac fallback), writes env.sh, **does NOT install systemd units** |
 | tmux-scripts/ | 23 files | 1 file (`hook-notification.sh` only) |
-| Scheduling | 5 launchd plists in `launchd/` | 13 systemd units in `tmux/linux/systemd/` (services + timers, partial coverage) |
+| Scheduling | 11 launchd plists in `launchd/` | 19 systemd units in `tmux/linux/systemd/` (services + timers). Ported from launchd: `obs-digest`, `obs-tidy`, `muninn-sync` (2026-06-03), plus the pre-existing `obs-tag`/`obs-decay`/`spark`/`repo-sync`/`vault-commit`. Not ported: GitLab `gl-reviews`/`gl-reviews-prune` (mini-pc uses GitHub) and `svc-chatbot-*` (work-repo only). |
 | Notification mechanism | `osascript` (macOS notifications) | `printf '\a'` per PLAN.md (bell to SSH client); also `notify-send` on console per README.md |
 | Reverse proxy | n/a | Caddy (PLAN.md only — not yet wired) |
 | Network access | direct | Tailscale (PLAN.md only) |

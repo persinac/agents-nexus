@@ -1,0 +1,12 @@
+[Unit]
+Description=Digest the previous business day's Obsidian notes and post to Slack
+
+[Service]
+Type=oneshot
+WorkingDirectory=__AGENTS_NEXUS_DIR__
+ExecStart=/bin/bash -c 'source __HOME__/.tmux/env.sh 2>/dev/null; ./scripts/obs-digest'
+Environment=HOME=__HOME__
+Environment=OBS_VAULT=__HOME__/vault
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1800

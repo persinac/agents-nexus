@@ -1,0 +1,11 @@
+[Unit]
+Description=Sync reMarkable rM1 handwritten pages into the Obsidian vault
+
+[Service]
+Type=oneshot
+WorkingDirectory=__AGENTS_NEXUS_DIR__/muninn
+ExecStart=/bin/bash -c 'source __HOME__/.tmux/env.sh 2>/dev/null; .venv/bin/muninn sync --folder Work/'
+Environment=HOME=__HOME__
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1800

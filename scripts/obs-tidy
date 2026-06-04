@@ -7,11 +7,11 @@ if [ -f "$NEXUS_DIR/.env" ]; then
   set -a; . "$NEXUS_DIR/.env"; set +a
 fi
 
-VAULT="/Users/alex.persinger@getgarner.com/obs-garner/Garner"
+VAULT="${OBS_VAULT:-/Users/alex.persinger@getgarner.com/obs-garner/Garner}"
 REPORTS_DIR="$VAULT/Archive/tidy-reports"
 TIMESTAMP=$(date +%Y-%m-%d_%H-%M)
 REPORT_FILE="$REPORTS_DIR/$TIMESTAMP.md"
-CLAUDE="/Users/alex.persinger@getgarner.com/.local/bin/claude"
+CLAUDE="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
 
 mkdir -p "$REPORTS_DIR"
 cd "$VAULT"

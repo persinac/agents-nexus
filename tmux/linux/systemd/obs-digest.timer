@@ -1,0 +1,9 @@
+[Unit]
+Description=obs-digest weekdays at 13:00 UTC (07:00 AM MT)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 13:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

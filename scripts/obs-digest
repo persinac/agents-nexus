@@ -7,8 +7,8 @@ if [ -f "$NEXUS_DIR/.env" ]; then
   set -a; . "$NEXUS_DIR/.env"; set +a
 fi
 
-VAULT="/Users/alex.persinger@getgarner.com/obs-garner/Garner"
-CLAUDE="/Users/alex.persinger@getgarner.com/.local/bin/claude"
+VAULT="${OBS_VAULT:-/Users/alex.persinger@getgarner.com/obs-garner/Garner}"
+CLAUDE="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
 
 # Previous business day (Monday reads Friday)
 DOW=$(date +%u)  # 1=Mon ... 7=Sun

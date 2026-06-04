@@ -1,0 +1,12 @@
+[Unit]
+Description=Tidy the Obsidian vault (broken links, orphans) and post a Slack summary
+
+[Service]
+Type=oneshot
+WorkingDirectory=__AGENTS_NEXUS_DIR__
+ExecStart=/bin/bash -c 'source __HOME__/.tmux/env.sh 2>/dev/null; ./scripts/obs-tidy'
+Environment=HOME=__HOME__
+Environment=OBS_VAULT=__HOME__/vault
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=1800
