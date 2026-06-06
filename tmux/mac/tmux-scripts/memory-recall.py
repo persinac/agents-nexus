@@ -17,7 +17,7 @@ import argparse
 from pathlib import Path
 from datetime import datetime, timezone
 
-ENV_FILE = Path(os.environ.get("AGENTS_NEXUS_DIR", Path.home() / "repos/agents-nexus")) / "mnemon/.env"
+ENV_FILE = Path(os.environ.get("AGENTS_NEXUS_DIR", Path.home() / "repos/agents-nexus")) / ".env"
 DEFAULT_MAX_TOKENS = 2000
 CHARS_PER_TOKEN = 4  # conservative estimate
 

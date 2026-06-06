@@ -29,11 +29,15 @@ case "$COMMAND" in
     printf "%-6s %-24s %s\n" "----" "----" "---------"
     for f in "$REGISTRY_DIR"/*; do
       [ -f "$f" ] || continue
-      pane_id=$(grep '^PANE_ID=' "$f" | cut -d= -f2)
+      pane_id=$(grep '^PANE_ID=' "$f" 2>/dev/null | cut -d= -f2 || true)
+      if [ -z "$pane_id" ]; then
+        rm -f "$f"
+        continue
+      fi
       [ -n "$EXCLUDE_PANE" ] && [ "$pane_id" = "$EXCLUDE_PANE" ] && continue
-      name=$(grep '^NAME=' "$f" | cut -d= -f2)
-      cwd=$(grep '^CWD=' "$f" | cut -d= -f2)
-      slot=$(tmux display-message -t "$pane_id" -p '#{window_index}' 2>/dev/null)
+      name=$(grep '^NAME=' "$f" 2>/dev/null | cut -d= -f2 || true)
+      cwd=$(grep '^CWD=' "$f" 2>/dev/null | cut -d= -f2 || true)
+      slot=$(tmux display-message -t "$pane_id" -p '#{window_index}' 2>/dev/null || true)
       if [ -z "$slot" ]; then
         rm -f "$f"
         continue
@@ -74,9 +78,10 @@ case "$COMMAND" in
     sent=0
     for f in "$REGISTRY_DIR"/*; do
       [ -f "$f" ] || continue
-      pane_id=$(grep '^PANE_ID=' "$f" | cut -d= -f2)
+      pane_id=$(grep '^PANE_ID=' "$f" 2>/dev/null | cut -d= -f2 || true)
+      [ -z "$pane_id" ] && { rm -f "$f"; continue; }
       [ -n "$EXCLUDE_PANE" ] && [ "$pane_id" = "$EXCLUDE_PANE" ] && continue
-      slot=$(tmux display-message -t "$pane_id" -p '#{window_index}' 2>/dev/null)
+      slot=$(tmux display-message -t "$pane_id" -p '#{window_index}' 2>/dev/null || true)
       [ -z "$slot" ] && { rm -f "$f"; continue; }
       if [[ "$MSG" =~ ^[0-9]$ ]]; then
         tmux send-keys -t "${SESSION}:${slot}" "$MSG"
