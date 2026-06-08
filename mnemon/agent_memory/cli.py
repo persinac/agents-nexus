@@ -30,6 +30,28 @@ def _postgres_url() -> str:
     return os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL") or ""
 
 
+def _normalize_pg_url(url: str) -> str:
+    """Make a DATABASE_URL safe for psycopg (sync + pool).
+
+    psycopg rejects non-libpq URI params like search_path; move it into the
+    libpq `options` parameter (mirrors mcp_server._db_url) and default sslmode.
+    """
+    if not url:
+        return url
+    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    if "search_path" in params:
+        schema = params.pop("search_path")[0]
+        existing = params.get("options", [""])[0]
+        params["options"] = [f"{existing} -csearch_path={schema}".strip()]
+    if "sslmode" not in params:
+        params["sslmode"] = ["require"]
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    return urlunparse(parsed._replace(query=new_query))
+
+
 async def cmd_inspect(args):
     """Inspect memory system state."""
     tier = args.tier or "all"
@@ -317,7 +339,7 @@ async def cmd_search(args):
     """
     import json
 
-    pg_url = _postgres_url()
+    pg_url = _normalize_pg_url(_postgres_url())
     if not pg_url:
         print("[]")
         return
