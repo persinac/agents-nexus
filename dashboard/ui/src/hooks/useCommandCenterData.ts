@@ -113,6 +113,18 @@ export async function fetchTimerLog(label: string, lines = 200): Promise<TimerLo
   }
 }
 
+export interface InstallationInfo {
+  relPath: string;
+  name: string;
+  indexedAt: string;
+  lastRemoteTs: number;
+  ageSeconds: number | null;
+}
+
+export async function fetchInstallations(): Promise<InstallationInfo[]> {
+  return (await fetchJson<InstallationInfo[]>('/api/system/installations')) ?? [];
+}
+
 export function useCommandCenterData(enabled: boolean): CommandCenterData {
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [agents, setAgents] = useState<AgentInfo[] | null>(null);

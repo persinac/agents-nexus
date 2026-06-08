@@ -4,6 +4,7 @@ import { toMajorMinor } from './changelogData.js';
 import { BottomToolbar } from './components/BottomToolbar.js';
 import { ChangelogModal } from './components/ChangelogModal.js';
 import { CommandCenter } from './components/CommandCenter.js';
+import { InstallationsView } from './components/InstallationsView.js';
 import { DebugView } from './components/DebugView.js';
 import { MemoryWidget } from './components/MemoryWidget.js';
 import { VersionIndicator } from './components/VersionIndicator.js';
@@ -166,6 +167,7 @@ function App() {
   const [alwaysShowOverlay, setAlwaysShowOverlay] = useState(false);
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [isCommandCenterOpen, setIsCommandCenterOpen] = useState(false);
+  const [isInstallationsOpen, setIsInstallationsOpen] = useState(false);
 
   const currentMajorMinor = toMajorMinor(extensionVersion);
 
@@ -314,6 +316,8 @@ function App() {
         onToggleMemory={() => setIsMemoryOpen((v) => !v)}
         isCommandCenterOpen={isCommandCenterOpen}
         onToggleCommandCenter={() => setIsCommandCenterOpen((v) => !v)}
+        isInstallationsOpen={isInstallationsOpen}
+        onToggleInstallations={() => setIsInstallationsOpen((v) => !v)}
       />
 
       <VersionIndicator
@@ -416,6 +420,10 @@ function App() {
 
       {isCommandCenterOpen && (
         <CommandCenter onClose={() => setIsCommandCenterOpen(false)} />
+      )}
+
+      {isInstallationsOpen && (
+        <InstallationsView onClose={() => setIsInstallationsOpen(false)} />
       )}
 
       {showMigrationNotice && (

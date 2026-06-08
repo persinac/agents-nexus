@@ -18,6 +18,8 @@ interface BottomToolbarProps {
   onToggleMemory: () => void;
   isCommandCenterOpen: boolean;
   onToggleCommandCenter: () => void;
+  isInstallationsOpen: boolean;
+  onToggleInstallations: () => void;
 }
 
 const panelStyle: React.CSSProperties = {
@@ -65,6 +67,8 @@ export function BottomToolbar({
   onToggleMemory,
   isCommandCenterOpen,
   onToggleCommandCenter,
+  isInstallationsOpen,
+  onToggleInstallations,
 }: BottomToolbarProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -290,6 +294,22 @@ export function BottomToolbar({
         title="Nexus command center"
       >
         Nexus
+      </button>
+      <button
+        onClick={onToggleInstallations}
+        onMouseEnter={() => setHovered('installations')}
+        onMouseLeave={() => setHovered(null)}
+        style={
+          isInstallationsOpen
+            ? { ...btnActive }
+            : {
+                ...btnBase,
+                background: hovered === 'installations' ? 'var(--pixel-btn-hover-bg)' : btnBase.background,
+              }
+        }
+        title="Spark installations index"
+      >
+        Index
       </button>
       <div style={{ position: 'relative' }}>
         <button

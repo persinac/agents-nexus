@@ -692,6 +692,37 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
+  if (url.pathname === '/api/system/installations') {
+    corsJson();
+    try {
+      // Spark's installations.json lives in the spark-index Docker volume,
+      // unreadable from the host — but reachable via docker exec (same pattern
+      // as /api/system/services shelling out to docker).
+      const out = execSync(
+        'docker exec nexus-spark cat /app/data/the-index/installations.json',
+        { encoding: 'utf8', timeout: 10000, maxBuffer: 4 * 1024 * 1024 },
+      );
+      const meta = JSON.parse(out);
+      const now = Date.now();
+      const rows = Object.entries(meta).map(([relPath, rec]) => {
+        const indexedAt = rec.indexed_at || '';
+        const t = indexedAt ? Date.parse(indexedAt) : NaN;
+        const ageSeconds = Number.isNaN(t) ? null : Math.floor((now - t) / 1000);
+        return {
+          relPath,
+          name: relPath.split('/').pop(),
+          indexedAt,
+          lastRemoteTs: rec.last_remote_ts || 0,
+          ageSeconds,
+        };
+      });
+      res.end(JSON.stringify(rows));
+    } catch {
+      res.end('[]');
+    }
+    return;
+  }
+
   if (url.pathname === '/api/system/timers/log') {
     corsJson();
     const label = url.searchParams.get('label') || '';
