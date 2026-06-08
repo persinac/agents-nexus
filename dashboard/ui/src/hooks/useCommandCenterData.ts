@@ -125,6 +125,25 @@ export async function fetchInstallations(): Promise<InstallationInfo[]> {
   return (await fetchJson<InstallationInfo[]>('/api/system/installations')) ?? [];
 }
 
+export interface MemoryHit {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  created_at: string;
+  project: string;
+}
+
+export async function searchMemory(
+  query: string,
+  mode: 'semantic' | 'keyword',
+  project: string,
+  limit = 10,
+): Promise<MemoryHit[]> {
+  const params = new URLSearchParams({ query, mode, project, limit: String(limit) });
+  return (await fetchJson<MemoryHit[]>(`/api/system/memory/search?${params}`)) ?? [];
+}
+
 export function useCommandCenterData(enabled: boolean): CommandCenterData {
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [agents, setAgents] = useState<AgentInfo[] | null>(null);

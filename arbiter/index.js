@@ -12,7 +12,7 @@ import http from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join, basename, resolve } from 'path';
 import { WebSocketServer } from 'ws';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { readFileSync, existsSync, readdirSync, statSync, watch } from 'fs';
 import { homedir } from 'os';
 
@@ -34,6 +34,7 @@ if (existsSync(_envPath)) {
 
 const MEMORY_RECALL_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-recall.py');
 const MEMORY_STATS_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-stats.py');
+const MEMORY_SEARCH_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-search.py');
 
 const PORT = parseInt(process.env.PORT || '8420', 10);
 const POLL_MS = 100;  // fast baseline poll
@@ -522,6 +523,41 @@ const httpServer = http.createServer((req, res) => {
         `"${MEMORY_PYTHON}" "${MEMORY_RECALL_SCRIPT}" "${project}" --format json`,
         { encoding: 'utf8', timeout: 10000 }
       ).trim();
+      res.end(out || '[]');
+    } catch {
+      res.end('[]');
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/system/memory/search') {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    const query = (url.searchParams.get('query') || '').trim();
+    const mode = url.searchParams.get('mode') === 'keyword' ? 'keyword' : 'semantic';
+    const project = url.searchParams.get('project') || 'all';
+    let limit = parseInt(url.searchParams.get('limit') || '10', 10);
+    if (!Number.isFinite(limit) || limit < 1) limit = 10;
+    if (limit > 50) limit = 50;
+    if (!query) { res.end('[]'); return; }
+    try {
+      // execFileSync with an args array — no shell, so the free-text query
+      // cannot be interpreted as a shell command.
+      let out;
+      if (mode === 'keyword') {
+        out = execFileSync(
+          MEMORY_PYTHON,
+          [MEMORY_SEARCH_SCRIPT, '--query', query, '--project', project, '--limit', String(limit), '--format', 'json'],
+          { encoding: 'utf8', timeout: 10000 },
+        ).trim();
+      } else {
+        out = execFileSync(
+          'docker',
+          ['exec', 'nexus-mnemon-mcp', 'uv', 'run', 'python', '-m', 'agent_memory.cli',
+           'search', '--project', project, '--query', query, '--limit', String(limit), '--json'],
+          { encoding: 'utf8', timeout: 20000 },
+        ).trim();
+      }
       res.end(out || '[]');
     } catch {
       res.end('[]');

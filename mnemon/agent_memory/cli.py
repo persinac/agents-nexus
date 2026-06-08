@@ -25,7 +25,9 @@ def _redis_password() -> str | None:
 
 
 def _postgres_url() -> str:
-    return os.getenv("POSTGRES_URL", "")
+    # mcp_server reads DATABASE_URL; the container only sets that. Accept either
+    # so the CLI (search/trace/flush) works in-container too.
+    return os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL") or ""
 
 
 async def cmd_inspect(args):
@@ -306,6 +308,78 @@ async def cmd_trace(args):
     await store.close()
 
 
+async def cmd_search(args):
+    """Semantic search over memory notes; prints JSON results.
+
+    Reuses the same embedding + pgvector path as the search_similar MCP tool.
+    Project 'all' (or empty) searches across every project. Falls back to
+    recency order when the query cannot be embedded.
+    """
+    import json
+
+    pg_url = _postgres_url()
+    if not pg_url:
+        print("[]")
+        return
+
+    from .backends.postgres import PostgresMemoryBackend
+    from .embeddings import LiteLLMEmbeddingProvider
+    from .store import MemoryStore
+
+    project = (args.project or "").strip()
+    all_projects = project == "" or project.lower() == "all"
+
+    embedding = None
+    try:
+        embedding = await LiteLLMEmbeddingProvider().embed(args.query)
+    except Exception:
+        embedding = None
+
+    backend = PostgresMemoryBackend(conninfo=pg_url)
+    store = MemoryStore(backend)
+    await store.connect()
+    try:
+        nodes: list = []
+        if embedding is not None and all_projects:
+            # Cross-project semantic: same <=> ordering as
+            # PostgresMemoryBackend.query_by_similarity, minus the project filter.
+            import psycopg
+            with psycopg.connect(pg_url, connect_timeout=5) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, content, title, tags, created_at, project
+                    FROM agents.memory_nodes
+                    WHERE embedding IS NOT NULL
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (str(embedding), args.limit),
+                )
+                results = [
+                    {"id": r[0], "content": r[1], "title": r[2] or "",
+                     "tags": list(r[3]) if r[3] else [], "created_at": str(r[4]),
+                     "project": r[5] or ""}
+                    for r in cur.fetchall()
+                ]
+            print(json.dumps(results))
+            return
+        if embedding is not None:
+            nodes = await store.query_by_similarity(project, embedding, limit=args.limit)
+        else:
+            # No embedding available — degrade to most-recent notes.
+            nodes = await store.query_by_tags(project if not all_projects else "", [], limit=args.limit)
+
+        results = [
+            {"id": n.id, "content": n.content, "title": n.title or "",
+             "tags": list(n.tags) if n.tags else [], "created_at": str(n.created_at),
+             "project": getattr(n, "project", "") or ""}
+            for n in nodes
+        ]
+        print(json.dumps(results))
+    finally:
+        await store.close()
+
+
 async def cmd_flush(args):
     """Flush memory for a project."""
     if not args.project:
@@ -365,6 +439,13 @@ def main():
     p_trace.add_argument("--query", required=True)
     p_trace.add_argument("--budget", type=int, default=2000)
 
+    # search
+    p_search = sub.add_parser("search", help="Semantic search notes; prints JSON")
+    p_search.add_argument("--project", default="all")
+    p_search.add_argument("--query", required=True)
+    p_search.add_argument("--limit", type=int, default=10)
+    p_search.add_argument("--json", action="store_true", help="(accepted for symmetry; output is always JSON)")
+
     # flush
     p_flush = sub.add_parser("flush", help="Flush memory for a project")
     p_flush.add_argument("--tier", choices=["l2", "l3"], default="l2")
@@ -380,6 +461,7 @@ def main():
         "inspect": cmd_inspect,
         "stats": cmd_stats,
         "trace": cmd_trace,
+        "search": cmd_search,
         "flush": cmd_flush,
     }
     asyncio.run(handlers[args.command](args))
