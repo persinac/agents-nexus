@@ -16,6 +16,13 @@ index_path: ~/repos/guilty-spark/data/the-index
 embedding_model: ollama/nomic-embed-text
 embedding_dimensions: 768
 
+# Embedder backend (or set SPARK_EMBEDDER env, which wins):
+#   litellm  — ollama/nomic-embed-text over HTTP, 768-dim (default; needs Ollama)
+#   fastembed — in-process ONNX BAAI/bge-small-en-v1.5, 384-dim, ~10x faster on CPU
+# NOTE: fastembed is 384-dim (bge-small), not 768 — switching embedders requires
+# one full `spark reclaim` (the LanceDB table is dropped + recreated at the new dim).
+# embedder: fastembed
+
 # Teams — maps directory prefixes to human-readable team names.
 # Leave empty ({}) if your repos are all in a flat layout.
 # Example:

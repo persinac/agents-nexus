@@ -15,6 +15,7 @@ class SparkConfig:
     metadata_path: Path = field(init=False)
     embedding_model: str
     embedding_dimensions: int
+    embedder: str  # "litellm" (Ollama, default) or "fastembed" (in-process ONNX)
     teams: dict[str, str]
     include_patterns: list[str]
     exclude_dirs: list[str]
@@ -58,6 +59,7 @@ class SparkConfig:
         installations_path = os.environ.get("SPARK_INSTALLATIONS_PATH", raw["installations_path"])
         index_path = os.environ.get("SPARK_INDEX_PATH", raw["index_path"])
         embedding_model = os.environ.get("SPARK_EMBEDDING_MODEL", raw["embedding_model"])
+        embedder = os.environ.get("SPARK_EMBEDDER", raw.get("embedder", "litellm"))
 
         gitlab_url = os.environ.get("GITLAB_URL", raw.get("gitlab_url", ""))
         gitlab_token = os.environ.get("GITLAB_TOKEN", raw.get("gitlab_token", ""))
@@ -73,6 +75,7 @@ class SparkConfig:
             index_path=Path(index_path),
             embedding_model=embedding_model,
             embedding_dimensions=raw["embedding_dimensions"],
+            embedder=embedder,
             teams=raw.get("teams", {}),
             include_patterns=raw.get("include_patterns", []),
             exclude_dirs=raw.get("exclude_dirs", []),

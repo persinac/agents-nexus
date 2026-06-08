@@ -16,6 +16,9 @@ COPY config.yaml .
 # Install dependencies
 RUN uv sync --no-dev
 
+# Pre-download the FastEmbed ONNX model so a reclaim never fetches it mid-run.
+RUN uv run python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5')"
+
 # Default: run the MCP server
 ENTRYPOINT ["uv", "run", "spark"]
 CMD ["serve"]

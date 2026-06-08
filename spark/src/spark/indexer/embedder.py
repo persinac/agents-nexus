@@ -33,6 +33,32 @@ _MAX_CHARS_PER_CHUNK = 1000
 # Ollama can handle concurrent requests — this is the main speedup.
 _DEFAULT_WORKERS = int(os.environ.get("SPARK_WORKERS", "8"))
 
+# FastEmbed model — bge-small-en-v1.5: 384-dim, ~10x faster on CPU than the
+# heavy nomic model. NOTE: 384 dims != the old 768 Ollama index, so switching
+# requires a full `spark reclaim` (the table is dropped + recreated at 384-dim).
+_FASTEMBED_MODEL = "BAAI/bge-small-en-v1.5"
+_fastembed = None
+
+
+def _get_fastembed():
+    """Lazily construct the in-process FastEmbed model (ONNX, no daemon)."""
+    global _fastembed
+    if _fastembed is None:
+        from fastembed import TextEmbedding
+
+        _fastembed = TextEmbedding(model_name=_FASTEMBED_MODEL)
+    return _fastembed
+
+
+def _fastembed_embed(texts: list[str], max_chars: int) -> list[list[float]]:
+    """Embed texts with FastEmbed. Document mode for all vectors (index + query),
+    mirroring the single-mode Ollama behavior so the corpus stays self-consistent.
+    """
+    model = _get_fastembed()
+    truncated = [_truncate(t, max_chars=max_chars) for t in texts]
+    # model.embed() returns a generator of np.ndarray, order-preserving.
+    return [vec.tolist() for vec in model.embed(truncated)]
+
 
 def _truncate(text: str, max_chars: int = _MAX_CHARS_PER_CHUNK) -> str:
     if len(text) > max_chars:
@@ -73,6 +99,22 @@ def embed_texts(
     Splits texts into batches, sends them concurrently via a thread pool.
     Falls back to single-chunk retry on batch failure.
     """
+    if config.embedder == "fastembed":
+        # In-process ONNX — batches + multithreads internally, no Ollama HTTP.
+        model = _get_fastembed()
+        truncated_texts = [_truncate(t, max_chars=config.max_chars_per_chunk) for t in texts]
+        results = [
+            vec.tolist()
+            for vec in tqdm(
+                model.embed(truncated_texts),
+                total=len(texts),
+                desc="  Embedding",
+                unit="chunks",
+                bar_format="  {l_bar}{bar:40}{r_bar}",
+            )
+        ]
+        return results
+
     if workers is None:
         workers = _DEFAULT_WORKERS
 
@@ -146,5 +188,7 @@ def embed_texts(
 
 def embed_single(text: str, config: SparkConfig) -> list[float]:
     """Embed a single text string."""
+    if config.embedder == "fastembed":
+        return _fastembed_embed([text], config.max_chars_per_chunk)[0]
     truncated = _truncate(text, max_chars=config.max_chars_per_chunk)
     return _embed_single_with_retry(truncated, config.embedding_model, config.embedding_dimensions, config.max_chars_per_chunk)
