@@ -88,6 +88,11 @@ hybrid_search_enabled: true
 # Symbol chunking (optional — extracts AST-level symbols instead of blind sliding windows)
 symbol_chunking_enabled: true
 
+# spark_deep Stage 1 candidate set — how many summaries to discover before
+# searching code within them. Higher = better recall on broad queries, slightly
+# slower Stage 2. (default 8)
+# spark_deep_stage1_k: 8
+
 # Reranking (optional — improves result precision using a cross-encoder model)
 # Downloads ~270MB model from HuggingFace on first use (cached after that).
 reranker_enabled: true

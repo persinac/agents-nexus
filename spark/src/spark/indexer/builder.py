@@ -31,6 +31,9 @@ _DECISION_COLUMNS = {"decision_date": "''", "decision_author": "''", "mr_url": "
 # Sparse columns added in the symbol chunking feature.
 _SYMBOL_COLUMNS = {"symbol_name": "''", "symbol_type": "''"}
 
+# Column added in the discovery-enrichment feature (idea #20).
+_SERVICES_COLUMNS = {"services": "''"}
+
 
 def ensure_decision_columns(table) -> None:
     """Add decision synthesis columns to the table if they don't exist yet.
@@ -52,6 +55,18 @@ def ensure_symbol_columns(table) -> None:
     missing = {col: default for col, default in _SYMBOL_COLUMNS.items() if col not in existing}
     if missing:
         table.add_columns(missing)
+
+
+def ensure_services_columns(table) -> None:
+    """Add the discovery-enrichment `services` column if it doesn't exist yet.
+
+    Safe to call multiple times — skips columns that are already present.
+    """
+    existing = {field.name for field in table.schema}
+    missing = {col: default for col, default in _SERVICES_COLUMNS.items() if col not in existing}
+    if missing:
+        table.add_columns(missing)
+
 
 def _discover_installations(config: SparkConfig) -> list[tuple[Path, str]]:
     """Walk the repos directory and discover all installations.
@@ -136,6 +151,7 @@ def _chunks_to_table_data(
                 "test_command": chunk.test_command,
                 "lint_command": chunk.lint_command,
                 "clone_url": chunk.clone_url,
+                "services": chunk.services,
             }
         )
     return records
@@ -384,6 +400,7 @@ def activate_installation(
     table = db.open_table(TABLE_NAME)
     ensure_decision_columns(table)
     ensure_symbol_columns(table)
+    ensure_services_columns(table)
 
     # Delete old chunks for this installation
     table.delete(f'installation = "{installation}"')

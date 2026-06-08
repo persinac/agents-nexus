@@ -314,13 +314,15 @@ def handle_decision_synthesis(event: MergeRequestEvent, config: SparkConfig) -> 
             "test_command": "",
             "lint_command": "",
             "clone_url": "",
+            "services": "",
         }
 
         import lancedb
-        from spark.indexer.builder import ensure_decision_columns
+        from spark.indexer.builder import ensure_decision_columns, ensure_services_columns
         db = lancedb.connect(str(config.index_path))
         table = db.open_table(TABLE_NAME)
         ensure_decision_columns(table)
+        ensure_services_columns(table)
         table.delete(f'id = "{chunk_id}"')
         table.add([record])
 

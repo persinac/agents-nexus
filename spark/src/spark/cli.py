@@ -395,7 +395,12 @@ def synthesize(
     import lancedb
 
     from spark.gitlab import GitLabClient, parse_gitlab_path
-    from spark.indexer.builder import TABLE_NAME, _discover_installations, ensure_decision_columns
+    from spark.indexer.builder import (
+        TABLE_NAME,
+        _discover_installations,
+        ensure_decision_columns,
+        ensure_services_columns,
+    )
     from spark.indexer.chunker import Chunk
     from spark.indexer.embedder import embed_single
     from spark.synthesizer import synthesize_decision
@@ -437,6 +442,7 @@ def synthesize(
     db = lancedb.connect(str(config.index_path))
     table = db.open_table(TABLE_NAME)
     ensure_decision_columns(table)
+    ensure_services_columns(table)
 
     total_success, total_skip, total_fail = 0, 0, 0
 
@@ -543,6 +549,7 @@ def synthesize(
                 "test_command": "",
                 "lint_command": "",
                 "clone_url": "",
+                "services": "",
             }
             try:
                 table.delete(f'id = "{chunk_id}"')

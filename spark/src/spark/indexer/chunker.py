@@ -63,6 +63,7 @@ class Chunk:
     test_command: str = ""
     lint_command: str = ""
     clone_url: str = ""
+    services: str = ""  # comma-separated tech/service tags, e.g. "cognito, oauth, s3"
 
 
 # Files that contribute to a repo summary (priority order)
@@ -81,6 +82,11 @@ _SUMMARY_FILES = [
     "Taskfile.yml",
     "Makefile",
 ]
+
+# Subdirectories crawled for additional summary context after _SUMMARY_FILES,
+# when budget remains. These often hold richer prose than root config files.
+_SUMMARY_DOC_DIRS = ["docs", "notes", "doc"]
+_MAX_SUMMARY_DOC_FILES = 6
 
 
 def _should_exclude_dir(dirname: str, exclude_dirs: list[str]) -> bool:
@@ -168,6 +174,7 @@ def build_summary_chunk(
     det_test_command = ""
     det_lint_command = ""
     det_clone_url = ""
+    det_services = ""
 
     if detected:
         det_framework = detected.framework
@@ -176,6 +183,7 @@ def build_summary_chunk(
         det_test_command = detected.test_command
         det_lint_command = detected.lint_command
         det_clone_url = detected.clone_url
+        det_services = ", ".join(detected.services)
 
         # Add detected info to summary content for embedding
         det_parts = []
@@ -194,6 +202,10 @@ def build_summary_chunk(
             cmd_parts.append(f"Lint: {detected.lint_command}")
         if cmd_parts:
             parts.append(" | ".join(cmd_parts))
+        # Surface detected services so broad queries ("cognito", "redis") match
+        # this repo via both vector and BM25 search (BM25 indexes `content`).
+        if det_services:
+            parts.append(f"Services: {det_services}")
 
     parts.append("")
     summary_max_chars = config.summary_max_chars if config is not None else SUMMARY_MAX_CHARS
@@ -218,6 +230,30 @@ def build_summary_chunk(
         if budget <= 100:
             break
 
+    # Secondary crawl: docs/notes often hold the richest description of what a
+    # repo does (e.g. OAuth flow docs). If summary budget remains, append the
+    # head of a few markdown files from docs/, notes/, doc/.
+    budget = summary_max_chars - len("\n".join(parts))
+    if budget > 100:
+        doc_files: list[Path] = []
+        for doc_dir in _SUMMARY_DOC_DIRS:
+            dpath = repo_dir / doc_dir
+            if dpath.is_dir():
+                doc_files.extend(sorted(dpath.glob("*.md")))
+        for fpath in doc_files[:_MAX_SUMMARY_DOC_FILES]:
+            if budget <= 100:
+                break
+            try:
+                content = fpath.read_text(errors="replace")
+            except OSError:
+                continue
+            rel = fpath.relative_to(repo_dir)
+            section = f"## {rel}\n{content}\n"
+            if len(section) > budget:
+                section = section[:budget]
+            parts.append(section)
+            budget -= len(section)
+
     return Chunk(
         id=f"{installation}::summary",
         installation=installation,
@@ -238,6 +274,7 @@ def build_summary_chunk(
         test_command=det_test_command,
         lint_command=det_lint_command,
         clone_url=det_clone_url,
+        services=det_services,
     )
 
 

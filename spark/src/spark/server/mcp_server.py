@@ -105,6 +105,8 @@ def _format_results(rows: list[dict], include_content: bool = True) -> str:
             det_parts.append(f"Deploy: {row['deploy_target']}")
         if det_parts:
             gl_meta += "\n" + " | ".join(det_parts)
+        if row.get("services"):
+            gl_meta += f"\nServices: {row['services']}"
         if row.get("last_activity"):
             gl_meta += f"\nLast active: {row['last_activity']}"
         if row.get("archived"):
@@ -186,7 +188,7 @@ def spark_deep(
         where = 'chunk_type = "summary"'
         if team:
             where += f' AND team = "{team}"'
-        summary_rows = _search(table, query, query_vector, where, 5)
+        summary_rows = _search(table, query, query_vector, where, config.spark_deep_stage1_k)
 
         if not summary_rows:
             return "No matching installations found."

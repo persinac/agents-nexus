@@ -34,6 +34,7 @@ class SparkConfig:
     reranker_top_k_multiplier: int
     symbol_chunking_enabled: bool
     hybrid_search_enabled: bool
+    spark_deep_stage1_k: int
     # Chunking constants
     chunk_size: int
     chunk_overlap: int
@@ -91,6 +92,7 @@ class SparkConfig:
             reranker_top_k_multiplier=raw.get("reranker_top_k_multiplier", 3),
             symbol_chunking_enabled=raw.get("symbol_chunking_enabled", True),
             hybrid_search_enabled=raw.get("hybrid_search_enabled", True),
+            spark_deep_stage1_k=raw.get("spark_deep_stage1_k", 8),
             chunk_size=raw.get("chunk_size", 900),
             chunk_overlap=raw.get("chunk_overlap", 150),
             summary_max_chars=raw.get("summary_max_chars", 950),

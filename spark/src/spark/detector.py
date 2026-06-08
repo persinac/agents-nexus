@@ -65,6 +65,7 @@ class DetectedProject:
     test_command: str
     lint_command: str
     archived: bool
+    services: list[str] = field(default_factory=list)
 
 
 def _read_json(path: Path) -> dict | None:
@@ -335,6 +336,194 @@ def detect_lint_command(primary_language: str, repo_dir: Path) -> str:
     return ""
 
 
+# ── Service / technology detection ──────────────────────────────────────
+#
+# Broad search queries ("cognito", "oauth", "redis") fail when the repo's
+# summary text never mentions the service. These tables map dependency names
+# and config signals to short technology tags that get embedded into the
+# monitor-log summary so both vector and BM25 search can find the repo.
+
+# npm package name (exact or prefix via *) -> comma-separated tags
+_NPM_SERVICE_MAP: dict[str, str] = {
+    "@aws-sdk/client-cognito-identity-provider": "cognito",
+    "amazon-cognito-identity-js": "cognito",
+    "@aws-sdk/client-s3": "s3",
+    "@aws-sdk/client-dynamodb": "dynamodb",
+    "aws-amplify": "amplify",
+    "next-auth": "oauth, nextauth",
+    "passport": "oauth, passport",
+    "jsonwebtoken": "jwt",
+    "@auth0/nextjs-auth0": "auth0, oauth",
+    "auth0": "auth0, oauth",
+    "firebase-admin": "firebase-auth",
+    "redis": "redis",
+    "ioredis": "redis",
+    "@elastic/elasticsearch": "elasticsearch",
+    "kafkajs": "kafka",
+    "pg": "postgres",
+    "knex": "postgres",
+    "prisma": "postgres",
+    "@prisma/client": "postgres",
+    "mongoose": "mongodb",
+    "mongodb": "mongodb",
+    "googleapis": "google-api",
+    "@google-cloud/*": "gcp",
+}
+
+# python distribution name -> comma-separated tags (matched as substrings of
+# pyproject.toml / requirements.txt, lowercased)
+_PY_SERVICE_MAP: dict[str, str] = {
+    "boto3": "aws",
+    "botocore": "aws",
+    "django-allauth": "oauth",
+    "authlib": "oauth",
+    "python-jose": "jwt",
+    "pyjwt": "jwt",
+    "celery": "celery",
+    "sqlalchemy": "postgres, sql",
+    "psycopg": "postgres",
+    "redis": "redis",
+    "elasticsearch": "elasticsearch",
+    "pymongo": "mongodb",
+}
+
+# terraform resource prefix -> tag
+_TF_RESOURCE_MAP: dict[str, str] = {
+    "aws_cognito": "cognito",
+    "aws_s3": "s3",
+    "aws_dynamodb": "dynamodb",
+    "aws_rds": "rds",
+    "aws_db_instance": "rds",
+    "aws_lambda": "lambda",
+    "aws_sqs": "sqs",
+    "aws_sns": "sns",
+    "aws_elasticache": "redis",
+    "aws_kinesis": "kinesis",
+    "aws_ecs": "ecs",
+    "aws_eks": "eks",
+    "aws_apigatewayv2": "api-gateway",
+    "aws_api_gateway": "api-gateway",
+    "aws_secretsmanager": "secrets-manager",
+}
+
+# docker-compose image-name substring -> tag
+_COMPOSE_IMAGE_MAP: dict[str, str] = {
+    "redis": "redis",
+    "postgres": "postgres",
+    "elasticsearch": "elasticsearch",
+    "opensearch": "elasticsearch",
+    "localstack": "aws-local",
+    "kafka": "kafka",
+    "mongo": "mongodb",
+    "clickhouse": "clickhouse",
+}
+
+
+def _services_from_npm(repo_dir: Path) -> set[str]:
+    tags: set[str] = set()
+    pkg = _read_json(repo_dir / "package.json")
+    if not pkg:
+        return tags
+    all_deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    for dep in all_deps:
+        for pattern, mapped in _NPM_SERVICE_MAP.items():
+            if pattern.endswith("*"):
+                if dep.startswith(pattern[:-1]):
+                    tags.update(t.strip() for t in mapped.split(","))
+            elif dep == pattern:
+                tags.update(t.strip() for t in mapped.split(","))
+    return tags
+
+
+def _services_from_python(repo_dir: Path) -> set[str]:
+    tags: set[str] = set()
+    blobs: list[str] = []
+    for fname in ("pyproject.toml", "requirements.txt"):
+        raw = _read_toml_raw(repo_dir / fname)
+        if raw:
+            blobs.append(raw.lower())
+    if not blobs:
+        return tags
+    haystack = "\n".join(blobs)
+    for dist, mapped in _PY_SERVICE_MAP.items():
+        if dist in haystack:
+            tags.update(t.strip() for t in mapped.split(","))
+    return tags
+
+
+def _services_from_terraform(repo_dir: Path) -> set[str]:
+    tags: set[str] = set()
+    # Scan root + one level of subdirectories, bounded to keep this cheap.
+    tf_files: list[Path] = list(repo_dir.glob("*.tf"))
+    for sub in sorted(repo_dir.iterdir()) if repo_dir.is_dir() else []:
+        if sub.is_dir() and not sub.name.startswith("."):
+            tf_files.extend(sub.glob("*.tf"))
+        if len(tf_files) > 200:
+            break
+    for tf in tf_files[:200]:
+        raw = _read_toml_raw(tf)  # plain text read; reused helper
+        if not raw:
+            continue
+        for m in re.finditer(r'resource\s+"(aws_[a-z0-9_]+)"', raw):
+            resource = m.group(1)
+            for prefix, mapped in _TF_RESOURCE_MAP.items():
+                if resource.startswith(prefix):
+                    tags.add(mapped)
+                    break
+    return tags
+
+
+def _services_from_compose(repo_dir: Path) -> set[str]:
+    tags: set[str] = set()
+    for fname in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
+        raw = _read_toml_raw(repo_dir / fname)
+        if not raw:
+            continue
+        for m in re.finditer(r"^\s*image:\s*[\"']?([^\s\"']+)", raw, re.MULTILINE):
+            image = m.group(1).lower()
+            for needle, mapped in _COMPOSE_IMAGE_MAP.items():
+                if needle in image:
+                    tags.add(mapped)
+    return tags
+
+
+def _services_from_env(repo_dir: Path) -> set[str]:
+    tags: set[str] = set()
+    for fname in (".env.example", ".env.sample", ".env.template", ".env.dist"):
+        raw = _read_toml_raw(repo_dir / fname)
+        if not raw:
+            continue
+        upper = raw.upper()
+        if "COGNITO_" in upper:
+            tags.add("cognito")
+        if "GOOGLE_CLIENT_ID" in upper or "GOOGLE_CLIENT_SECRET" in upper:
+            tags.add("google-oauth")
+        if "AUTH0_" in upper:
+            tags.update(("auth0", "oauth"))
+        if "REDIS_" in upper:
+            tags.add("redis")
+        for m in re.finditer(r"^DATABASE_URL\s*=\s*(.+)$", raw, re.MULTILINE | re.IGNORECASE):
+            if "postgres" in m.group(1).lower():
+                tags.add("postgres")
+    return tags
+
+
+def detect_services(repo_dir: Path) -> list[str]:
+    """Detect cloud/auth/infra services from dependency and config files.
+
+    Returns a deduplicated, sorted list of short technology tags (e.g.
+    ["cognito", "oauth", "s3"]). Best-effort and dependency-free — each
+    source is scanned independently and failures are swallowed.
+    """
+    tags: set[str] = set()
+    tags |= _services_from_npm(repo_dir)
+    tags |= _services_from_python(repo_dir)
+    tags |= _services_from_terraform(repo_dir)
+    tags |= _services_from_compose(repo_dir)
+    tags |= _services_from_env(repo_dir)
+    return sorted(tags)
+
+
 def detect_project(
     repo_dir: Path,
     gitlab_project: VCSProject | None = None,
@@ -361,6 +550,7 @@ def detect_project(
         test_command=detect_test_command(primary_language, repo_dir),
         lint_command=detect_lint_command(primary_language, repo_dir),
         archived=gitlab_project.archived if gitlab_project else False,
+        services=detect_services(repo_dir),
     )
 
 
