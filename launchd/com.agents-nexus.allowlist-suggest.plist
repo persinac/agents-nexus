@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.allowlist-suggest</string>
+
+    <!-- Run as a login shell so ~/.zprofile is sourced (PATH, uv, etc.).
+         Guard: skip if waking after 11:00 (laptop was asleep at scheduled time)
+         so a late wake doesn't fire a stale daily run. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>cd __AGENTS_NEXUS_DIR__ &amp;&amp; [[ $(date +%H) -lt 11 ]] &amp;&amp; task allowlist:suggest || echo "Skipped — past 11:00 on wake"</string>
+    </array>
+
+    <!-- Daily at 08:12 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>8</integer>
+        <key>Minute</key><integer>12</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-allowlist-suggest.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-allowlist-suggest.log</string>
+</dict>
+</plist>

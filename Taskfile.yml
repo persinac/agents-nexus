@@ -313,6 +313,20 @@ tasks:
       - uv run scripts/obs-decay-monitor.py --dry-run {{.CLI_ARGS}}
 
   # =============================================================================
+  # Permission allowlist suggestions
+  # =============================================================================
+
+  allowlist:suggest:
+    desc: Suggest Bash allowlist rules from recent transcripts; post candidates to Slack
+    cmds:
+      - uv run scripts/allowlist-suggest.py {{.CLI_ARGS}}
+
+  allowlist:suggest:dry:
+    desc: Show allowlist candidates over full history without posting to Slack
+    cmds:
+      - uv run scripts/allowlist-suggest.py --all --no-slack {{.CLI_ARGS}}
+
+  # =============================================================================
   # Autostart (macOS launchd)
   # =============================================================================
 
@@ -347,6 +361,22 @@ tasks:
     cmds:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.gl-reviews.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.gl-reviews.plist
+
+  launchd:install:allowlist:
+    desc: Install launchd agent to suggest Bash allowlist rules daily at 8:12am
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.allowlist-suggest.plist > ~/Library/LaunchAgents/com.agents-nexus.allowlist-suggest.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.allowlist-suggest.plist
+      - echo "Installed — allowlist suggestions run daily at 8:12am (logs at /tmp/agents-nexus-allowlist-suggest.log)"
+
+  launchd:uninstall:allowlist:
+    desc: Remove the allowlist suggestion launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.allowlist-suggest.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.allowlist-suggest.plist
 
   launchd:install:obs-tag:
     desc: Install launchd agent to run obs:tag daily at 6:30am (after obs:tidy)
