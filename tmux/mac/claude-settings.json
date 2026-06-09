@@ -9,6 +9,17 @@
             "command": "$HOME/.tmux/hook-stop.sh; true"
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/auto-checkpoint.sh",
+            "async": true,
+            "timeout": 120
+          }
+        ]
       }
     ],
     "PreToolUse": [

@@ -70,6 +70,17 @@ else
 fi
 
 mkdir -p "$HOME/.claude"
+
+# Claude hooks — auto-checkpoint (Stop hook: background, selective memory note)
+mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/auto-checkpoint"
+if [ -f "$SCRIPT_DIR/claude-hooks/auto-checkpoint.sh" ]; then
+  chmod +x "$SCRIPT_DIR/claude-hooks/auto-checkpoint.sh"
+  ln -sf "$SCRIPT_DIR/claude-hooks/auto-checkpoint.sh" "$HOME/.claude/hooks/auto-checkpoint.sh"
+  sed -e "s|__HOME__|$HOME|g" -e "s|__AGENTS_NEXUS_DIR__|$NEXUS_DIR|g" \
+    "$SCRIPT_DIR/claude-hooks/auto-checkpoint-mcp.json" > "$HOME/.claude/auto-checkpoint/mcp.json"
+  echo "Installed auto-checkpoint hook (~/.claude/hooks/auto-checkpoint.sh)"
+fi
+
 SETTINGS="$HOME/.claude/settings.json"
 TEMPLATE="$SCRIPT_DIR/claude-settings.json"
 
