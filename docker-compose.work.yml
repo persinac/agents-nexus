@@ -103,9 +103,12 @@ services:
     restart: always
     environment:
       OLLAMA_API_BASE: http://ollama:11434
+      SPARK_EMBEDDER: bedrock
       SPARK_CONFIG: /app/config.yaml
       SPARK_INSTALLATIONS_PATH: /repos
       SPARK_INDEX_PATH: /app/data/the-index
+      AWS_PROFILE: dev-engineer
+      AWS_REGION: ${AWS_REGION:-us-east-1}
       GITLAB_URL: ${GITLAB_URL:-}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
@@ -113,7 +116,11 @@ services:
     volumes:
       - ./spark/config.yaml:/app/config.yaml:ro
       - ${REPOS_PATH:?Set REPOS_PATH in .env}:/repos:ro
-      - spark-index:/app/data/the-index
+      # Host owns writes (nightly/reclaim); container serves the canonical
+      # bedrock index READ-ONLY. Bedrock query-time embedding uses the mounted
+      # SSO credential cache (no in-container refresh — token expiry tolerated).
+      - ${HOME}/.spark-index/bedrock-full:/app/data/the-index:ro
+      - ${HOME}/.aws:/root/.aws:ro
     ports:
       - "${SPARK_PORT:-8343}:8343"
     command: ["serve", "--transport", "sse", "--host", "0.0.0.0", "--port", "8343"]
