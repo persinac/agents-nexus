@@ -15,7 +15,7 @@ class SparkConfig:
     metadata_path: Path = field(init=False)
     embedding_model: str
     embedding_dimensions: int
-    embedder: str  # "litellm" (Ollama, default) or "fastembed" (in-process ONNX)
+    embedder: str  # "litellm" (Ollama, default) | "fastembed" (in-process ONNX) | "bedrock" (AWS Titan v2)
     teams: dict[str, str]
     include_patterns: list[str]
     exclude_dirs: list[str]
