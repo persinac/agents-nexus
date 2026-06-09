@@ -1,7 +1,6 @@
 import { useCommandCenterData } from '../hooks/useCommandCenterData.js';
 import { AgentsPanel } from './commandcenter/AgentsPanel.js';
 import { CheckpointsPanel } from './commandcenter/CheckpointsPanel.js';
-import { MemoryPanel } from './commandcenter/MemoryPanel.js';
 import { ServicesPanel } from './commandcenter/ServicesPanel.js';
 import { TimersPanel } from './commandcenter/TimersPanel.js';
 
@@ -89,7 +88,7 @@ export function CommandCenter({ onClose }: Props) {
       <div style={{
         display: 'grid',
         gridTemplateColumns: '1fr 1fr',
-        gridTemplateRows: '1fr 1fr 1.1fr',
+        gridTemplateRows: '1fr 1fr',
         gap: 0,
         flex: 1,
         overflow: 'hidden',
@@ -131,17 +130,9 @@ export function CommandCenter({ onClose }: Props) {
           <TimersPanel timers={data.timers} />
         </div>
 
-        {/* Checkpoints & Cache — middle right */}
-        <div style={{ padding: 14, borderBottom: '1px solid var(--pixel-border)', overflow: 'auto' }}>
+        {/* Checkpoints & Cache — bottom right */}
+        <div style={{ padding: 14, overflow: 'auto' }}>
           <CheckpointsPanel checkpoints={data.checkpoints} cache={data.cache} />
-        </div>
-
-        {/* Memory Search — full-width bottom row */}
-        <div style={{ gridColumn: '1 / -1', padding: 14, overflow: 'auto' }}>
-          <div style={{ fontSize: 16, color: DIM, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
-            Memory Search
-          </div>
-          <MemoryPanel />
         </div>
       </div>
     </div>

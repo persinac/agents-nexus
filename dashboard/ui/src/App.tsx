@@ -5,6 +5,7 @@ import { BottomToolbar } from './components/BottomToolbar.js';
 import { ChangelogModal } from './components/ChangelogModal.js';
 import { CommandCenter } from './components/CommandCenter.js';
 import { InstallationsView } from './components/InstallationsView.js';
+import { MemorySearchView } from './components/MemorySearchView.js';
 import { DebugView } from './components/DebugView.js';
 import { MemoryWidget } from './components/MemoryWidget.js';
 import { VersionIndicator } from './components/VersionIndicator.js';
@@ -168,6 +169,7 @@ function App() {
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [isCommandCenterOpen, setIsCommandCenterOpen] = useState(false);
   const [isInstallationsOpen, setIsInstallationsOpen] = useState(false);
+  const [isMemorySearchOpen, setIsMemorySearchOpen] = useState(false);
 
   const currentMajorMinor = toMajorMinor(extensionVersion);
 
@@ -318,6 +320,8 @@ function App() {
         onToggleCommandCenter={() => setIsCommandCenterOpen((v) => !v)}
         isInstallationsOpen={isInstallationsOpen}
         onToggleInstallations={() => setIsInstallationsOpen((v) => !v)}
+        isMemorySearchOpen={isMemorySearchOpen}
+        onToggleMemorySearch={() => setIsMemorySearchOpen((v) => !v)}
       />
 
       <VersionIndicator
@@ -424,6 +428,10 @@ function App() {
 
       {isInstallationsOpen && (
         <InstallationsView onClose={() => setIsInstallationsOpen(false)} />
+      )}
+
+      {isMemorySearchOpen && (
+        <MemorySearchView onClose={() => setIsMemorySearchOpen(false)} />
       )}
 
       {showMigrationNotice && (

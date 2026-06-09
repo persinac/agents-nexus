@@ -20,6 +20,8 @@ interface BottomToolbarProps {
   onToggleCommandCenter: () => void;
   isInstallationsOpen: boolean;
   onToggleInstallations: () => void;
+  isMemorySearchOpen: boolean;
+  onToggleMemorySearch: () => void;
 }
 
 const panelStyle: React.CSSProperties = {
@@ -69,6 +71,8 @@ export function BottomToolbar({
   onToggleCommandCenter,
   isInstallationsOpen,
   onToggleInstallations,
+  isMemorySearchOpen,
+  onToggleMemorySearch,
 }: BottomToolbarProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -310,6 +314,22 @@ export function BottomToolbar({
         title="Spark installations index"
       >
         Index
+      </button>
+      <button
+        onClick={onToggleMemorySearch}
+        onMouseEnter={() => setHovered('memsearch')}
+        onMouseLeave={() => setHovered(null)}
+        style={
+          isMemorySearchOpen
+            ? { ...btnActive }
+            : {
+                ...btnBase,
+                background: hovered === 'memsearch' ? 'var(--pixel-btn-hover-bg)' : btnBase.background,
+              }
+        }
+        title="Search agent memory"
+      >
+        Search
       </button>
       <div style={{ position: 'relative' }}>
         <button
