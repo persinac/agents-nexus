@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -247,6 +248,7 @@ def reclaim(config: SparkConfig, verbose: bool = True, path_filter: str | None =
             indexed_at=datetime.now(timezone.utc).isoformat(),
             last_remote_ts=_git_head_ts(repo_dir) or 0,
             clone_url=_git_clone_url(repo_dir) or (detected.clone_url if detected else ""),
+            detected=asdict(detected) if detected else None,
         )
         if verbose:
             summary_count = sum(1 for c in chunks if c.chunk_type == "summary")
@@ -430,7 +432,11 @@ def activate_installation(
     if verbose:
         logger.info("Indexed %d chunks for %s", len(chunks), installation)
 
-    return {"installation": installation, "chunks": len(chunks)}
+    return {
+        "installation": installation,
+        "chunks": len(chunks),
+        "detected": asdict(detected) if detected else None,
+    }
 
 
 # ── sync ─────────────────────────────────────────────────────────────
@@ -531,6 +537,7 @@ def sync_installations(
                 indexed_at=datetime.now(timezone.utc).isoformat(),
                 last_remote_ts=head_ts or 0,
                 clone_url=_git_clone_url(repo_dir),
+                detected=result.get("detected"),
             )
             counts["new"] += 1
         except Exception as e:
@@ -560,6 +567,7 @@ def sync_installations(
                 indexed_at=datetime.now(timezone.utc).isoformat(),
                 last_remote_ts=head_ts,
                 clone_url=_git_clone_url(repo_dir) or prior.clone_url,
+                detected=result.get("detected") or prior.detected,
             )
             counts["changed"] += 1
         except Exception as e:

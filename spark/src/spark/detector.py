@@ -67,6 +67,31 @@ class DetectedProject:
     archived: bool
     services: list[str] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "DetectedProject":
+        """Reconstruct from a persisted dict (installations.json `detected` blob).
+
+        Tolerant of missing keys so an older/partial metadata record still
+        yields a usable project (empty strings / lists for anything absent).
+        """
+        return cls(
+            name=data.get("name", ""),
+            project_id=data.get("project_id", ""),
+            clone_url=data.get("clone_url", ""),
+            gitlab_url=data.get("gitlab_url", ""),
+            default_branch=data.get("default_branch", ""),
+            primary_language=data.get("primary_language", ""),
+            languages=list(data.get("languages") or []),
+            roles=list(data.get("roles") or []),
+            framework=data.get("framework", ""),
+            ci_type=data.get("ci_type", ""),
+            deploy_target=data.get("deploy_target", ""),
+            test_command=data.get("test_command", ""),
+            lint_command=data.get("lint_command", ""),
+            archived=bool(data.get("archived", False)),
+            services=list(data.get("services") or []),
+        )
+
 
 def _read_json(path: Path) -> dict | None:
     try:

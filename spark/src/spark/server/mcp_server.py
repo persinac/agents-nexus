@@ -273,6 +273,80 @@ def list_installations(
 
 
 @mcp.tool()
+def query_registry(
+    language: str | None = None,
+    framework: str | None = None,
+    ci: str | None = None,
+    deploy: str | None = None,
+    role: str | None = None,
+    path_prefix: str | None = None,
+    limit: int = 100,
+) -> str:
+    """Exact/structured search over the repo manifest (per-repo detector profiles).
+
+    Complements the semantic 'spark' search with precise filters — answers
+    'which repos use framework X', 'all python backend services', 'what deploys
+    to Y'. Data comes from each installation's detected profile persisted at
+    index time (installations.json).
+
+    Args:
+        language: match primary language or any detected language (e.g. 'python')
+        framework: substring match on framework (e.g. 'fastify')
+        ci: exact CI type (e.g. 'gitlab_ci')
+        deploy: substring match on deploy target
+        role: review role (e.g. 'backend', 'devops')
+        path_prefix: only repos whose path starts with this prefix
+        limit: max results (default 100)
+    """
+    from spark.indexer.metadata import load_metadata
+
+    logger.info(
+        f"query_registry: language={language} framework={framework} ci={ci} "
+        f"deploy={deploy} role={role} path_prefix={path_prefix}"
+    )
+    meta = load_metadata(config.metadata_path)
+    matches: list[tuple[str, dict]] = []
+    for rel, entry in sorted(meta.items()):
+        d = entry.detected
+        if not d:
+            continue
+        if path_prefix and not rel.startswith(path_prefix):
+            continue
+        langs = [x.lower() for x in (d.get("languages") or [])]
+        if language and language.lower() != (d.get("primary_language") or "").lower() and language.lower() not in langs:
+            continue
+        if framework and framework.lower() not in (d.get("framework") or "").lower():
+            continue
+        if ci and ci.lower() != (d.get("ci_type") or "").lower():
+            continue
+        if deploy and deploy.lower() not in (d.get("deploy_target") or "").lower():
+            continue
+        if role and role.lower() not in [r.lower() for r in (d.get("roles") or [])]:
+            continue
+        matches.append((rel, d))
+
+    total = len(matches)
+    if not total:
+        return (
+            "No matching installations. If the manifest looks empty across the board, "
+            "the index may predate detector-profile persistence — run "
+            "`spark generate-registry` or `spark reclaim` to backfill."
+        )
+
+    out = [f"{total} match(es):", ""]
+    for rel, d in matches[:limit]:
+        lang = d.get("primary_language") or "?"
+        fw = d.get("framework") or "-"
+        dep = d.get("deploy_target") or "-"
+        ci_t = d.get("ci_type") or "-"
+        roles = ",".join(d.get("roles") or []) or "-"
+        out.append(f"- {rel}  [{lang} | fw={fw} | ci={ci_t} | deploy={dep} | roles={roles}]")
+    if total > limit:
+        out.append(f"... (+{total - limit} more; raise limit)")
+    return "\n".join(out)
+
+
+@mcp.tool()
 def installation_summary(repo_name: str) -> str:
     """Get the full monitor-log (summary) for a specific installation.
 

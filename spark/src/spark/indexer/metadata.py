@@ -16,9 +16,10 @@ logger = logging.getLogger("spark.metadata")
 
 @dataclass
 class InstallationMeta:
-    indexed_at: str       # ISO 8601 UTC timestamp of last successful index
-    last_remote_ts: int   # unix epoch seconds of origin/HEAD at index time
-    clone_url: str        # captured `git remote get-url origin` at index time
+    indexed_at: str               # ISO 8601 UTC timestamp of last successful index
+    last_remote_ts: int           # unix epoch seconds of origin/HEAD at index time
+    clone_url: str                # captured `git remote get-url origin` at index time
+    detected: dict | None = None  # serialized DetectedProject (registry/manifest projection)
 
 
 def load_metadata(path: Path) -> dict[str, InstallationMeta]:
@@ -37,6 +38,7 @@ def load_metadata(path: Path) -> dict[str, InstallationMeta]:
                 indexed_at=entry["indexed_at"],
                 last_remote_ts=int(entry["last_remote_ts"]),
                 clone_url=entry.get("clone_url", ""),
+                detected=entry.get("detected"),  # absent on pre-manifest indexes
             )
         except (KeyError, TypeError, ValueError) as e:
             logger.warning("skipping malformed metadata entry %s: %s", rel_path, e)

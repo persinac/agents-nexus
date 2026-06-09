@@ -283,6 +283,7 @@ def status(ctx: click.Context) -> None:
 @click.option("--path-filter", "-p", default=None, help="Only include repos under this path prefix")
 @click.option("--model", default="claude-sonnet-4-6", help="Default LLM model for minions")
 @click.option("--include-archived", is_flag=True, help="Include archived repos")
+@click.option("--from-index", is_flag=True, help="Project from installations.json (no walk/detect); fast, always matches the index")
 @click.option("--dry-run", is_flag=True, help="Print to stdout instead of writing file")
 @click.pass_context
 def generate_registry(
@@ -291,57 +292,110 @@ def generate_registry(
     path_filter: str | None,
     model: str,
     include_archived: bool,
+    from_index: bool,
     dry_run: bool,
 ) -> None:
     """Generate a minions-suite projects.yaml from all installations.
 
-    Scans every installation, detects languages/frameworks/CI/deploy targets,
-    and outputs a ready-to-use project registry.
+    Default (walk) mode scans every installation, detects
+    languages/frameworks/CI/deploy targets, writes the registry, AND persists
+    each detected profile back into installations.json so the index and the
+    manifest stay in lockstep.
+
+    --from-index skips the walk and projects the registry straight from the
+    `detected` blobs already stored in installations.json — fast, no drift,
+    and exactly what the index knows.
 
     Default output: {installations_path}/projects.yaml
     """
-    from spark.detector import detect_project
+    from spark.detector import DetectedProject, detect_project
     from spark.gitlab import parse_gitlab_path
     from spark.indexer.builder import _discover_installations
+    from spark.indexer.metadata import InstallationMeta, load_metadata, save_metadata
     from spark.registry import build_registry, serialize_registry
 
     config = ctx.obj["config"]
     if output is None:
         output = str(config.installations_path / "projects.yaml")
 
-    all_installations = _discover_installations(config)
-    if path_filter:
-        installations = [(p, r) for p, r in all_installations if r.startswith(path_filter)]
+    detected_projects: list[DetectedProject] = []
+
+    if from_index:
+        # Projection: read the detector profiles persisted at index time.
+        meta = load_metadata(config.metadata_path)
+        missing = 0
+        for rel_path, entry in sorted(meta.items()):
+            if path_filter and not rel_path.startswith(path_filter):
+                continue
+            if not entry.detected:
+                missing += 1
+                continue
+            detected_projects.append(DetectedProject.from_dict(entry.detected))
+        click.echo(
+            f"[Guilty Spark] Projecting registry from {config.metadata_path} "
+            f"({len(detected_projects)} with detector data)"
+        )
+        if missing:
+            click.echo(
+                f"  ⚠ {missing} installs have no detector data yet — run "
+                f"`spark generate-registry` (walk mode) or `spark reclaim` to backfill."
+            )
     else:
-        installations = all_installations
+        all_installations = _discover_installations(config)
+        if path_filter:
+            installations = [(p, r) for p, r in all_installations if r.startswith(path_filter)]
+        else:
+            installations = all_installations
 
-    click.echo(f"[Guilty Spark] Scanning {len(installations)} installations...")
+        click.echo(f"[Guilty Spark] Scanning {len(installations)} installations...")
 
-    # Initialize GitLab client if configured
-    gitlab_client = None
-    if config.gitlab_enabled:
-        from spark.gitlab import GitLabClient
-        gitlab_client = GitLabClient(config.gitlab_url, config.gitlab_token)
-        click.echo(f"[Guilty Spark] GitLab enrichment: enabled ({config.gitlab_url})")
+        # Initialize GitLab client if configured
+        gitlab_client = None
+        if config.gitlab_enabled:
+            from spark.gitlab import GitLabClient
+            gitlab_client = GitLabClient(config.gitlab_url, config.gitlab_token)
+            click.echo(f"[Guilty Spark] GitLab enrichment: enabled ({config.gitlab_url})")
 
-    detected_projects = []
-    for i, (repo_dir, rel_path) in enumerate(installations):
-        gitlab_project = None
+        detected_by_rel: dict[str, DetectedProject] = {}
+        for i, (repo_dir, rel_path) in enumerate(installations):
+            gitlab_project = None
+            if gitlab_client:
+                gl_path = parse_gitlab_path(repo_dir)
+                if gl_path:
+                    gitlab_project = gitlab_client.get_project(gl_path)
+
+            detected = detect_project(repo_dir, gitlab_project, config.gitlab_url)
+            detected_projects.append(detected)
+            detected_by_rel[rel_path] = detected
+
+            lang = detected.primary_language or "?"
+            fw = detected.framework or "-"
+            deploy = detected.deploy_target or "-"
+            click.echo(f"  [{i + 1}/{len(installations)}] {detected.name}: {lang}/{fw} -> {deploy}")
+
         if gitlab_client:
-            gl_path = parse_gitlab_path(repo_dir)
-            if gl_path:
-                gitlab_project = gitlab_client.get_project(gl_path)
+            gitlab_client.close()
 
-        detected = detect_project(repo_dir, gitlab_project, config.gitlab_url)
-        detected_projects.append(detected)
-
-        lang = detected.primary_language or "?"
-        fw = detected.framework or "-"
-        deploy = detected.deploy_target or "-"
-        click.echo(f"  [{i + 1}/{len(installations)}] {detected.name}: {lang}/{fw} -> {deploy}")
-
-    if gitlab_client:
-        gitlab_client.close()
+        # Persist detector profiles back into installations.json so --from-index,
+        # the MCP query_registry tool, and the dashboard all see fresh data.
+        # Update only the `detected` field of existing entries (preserve index
+        # timestamps); create a stub entry for repos not yet embedded.
+        if not dry_run:
+            from dataclasses import asdict
+            meta = load_metadata(config.metadata_path)
+            for rel_path, detected in detected_by_rel.items():
+                if rel_path in meta:
+                    meta[rel_path].detected = asdict(detected)
+                else:
+                    meta[rel_path] = InstallationMeta(
+                        indexed_at="", last_remote_ts=0,
+                        clone_url=detected.clone_url, detected=asdict(detected),
+                    )
+            try:
+                save_metadata(config.metadata_path, meta)
+                click.echo(f"  Persisted detector profiles -> {config.metadata_path}")
+            except OSError as e:
+                click.echo(f"  ⚠ could not persist detector profiles: {e}")
 
     registry = build_registry(
         detected_projects,
@@ -365,6 +419,79 @@ def generate_registry(
         if archived_count:
             skip_msg = "excluded" if not include_archived else "included"
             click.echo(f"  Archived: {archived_count} ({skip_msg})")
+
+
+@cli.command("registry")
+@click.option("--language", "-l", default=None, help="Primary language or any detected language (e.g. python)")
+@click.option("--framework", "-f", default=None, help="Framework substring (e.g. fastify)")
+@click.option("--ci", default=None, help="Exact CI type (e.g. gitlab_ci)")
+@click.option("--deploy", default=None, help="Deploy target substring")
+@click.option("--role", default=None, help="Review role (e.g. backend, devops)")
+@click.option("--path-filter", "-p", default=None, help="Only repos under this path prefix")
+@click.option("--as-json", is_flag=True, help="Emit JSON instead of a table")
+@click.pass_context
+def registry(
+    ctx: click.Context,
+    language: str | None,
+    framework: str | None,
+    ci: str | None,
+    deploy: str | None,
+    role: str | None,
+    path_filter: str | None,
+    as_json: bool,
+) -> None:
+    """Search the repo manifest (detector profiles in installations.json).
+
+    Exact/structured lookup that complements semantic `query`. Examples:
+      spark registry --framework fastify
+      spark registry --language python --role backend
+      spark registry --deploy crossplane -p search
+    """
+    import json as _json
+    from spark.indexer.metadata import load_metadata
+
+    config = ctx.obj["config"]
+    meta = load_metadata(config.metadata_path)
+    matches: list[tuple[str, dict]] = []
+    for rel, entry in sorted(meta.items()):
+        d = entry.detected
+        if not d:
+            continue
+        if path_filter and not rel.startswith(path_filter):
+            continue
+        langs = [x.lower() for x in (d.get("languages") or [])]
+        if language and language.lower() != (d.get("primary_language") or "").lower() and language.lower() not in langs:
+            continue
+        if framework and framework.lower() not in (d.get("framework") or "").lower():
+            continue
+        if ci and ci.lower() != (d.get("ci_type") or "").lower():
+            continue
+        if deploy and deploy.lower() not in (d.get("deploy_target") or "").lower():
+            continue
+        if role and role.lower() not in [r.lower() for r in (d.get("roles") or [])]:
+            continue
+        matches.append((rel, d))
+
+    if as_json:
+        click.echo(_json.dumps([{"path": rel, **d} for rel, d in matches], indent=2))
+        return
+
+    if not matches:
+        click.echo(
+            "No matching installations. If empty across the board, run "
+            "`spark generate-registry` to backfill detector data into installations.json."
+        )
+        return
+
+    click.echo(f"[Guilty Spark] {len(matches)} match(es):\n")
+    for rel, d in matches:
+        lang = d.get("primary_language") or "?"
+        fw = d.get("framework") or "-"
+        dep = d.get("deploy_target") or "-"
+        ci_t = d.get("ci_type") or "-"
+        roles = ",".join(d.get("roles") or []) or "-"
+        click.echo(f"  {rel}")
+        click.echo(f"      {lang} | fw={fw} | ci={ci_t} | deploy={dep} | roles={roles}")
 
 
 @cli.command()
