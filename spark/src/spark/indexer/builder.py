@@ -201,6 +201,10 @@ def reclaim(config: SparkConfig, verbose: bool = True, path_filter: str | None =
 
     all_chunks: list[Chunk] = []
     vcs_hits = 0
+    # Per-installation indexing metadata so the Index view's "last indexed" reflects
+    # this reclaim (not just the last sync). Full rebuild starts fresh; partial merges.
+    from spark.indexer.metadata import InstallationMeta, load_metadata, save_metadata
+    meta = load_metadata(config.metadata_path) if path_filter else {}
     for i, (repo_dir, rel_path) in enumerate(installations):
         # Fetch VCS metadata — try GitLab first, then GitHub
         vcs_project = None
@@ -239,6 +243,11 @@ def reclaim(config: SparkConfig, verbose: bool = True, path_filter: str | None =
             merge_requests=merge_requests,
         )
         all_chunks.extend(chunks)
+        meta[rel_path] = InstallationMeta(
+            indexed_at=datetime.now(timezone.utc).isoformat(),
+            last_remote_ts=_git_head_ts(repo_dir) or 0,
+            clone_url=_git_clone_url(repo_dir) or (detected.clone_url if detected else ""),
+        )
         if verbose:
             summary_count = sum(1 for c in chunks if c.chunk_type == "summary")
             file_count = sum(1 for c in chunks if c.chunk_type == "file")
@@ -259,47 +268,47 @@ def reclaim(config: SparkConfig, verbose: bool = True, path_filter: str | None =
         logger.warning("No chunks to index!")
         return {"installations": 0, "chunks": 0, "duration": 0}
 
-    if verbose:
-        logger.info("Embedding %d chunks...", len(all_chunks))
-
-    texts = [c.content for c in all_chunks]
-    embeddings = embed_texts(texts, config)
-
-    if verbose:
-        logger.info("Writing to the Index...")
-
-    records = _chunks_to_table_data(all_chunks, embeddings)
     index_path = config.index_path
     index_path.mkdir(parents=True, exist_ok=True)
     db = lancedb.connect(str(index_path))
 
-    def _drop_and_create():
-        try:
-            db.drop_table(TABLE_NAME)
-        except Exception:
-            pass
-        db.create_table(TABLE_NAME, data=records)
-
     if path_filter:
-        # Partial rebuild: delete chunks for filtered installations, then add new ones
+        # Partial rebuild (small subset): embed all, delete filtered installs, append.
+        if verbose:
+            logger.info("Embedding %d chunks...", len(all_chunks))
+        records = _chunks_to_table_data(all_chunks, embed_texts([c.content for c in all_chunks], config))
         try:
             table = db.open_table(TABLE_NAME)
-            install_names = {repo_dir.name for repo_dir, _ in installations}
-            for name in install_names:
+            for name in {repo_dir.name for repo_dir, _ in installations}:
                 table.delete(f'installation = "{name}"')
-            if records:
-                table.add(records)
-        except ValueError:
-            # Schema mismatch (e.g., new columns added) — full rebuild required
-            if verbose:
-                logger.warning("Schema changed — rebuilding full table...")
-            _drop_and_create()
+            table.add(records)
         except Exception:
-            # Table doesn't exist yet, create it
-            _drop_and_create()
+            # Missing table or schema mismatch — recreate from this subset.
+            try:
+                db.drop_table(TABLE_NAME)
+            except Exception:
+                pass
+            db.create_table(TABLE_NAME, data=records)
     else:
-        # Full rebuild: wipe and recreate
-        _drop_and_create()
+        # Full rebuild: embed + write in BATCHES so peak memory stays bounded.
+        # FastEmbed's ONNX model is in-process; holding all chunks + all vectors at
+        # once OOMs the shared Docker VM. Drop the old table, then stream batches.
+        if verbose:
+            logger.info("Embedding %d chunks (batched write)...", len(all_chunks))
+        EMBED_BATCH = 2000
+        table = None
+        for batch_start in range(0, len(all_chunks), EMBED_BATCH):
+            batch = all_chunks[batch_start:batch_start + EMBED_BATCH]
+            records = _chunks_to_table_data(batch, embed_texts([c.content for c in batch], config))
+            if table is None:
+                # mode="overwrite" replaces the old table atomically — the existing
+                # index survives if embedding fails before the first batch lands.
+                table = db.create_table(TABLE_NAME, data=records, mode="overwrite")
+            else:
+                table.add(records)
+            del records
+            if verbose:
+                logger.info("  wrote %d/%d chunks", min(batch_start + EMBED_BATCH, len(all_chunks)), len(all_chunks))
 
     if gitlab_client:
         gitlab_client.close()
@@ -311,6 +320,12 @@ def reclaim(config: SparkConfig, verbose: bool = True, path_filter: str | None =
             logger.info("Building full-text index...")
         table = db.open_table(TABLE_NAME)
         table.create_fts_index("content", replace=True)
+
+    # Persist per-installation metadata so the Index view's "last indexed" updates.
+    try:
+        save_metadata(config.metadata_path, meta)
+    except Exception as e:
+        logger.warning("reclaim: failed to write %s: %s", config.metadata_path, e)
 
     duration = time.time() - start
     stats = {
