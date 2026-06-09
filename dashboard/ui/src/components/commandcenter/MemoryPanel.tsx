@@ -40,6 +40,7 @@ export function MemoryPanel() {
   const [project, setProject] = useState('all');
   const [hits, setHits] = useState<MemoryHit[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const run = async () => {
     const q = query.trim();
@@ -47,8 +48,16 @@ export function MemoryPanel() {
     setLoading(true);
     const results = await searchMemory(q, mode, project.trim() || 'all', 10);
     setHits(results);
+    setExpanded(new Set());
     setLoading(false);
   };
+
+  const toggle = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   return (
     <div>
@@ -83,23 +92,41 @@ export function MemoryPanel() {
         <div style={{ color: DIM, fontSize: 15 }}>No matches.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {hits.map((h) => (
-            <div key={h.id} style={{ border: '1px solid var(--pixel-border)', padding: '6px 10px' }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 15, color: 'var(--pixel-text)' }}>
-                  {h.title || h.content.slice(0, 60)}
-                </span>
-                {h.project && <span style={{ fontSize: 12, color: ACCENT }}>[{h.project}]</span>}
-                {h.tags.map((t) => (
-                  <span key={t} style={{ fontSize: 12, color: DIM }}>#{t}</span>
-                ))}
-                <span style={{ fontSize: 12, color: DIM, marginLeft: 'auto' }}>{formatAge(h.created_at)}</span>
+          {hits.map((h) => {
+            const isOpen = expanded.has(h.id);
+            const long = h.content.length > 280;
+            return (
+              <div
+                key={h.id}
+                onClick={() => long && toggle(h.id)}
+                style={{
+                  border: '1px solid var(--pixel-border)', padding: '6px 10px',
+                  cursor: long ? 'pointer' : 'default',
+                  background: isOpen ? 'rgba(255,255,255,0.04)' : 'transparent',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  {long && <span style={{ fontSize: 12, color: DIM, width: 10 }}>{isOpen ? '▾' : '▸'}</span>}
+                  <span style={{ fontSize: 15, color: 'var(--pixel-text)' }}>
+                    {h.title || h.content.slice(0, 60)}
+                  </span>
+                  {h.project && <span style={{ fontSize: 12, color: ACCENT }}>[{h.project}]</span>}
+                  {h.tags.map((t) => (
+                    <span key={t} style={{ fontSize: 12, color: DIM }}>#{t}</span>
+                  ))}
+                  <span style={{ fontSize: 12, color: DIM, marginLeft: 'auto' }}>{formatAge(h.created_at)}</span>
+                </div>
+                <div style={{ fontSize: 13, color: MID, marginTop: 3, whiteSpace: 'pre-wrap' }}>
+                  {isOpen || !long ? h.content : `${h.content.slice(0, 280)}…`}
+                </div>
+                {long && (
+                  <div style={{ fontSize: 11, color: DIM, marginTop: 3 }}>
+                    {isOpen ? 'click to collapse' : 'click to expand'}
+                  </div>
+                )}
               </div>
-              <div style={{ fontSize: 13, color: MID, marginTop: 3, whiteSpace: 'pre-wrap' }}>
-                {h.content.length > 280 ? `${h.content.slice(0, 280)}…` : h.content}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
