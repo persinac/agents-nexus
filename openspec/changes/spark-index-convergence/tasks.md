@@ -38,6 +38,15 @@
 - [x] `status` now prints the real `Embedder: bedrock (...1024d)` instead of a stale model echo (E1)
 - [x] Stage `RUST_LOG=error` in compose to quiet the read-only-FS WARN (E2; applies next container recreate)
 
+## 5c. Search quality hardening (done — prompted by a bad CLI result)
+
+- [x] Shared `spark/search.py` so CLI and MCP both use hybrid (vector+FTS) + cross-encoder rerank — the CLI was vector-only/summary-only/un-reranked before
+- [x] `spark query` reworked: hybrid+rerank in all modes; new `--flat` (file/symbol across all repos, best for "where is X"); `--include-archived` flag
+- [x] Exclude archived repos by default in `query` + MCP `spark`/`spark_deep` (`with_archived_filter`)
+- [x] `spark_deep_stage1_k` 8 → 16 so the two-stage gate stops burying the right repo
+- [x] Verified: "where is the terraform grafana helm chart" --flat → tf-platform-o11y #1 (was buried at #10; archived repo no longer surfaces)
+- NOTE/gotcha: `load_dotenv` is non-override, so a shell `AWS_PROFILE` beats `.env`'s `dev-engineer` → host CLI bedrock fails if the shell points at a non-bedrock profile. Workaround: unset `AWS_PROFILE` (let `.env` win) or prefix `AWS_PROFILE=dev-engineer`. Real fix = the IAM key (6.1). Container is insulated (profile pinned).
+
 ## 6. Follow-up (not blocking)
 
 - [ ] 6.1 Provision a scoped `bedrock:InvokeModel` IAM key and switch serving creds off SSO (removes query-time rotation failures)

@@ -90,12 +90,29 @@ def sync(ctx: click.Context, dry_run: bool, path_filter: str | None) -> None:
 @click.argument("query")
 @click.option("--top-k", "-k", default=10, help="Number of results")
 @click.option("--team", "-t", default=None, help="Filter by team name")
-@click.option("--deep", is_flag=True, help="Two-stage deep search (summaries -> files)")
+@click.option("--deep", is_flag=True, help="Two-stage: match repos via summaries, then search files within them")
+@click.option("--flat", "flat", is_flag=True, help="Search file+symbol content across ALL repos (best for 'where is X')")
+@click.option("--include-archived", is_flag=True, help="Include archived/deprecated repos (excluded by default)")
 @click.pass_context
-def query(ctx: click.Context, query: str, top_k: int, team: str | None, deep: bool) -> None:
-    """Query the installation index."""
+def query(
+    ctx: click.Context,
+    query: str,
+    top_k: int,
+    team: str | None,
+    deep: bool,
+    flat: bool,
+    include_archived: bool,
+) -> None:
+    """Query the installation index.
+
+    Default searches repo summaries ("which repo does X"). Use --flat to search
+    file/symbol content across all repos ("where is X"), or --deep for a
+    two-stage repo->files search. All modes use hybrid (vector + keyword) search
+    with cross-encoder reranking and exclude archived repos by default.
+    """
     import lancedb
 
+    from spark import search as sx
     from spark.indexer.builder import TABLE_NAME
     from spark.indexer.embedder import embed_single
 
@@ -104,43 +121,53 @@ def query(ctx: click.Context, query: str, top_k: int, team: str | None, deep: bo
     table = db.open_table(TABLE_NAME)
     query_vector = embed_single(query, config)
 
-    if deep:
-        # Stage 1: Find relevant installations via summaries
+    file_types = '(chunk_type = "file" OR chunk_type = "symbol" OR chunk_type = "merge_request")'
+
+    if flat:
+        # Flat: file/symbol/MR content across all repos — best for "where is X".
+        where = f'{file_types} AND team = "{team}"' if team else file_types
+        where = sx.with_archived_filter(where, include_archived)
+        rows = sx.hybrid_search(table, query, query_vector, where, sx.fetch_k(top_k, config), config)
+        rows = sx.maybe_rerank(query, rows, config)[:top_k]
+    elif deep:
+        # Stage 1: find relevant installations via summaries (hybrid + reranked)
         where = 'chunk_type = "summary"'
         if team:
             where += f' AND team = "{team}"'
-        summary_rows = table.search(query_vector).where(where).limit(5).to_list()
-
+        where = sx.with_archived_filter(where, include_archived)
+        k1 = config.spark_deep_stage1_k
+        summary_rows = sx.hybrid_search(table, query, query_vector, where, sx.fetch_k(k1, config), config)
+        summary_rows = sx.maybe_rerank(query, summary_rows, config)[:k1]
         if not summary_rows:
             click.echo("No matching installations found.")
             return
-
         click.echo("\n--- Stage 1: Matching installations ---")
         installations = []
         for i, row in enumerate(summary_rows):
-            score = 1 - row.get("_distance", 0)
+            score = row.get("_relevance_score", 1 - row.get("_distance", 0))
             click.echo(f"  [{i + 1}] {row['installation']} ({row['team']}) score={score:.3f}")
             installations.append(row["installation"])
-
-        # Stage 2: Search file + MR chunks within those repos
+        # Stage 2: file + MR chunks within those repos (hybrid + reranked)
         install_filter = " OR ".join(f'installation = "{name}"' for name in installations)
-        file_where = f'(chunk_type = "file" OR chunk_type = "symbol" OR chunk_type = "merge_request") AND ({install_filter})'
-        rows = table.search(query_vector).where(file_where).limit(top_k).to_list()
-
+        file_where = f'{file_types} AND ({install_filter})'
+        rows = sx.hybrid_search(table, query, query_vector, file_where, sx.fetch_k(top_k, config), config)
+        rows = sx.maybe_rerank(query, rows, config)[:top_k]
         click.echo("\n--- Stage 2: Matching files/MRs ---")
     else:
-        # Single-stage: search summaries only
+        # Single-stage: repo summaries — "which repo does X" (hybrid + reranked)
         where = 'chunk_type = "summary"'
         if team:
             where += f' AND team = "{team}"'
-        rows = table.search(query_vector).where(where).limit(top_k).to_list()
+        where = sx.with_archived_filter(where, include_archived)
+        rows = sx.hybrid_search(table, query, query_vector, where, sx.fetch_k(top_k, config), config)
+        rows = sx.maybe_rerank(query, rows, config)[:top_k]
 
     if not rows:
         click.echo("No results found.")
         return
 
     for i, row in enumerate(rows):
-        score = 1 - row.get("_distance", 0)
+        score = row.get("_relevance_score", 1 - row.get("_distance", 0))
         click.echo(f"\n[{i + 1}] {row['installation']} (score: {score:.3f})")
         click.echo(f"    Team: {row['team']} | Type: {row['chunk_type']}")
         click.echo(f"    Path: {row['installation_path']}")

@@ -15,8 +15,8 @@ from pathlib import Path
 import lancedb
 from fastmcp import FastMCP
 
+from spark import search as _search_mod
 from spark.config import SparkConfig
-from spark.indexer import reranker as _reranker_mod
 from spark.indexer.builder import TABLE_NAME
 from spark.indexer.embedder import embed_single
 
@@ -47,27 +47,12 @@ mcp = FastMCP(
 
 
 def _maybe_rerank(query: str, rows: list[dict]) -> list[dict]:
-    if config.reranker_enabled:
-        return _reranker_mod.rerank(query, rows, config.reranker_model)
-    return rows
+    return _search_mod.maybe_rerank(query, rows, config)
 
 
 def _search(table, query: str, query_vector: list, where: str, limit: int) -> list[dict]:
     """Run hybrid (vector + FTS) search with RRF, falling back to vector-only."""
-    if config.hybrid_search_enabled:
-        try:
-            return (
-                table.search(query_type="hybrid")
-                .vector(query_vector)
-                .text(query)
-                .where(where, prefilter=False)
-                .rerank()
-                .limit(limit)
-                .to_list()
-            )
-        except Exception as exc:
-            logger.warning("hybrid search failed, falling back to vector-only: %s", exc)
-    return table.search(query_vector).where(where).limit(limit).to_list()
+    return _search_mod.hybrid_search(table, query, query_vector, where, limit, config)
 
 
 def _format_results(rows: list[dict], include_content: bool = True) -> str:
@@ -128,27 +113,30 @@ def spark(
     query: str,
     top_k: int = 10,
     team: str | None = None,
+    include_archived: bool = False,
 ) -> str:
     """Search for relevant repos/installations by semantic similarity.
 
     This searches repo SUMMARIES (monitor-logs) to answer questions like
-    'which repo handles X?' or 'what terraform module manages Y?'.
+    'which repo handles X?' or 'what terraform module manages Y?'. For finding
+    specific code/files (not just which repo), use spark_deep.
 
     Args:
         query: Natural language query (e.g., 'EKS cluster provisioning',
                'chatbot zendesk integration', 'S3 bucket terraform')
         top_k: Number of results to return (default 10)
         team: Optional team filter (e.g., 'Platform - Infrastructure', 'Search - Concierge')
+        include_archived: Include archived/deprecated repos (default False)
     """
-    logger.info(f"spark: query={query!r} top_k={top_k} team={team}")
+    logger.info(f"spark: query={query!r} top_k={top_k} team={team} include_archived={include_archived}")
     table = db.open_table(TABLE_NAME)
     query_vector = embed_single(query, config)
 
     where = 'chunk_type = "summary"'
     if team:
         where += f' AND team = "{team}"'
-    fetch_k = top_k * config.reranker_top_k_multiplier if config.reranker_enabled else top_k
-    rows = _search(table, query, query_vector, where, fetch_k)
+    where = _search_mod.with_archived_filter(where, include_archived)
+    rows = _search(table, query, query_vector, where, _search_mod.fetch_k(top_k, config))
     rows = _maybe_rerank(query, rows)[:top_k]
 
     logger.info(f"spark: returned {len(rows)} results")
@@ -161,6 +149,7 @@ def spark_deep(
     installations: list[str] | None = None,
     team: str | None = None,
     top_k: int = 10,
+    include_archived: bool = False,
 ) -> str:
     """Two-stage deep search — finds specific code/files across repos.
 
@@ -188,6 +177,7 @@ def spark_deep(
         where = 'chunk_type = "summary"'
         if team:
             where += f' AND team = "{team}"'
+        where = _search_mod.with_archived_filter(where, include_archived)
         summary_rows = _search(table, query, query_vector, where, config.spark_deep_stage1_k)
 
         if not summary_rows:
