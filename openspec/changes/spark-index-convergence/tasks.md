@@ -28,9 +28,15 @@
 
 ## 5. P5 — Re-wire nightly + document
 
-- [ ] 5.1 Confirm the nightly `spark sync` (`spark/scripts/spark-pipeline.sh`) resolves to the canonical bedrock index and embedder
-- [ ] 5.2 Watch one nightly run (first run is a full reclaim at the new path) and confirm it completes + writes metadata
-- [ ] 5.3 Document the converged topology (single codebase/index/embedder) and the SSO→IAM-key hardening follow-up in docs/ or memory
+- [x] 5.1 Confirm the nightly `spark sync` resolves to the canonical bedrock index + embedder — verified via `sync --dry-run` (up-to-date=423 changed=4; resolves to bedrock-full @ 1024d). Caveat: cron embedding of changed repos needs non-SSO creds (6.1).
+- [ ] 5.2 Watch one nightly run and confirm it completes + writes metadata — pending (gated on 6.1 creds for unattended embedding)
+- [x] 5.3 Document the converged topology + config precedence + SSO→IAM follow-up — `docs/spark-convergence.md`
+
+## 5b. Polish + config hygiene (done)
+
+- [x] Align canonical `config.yaml` to the bedrock index/embedder so it can't contradict `.env` (D2)
+- [x] `status` now prints the real `Embedder: bedrock (...1024d)` instead of a stale model echo (E1)
+- [x] Stage `RUST_LOG=error` in compose to quiet the read-only-FS WARN (E2; applies next container recreate)
 
 ## 6. Follow-up (not blocking)
 

@@ -255,7 +255,8 @@ def status(ctx: click.Context) -> None:
     click.echo("[127 Guilty Spark] Index Status")
     click.echo(f"  Location:      {index_path}")
     click.echo(f"  Last built:    {last_built}")
-    click.echo(f"  Model:         {config.embedding_model}")
+    from spark.indexer.embedder import describe_embedder
+    click.echo(f"  Embedder:      {describe_embedder(config)}")
     click.echo()
     click.echo(f"  Installations: {summaries}")
     code_str = f"{symbols} symbols" if symbols else f"{files} files"

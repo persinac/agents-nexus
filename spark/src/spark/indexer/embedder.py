@@ -343,6 +343,15 @@ def embed_texts(
     return final
 
 
+def describe_embedder(config: SparkConfig) -> str:
+    """Human-readable description of the active embedder + model/dims (for status)."""
+    if config.embedder == "bedrock":
+        return f"bedrock ({_bedrock_model(config)}, {_bedrock_dims(config)}d)"
+    if config.embedder == "fastembed":
+        return f"fastembed ({_FASTEMBED_MODEL}, 384d)"
+    return f"litellm ({config.embedding_model}, {config.embedding_dimensions}d)"
+
+
 def embed_single(text: str, config: SparkConfig) -> list[float]:
     """Embed a single text string."""
     if config.embedder == "bedrock":

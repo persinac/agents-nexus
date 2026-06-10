@@ -109,6 +109,8 @@ services:
       SPARK_INDEX_PATH: /app/data/the-index
       AWS_PROFILE: dev-engineer
       AWS_REGION: ${AWS_REGION:-us-east-1}
+      # Quiet LanceDB's benign manifest-namespace WARN on the read-only index mount.
+      RUST_LOG: ${RUST_LOG:-error}
       GITLAB_URL: ${GITLAB_URL:-}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
