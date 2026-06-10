@@ -121,7 +121,7 @@ services:
       # Host owns writes (nightly/reclaim); container serves the canonical
       # bedrock index READ-ONLY. Bedrock query-time embedding uses the mounted
       # SSO credential cache (no in-container refresh — token expiry tolerated).
-      - ${HOME}/.spark-index/bedrock-rich:/app/data/the-index:ro
+      - ${HOME}/.spark-index/bedrock-rich2:/app/data/the-index:ro
       - ${HOME}/.aws:/root/.aws:ro
     ports:
       - "${SPARK_PORT:-8343}:8343"
