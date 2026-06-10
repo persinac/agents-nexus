@@ -431,6 +431,16 @@ _TF_RESOURCE_MAP: dict[str, str] = {
     "aws_secretsmanager": "secrets-manager",
 }
 
+# Non-AWS terraform provider prefixes worth surfacing as service tags. Utility
+# providers (null, random, local, template, tls, time, external, archive) are
+# intentionally excluded as noise.
+_TF_INTERESTING_PROVIDERS: set[str] = {
+    "grafana", "datadog", "newrelic", "pagerduty", "kubernetes", "helm",
+    "vault", "cloudflare", "fastly", "postgresql", "mysql", "mongodbatlas",
+    "snowflake", "databricks", "gitlab", "github", "google", "azurerm",
+    "kafka", "confluent", "elasticstack", "okta", "auth0", "vercel",
+}
+
 # docker-compose image-name substring -> tag
 _COMPOSE_IMAGE_MAP: dict[str, str] = {
     "redis": "redis",
@@ -478,23 +488,40 @@ def _services_from_python(repo_dir: Path) -> set[str]:
 
 def _services_from_terraform(repo_dir: Path) -> set[str]:
     tags: set[str] = set()
-    # Scan root + one level of subdirectories, bounded to keep this cheap.
-    tf_files: list[Path] = list(repo_dir.glob("*.tf"))
-    for sub in sorted(repo_dir.iterdir()) if repo_dir.is_dir() else []:
-        if sub.is_dir() and not sub.name.startswith("."):
-            tf_files.extend(sub.glob("*.tf"))
-        if len(tf_files) > 200:
+    # Walk the whole tree (bounded) so files nested under terraform/main/, modules/,
+    # envs/, etc. are seen — not just root + one level. Skip provider caches/vendoring.
+    _skip = {".git", ".terraform", "node_modules", ".venv", "vendor"}
+    tf_files: list[Path] = []
+    for p in repo_dir.rglob("*.tf"):
+        if any(part in _skip for part in p.parts):
+            continue
+        tf_files.append(p)
+        if len(tf_files) >= 300:
             break
-    for tf in tf_files[:200]:
+    for tf in tf_files:
         raw = _read_toml_raw(tf)  # plain text read; reused helper
         if not raw:
             continue
+        # AWS resources -> curated service tags
         for m in re.finditer(r'resource\s+"(aws_[a-z0-9_]+)"', raw):
             resource = m.group(1)
             for prefix, mapped in _TF_RESOURCE_MAP.items():
                 if resource.startswith(prefix):
                     tags.add(mapped)
                     break
+        # Non-AWS resources/data sources -> provider prefix as a tag (allowlisted),
+        # so e.g. grafana_*, kubernetes_*, helm_*, datadog_* surface what's deployed.
+        for m in re.finditer(r'(?:resource|data)\s+"([a-z][a-z0-9]*)_[a-z0-9_]+"', raw):
+            provider = m.group(1)
+            if provider in _TF_INTERESTING_PROVIDERS:
+                tags.add(provider)
+        # helm_release chart names -> direct tags (grafana, loki, tempo, prometheus, ...)
+        if "helm_release" in raw:
+            tags.add("helm")
+            for m in re.finditer(r'chart\s*=\s*"([^"]+)"', raw):
+                chart = m.group(1).strip().lower().split("/")[-1]
+                if chart and len(chart) <= 40:
+                    tags.add(chart)
     return tags
 
 

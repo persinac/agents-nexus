@@ -85,7 +85,7 @@ _SUMMARY_FILES = [
 
 # Subdirectories crawled for additional summary context after _SUMMARY_FILES,
 # when budget remains. These often hold richer prose than root config files.
-_SUMMARY_DOC_DIRS = ["docs", "notes", "doc"]
+_SUMMARY_DOC_DIRS = ["docs", "notes", "doc", ".ai", ".ai/research"]
 _MAX_SUMMARY_DOC_FILES = 6
 
 
