@@ -759,6 +759,36 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
+  if (url.pathname === '/api/system/spark-index') {
+    corsJson();
+    const PY = "import json,lancedb\n" +
+      "from spark.config import SparkConfig\n" +
+      "c=SparkConfig.load()\n" +
+      "o={'embedder':c.embedder}\n" +
+      "o['model']='BAAI/bge-small-en-v1.5' if c.embedder=='fastembed' else c.embedding_model\n" +
+      "try:\n" +
+      "    t=lancedb.connect(str(c.index_path)).open_table('the_index')\n" +
+      "    vf=[f for f in t.schema if f.name=='vector'][0]\n" +
+      "    o['dim']=getattr(vf.type,'list_size',None)\n" +
+      "    o['chunks']=t.count_rows()\n" +
+      "except Exception as e:\n" +
+      "    o['error']=str(e)\n" +
+      "print(json.dumps(o))";
+    try {
+      const out = execFileSync(
+        'docker',
+        ['exec', 'nexus-spark', 'uv', 'run', 'python', '-c', PY],
+        { encoding: 'utf8', timeout: 20000, maxBuffer: 1024 * 1024 },
+      );
+      // uv may emit noise on stderr; stdout's last non-empty line is our JSON.
+      const line = out.trim().split('\n').filter((l) => l.trim().startsWith('{')).pop() || '{}';
+      res.end(line);
+    } catch {
+      res.end('{}');
+    }
+    return;
+  }
+
   if (url.pathname === '/api/system/timers/log') {
     corsJson();
     const label = url.searchParams.get('label') || '';

@@ -33,6 +33,7 @@ Thumbs.db
 
 scripts/clone-urls.txt
 scripts/*.log
+spark/*.log
 scripts/.obs-tag-state.json
 
 repos-manifest.yaml
