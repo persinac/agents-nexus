@@ -1,0 +1,11 @@
+[Unit]
+Description=Flush buffered agent-memory events into Postgres
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash __HOME__/.tmux/flush-events.sh
+Environment=HOME=__HOME__
+Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120

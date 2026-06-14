@@ -9,6 +9,7 @@
   "com.agents-nexus.obs-digest": "Digests the previous business day's Obsidian notes and posts to Slack",
   "com.agents-nexus.obs-tag": "Auto-tags newly-modified Obsidian notes via Claude",
   "com.agents-nexus.obs-tidy": "Tidies the Obsidian vault (broken links, orphans) and posts a Slack summary",
+  "com.agents-nexus.permission-suggest": "Weekly: proposes safe Claude Code permission-allowlist additions from recent transcripts and pings Slack (propose-only)",
   "com.agents-nexus.svc-chatbot-mr-labels": "Auto-applies severity labels, assignees, and reviewers to open svc-chatbot MRs",
   "com.agents-nexus.svc-chatbot-rebase": "Auto-rebases the svc-chatbot typed-tool-results branch onto origin/main"
 }

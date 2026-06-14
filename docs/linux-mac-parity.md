@@ -134,12 +134,13 @@ Captured from `~/Library/LaunchAgents/` on this Mac. Some live in agents-nexus, 
 | `com.agents-nexus.svc-chatbot-mr-labels.plist` | every 4 h at :07 | `scripts/svc-chatbot-mr-labels.sh` | **missing systemd unit** |
 | `com.agents-nexus.svc-chatbot-rebase.plist` | weekdays 07:13 | `scripts/svc-chatbot-rebase.sh` (currently failing — see below) | **missing systemd unit** |
 | `com.agents-nexus.guilty-spark.nightly.plist` | daily 02:00 | `spark/scripts/spark-pipeline.sh` (currently failing — see below) | `nightly-spark.{service,timer}` exists; confirm script path. Nightly entrypoint is now `spark sync` (incremental); `spark reclaim` is the schema-migration escape hatch. |
+| `com.agents-nexus.permission-suggest.plist` | weekly Sun 09:00 | `scripts/permission-suggest.py` (propose-only: mines transcripts → headless `claude` safety judgment → Slack ping; apply via `task perm:suggest:apply`) | ✓ `permission-suggest.{service,timer}` (Sun 15:00 UTC = 09:00 MT) |
 
 ### Jobs sourced from sibling repos (would need Linux ports)
 
 | Plist | Source repo | Schedule | What it runs | Linux status |
 |---|---|---|---|---|
-| `com.agents-nexus.agent-memory.flush.plist` | `agents-nexus/tmux/mac/launchd/` | every 120 s | `~/.tmux/flush-events.sh` | **no systemd unit** — flush should run on the mini-PC where mnemon lives |
+| `com.agents-nexus.agent-memory.flush.plist` | `agents-nexus/tmux/mac/launchd/` | every 120 s | `~/.tmux/flush-events.sh` | ✓ `agent-memory-flush.{service,timer}` (every 120 s via `OnUnitActiveSec`) |
 
 ### Jobs not sourced from any repo (only on Mac filesystem)
 
@@ -157,7 +158,7 @@ Captured from `~/Library/LaunchAgents/` on this Mac. Some live in agents-nexus, 
 
 1. **`agents-nexus/launchd/` jobs** — straightforward port. Add `nightly-gl-reviews.{service,timer}` and `nightly-gl-reviews-prune.{service,timer}` to `tmux/linux/systemd/`, mirroring the existing `nightly-obs-tag` files. Update `install.sh` to enable them.
 
-2. **`com.agents-nexus.agent-memory.flush.plist`** — once the mini-PC is the canonical mnemon host, add a `agent-memory-flush.{service,timer}` (every 2 min) under `tmux/linux/systemd/`. Source plist now lives at `agents-nexus/tmux/mac/launchd/` (moved out of the claude-agents-tmux repo).
+2. ✓ **`com.agents-nexus.agent-memory.flush.plist`** — done. `agent-memory-flush.{service,timer}` added under `tmux/linux/systemd/` (oneshot service + 120 s `OnUnitActiveSec` timer). Source plist lives at `agents-nexus/tmux/mac/launchd/`.
 
 3. **`com.agents-nexus.guilty-spark.nightly.plist`** — ✓ migrated. Plist now lives at `agents-nexus/launchd/`, script reused from `agents-nexus/spark/scripts/spark-pipeline.sh` (identical canonical copy already in repo). Job currently fails on Mac because the script expects a local `.venv` in the spark repo, but spark runs in Docker here — failure preserved during migration; fix is a separate work item.
 
