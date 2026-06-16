@@ -34,6 +34,15 @@ MY_NAME="$project_slug"
 tmux rename-window -t "$MY_PANE_ID" "$MY_NAME" 2>/dev/null
 tmux set-window-option -t "$MY_PANE_ID" automatic-rename off 2>/dev/null
 
+# ── Tag LLM traffic so Langfuse names the trace after this window ───────────
+# The proxy reads a `sess/<name>/` path prefix and uses it as the trace name +
+# session id; without it every agent shows up as "claude-code". Slugify to a
+# URL-path-safe segment (the proxy splits the prefix on the first "/").
+if [ -n "${ANTHROPIC_BASE_URL:-}" ] && [ -n "$MY_NAME" ]; then
+  _sess_slug=$(printf '%s' "$MY_NAME" | tr -c 'A-Za-z0-9._-' '-')
+  export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL%/}/sess/${_sess_slug}"
+fi
+
 if [ -n "$MY_PANE_ID" ] && [ -n "$MY_SLOT" ]; then
   mkdir -p "$HOME/.tmux/registry"
   printf 'SLOT=%s\nNAME=%s\nCWD=%s\nAT=%s\nPANE_ID=%s\n' \
