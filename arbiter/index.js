@@ -789,6 +789,32 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
+  if (url.pathname === '/api/system/cost') {
+    corsJson();
+    // Durable daily cost rollup (agents.langfuse_cost_daily), populated by
+    // scripts/langfuse-cost-snapshot.py before Langfuse's 10-day trace TTL
+    // prunes the source. Reached via docker exec, same pattern as installations.
+    // SQL is piped on stdin (-f -) so its quotes need no shell escaping.
+    const sql =
+      "SELECT coalesce(json_agg(row_to_json(c) ORDER BY c.day DESC, c.total_cost DESC), '[]') FROM (" +
+      "SELECT to_char(day, 'YYYY-MM-DD') AS day, model, observations, " +
+      "total_cost::float8 AS total_cost, input_tokens, output_tokens, " +
+      "cache_creation_tokens, cache_read_tokens, total_tokens " +
+      "FROM agents.langfuse_cost_daily WHERE day >= current_date - 90) c";
+    try {
+      const out = execFileSync(
+        'docker',
+        ['exec', '-i', 'nexus-postgres', 'sh', '-c',
+          'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -f -'],
+        { encoding: 'utf8', input: sql, timeout: 10000, maxBuffer: 8 * 1024 * 1024 },
+      );
+      res.end(out.trim() || '[]');
+    } catch {
+      res.end('[]');
+    }
+    return;
+  }
+
   if (url.pathname === '/api/system/timers/log') {
     corsJson();
     const label = url.searchParams.get('label') || '';

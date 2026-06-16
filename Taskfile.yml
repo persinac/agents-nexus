@@ -243,6 +243,39 @@ tasks:
     cmds:
       - docker compose ps langfuse-web langfuse-worker langfuse-postgres langfuse-redis langfuse-clickhouse langfuse-minio
 
+  langfuse:retention:
+    desc: "Apply N-day TTL to Langfuse ClickHouse trace tables (default 10). Idempotent. RE-RUN AFTER langfuse:update — a Langfuse upgrade can recreate tables and silently drop the TTL. Override window: RETENTION_DAYS=14 task langfuse:retention"
+    vars:
+      RETENTION_DAYS: '{{.RETENTION_DAYS | default "10"}}'
+    cmds:
+      # docker exec by container_name (not `compose exec`) so it is independent
+      # of which compose file resolves by default on this host.
+      - |
+        docker exec langfuse-clickhouse clickhouse-client \
+          --user clickhouse --password "${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}" --multiquery -q "
+            ALTER TABLE traces       MODIFY TTL toDateTime(timestamp)  + INTERVAL {{.RETENTION_DAYS}} DAY;
+            ALTER TABLE observations MODIFY TTL toDateTime(start_time) + INTERVAL {{.RETENTION_DAYS}} DAY;
+            ALTER TABLE scores       MODIFY TTL toDateTime(timestamp)  + INTERVAL {{.RETENTION_DAYS}} DAY;
+          "
+      - 'echo "[nexus] Langfuse ClickHouse TTL = {{.RETENTION_DAYS}} days (traces, observations, scores). See docs/langfuse-retention.md."'
+
+  langfuse:cost-snapshot:
+    desc: "Snapshot Langfuse daily cost/usage (ClickHouse → Postgres agents.langfuse_cost_daily). Idempotent; run daily by launchd/systemd. Preserves cost history past the trace TTL."
+    cmds:
+      - python3 scripts/langfuse-cost-snapshot.py {{.CLI_ARGS}}
+
+  langfuse:cost:
+    desc: "Print recent daily LLM spend by model from the durable Postgres rollup."
+    cmds:
+      - |
+        docker exec nexus-postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+          SELECT day, model, observations AS obs,
+                 round(total_cost, 2) AS cost_usd,
+                 total_tokens AS tokens
+          FROM agents.langfuse_cost_daily
+          WHERE day >= current_date - 30
+          ORDER BY day DESC, total_cost DESC;"'
+
   # =============================================================================
   # GitLab jobs
   # =============================================================================
@@ -484,6 +517,22 @@ tasks:
     cmds:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist
+
+  launchd:install:langfuse-cost-snapshot:
+    desc: Install launchd agent to snapshot Langfuse cost into Postgres daily (4:17am)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.langfuse-cost-snapshot.plist > ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
+      - echo "Installed — cost snapshot runs daily at 4:17am (logs at /tmp/agents-nexus-langfuse-cost-snapshot.log)"
+
+  launchd:uninstall:langfuse-cost-snapshot:
+    desc: Remove the Langfuse cost-snapshot launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
 
   perm:suggest:
     desc: Scan recent transcripts and propose safe permission-allowlist additions (propose-only)

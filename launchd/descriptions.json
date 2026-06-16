@@ -4,6 +4,7 @@
   "com.agents-nexus.gl-reviews": "Writes the GitLab review queue into today's Obsidian daily note",
   "com.agents-nexus.gl-reviews-prune": "Prunes stale reviewer assignments from open GitLab MRs",
   "com.agents-nexus.guilty-spark.nightly": "Nightly: incremental Spark re-index (sync) + decision synthesis from recent MRs",
+  "com.agents-nexus.langfuse-cost-snapshot": "Daily: snapshots Langfuse cost/usage into Postgres so spend history survives the 10-day trace TTL",
   "com.agents-nexus.muninn.sync": "Syncs reMarkable rM1 handwritten pages into the Obsidian vault",
   "com.agents-nexus.obs-decay": "Weekly review: surfaces stale Obsidian notes for the user to action",
   "com.agents-nexus.obs-digest": "Digests the previous business day's Obsidian notes and posts to Slack",

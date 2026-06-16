@@ -20,6 +20,8 @@ interface BottomToolbarProps {
   onToggleCommandCenter: () => void;
   isInstallationsOpen: boolean;
   onToggleInstallations: () => void;
+  isCostOpen: boolean;
+  onToggleCost: () => void;
   isMemorySearchOpen: boolean;
   onToggleMemorySearch: () => void;
 }
@@ -71,6 +73,8 @@ export function BottomToolbar({
   onToggleCommandCenter,
   isInstallationsOpen,
   onToggleInstallations,
+  isCostOpen,
+  onToggleCost,
   isMemorySearchOpen,
   onToggleMemorySearch,
 }: BottomToolbarProps) {
@@ -314,6 +318,22 @@ export function BottomToolbar({
         title="Spark installations index"
       >
         Index
+      </button>
+      <button
+        onClick={onToggleCost}
+        onMouseEnter={() => setHovered('cost')}
+        onMouseLeave={() => setHovered(null)}
+        style={
+          isCostOpen
+            ? { ...btnActive }
+            : {
+                ...btnBase,
+                background: hovered === 'cost' ? 'var(--pixel-btn-hover-bg)' : btnBase.background,
+              }
+        }
+        title="LLM cost over time"
+      >
+        Cost
       </button>
       <button
         onClick={onToggleMemorySearch}

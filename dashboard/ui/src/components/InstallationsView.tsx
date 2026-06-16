@@ -115,6 +115,18 @@ export function InstallationsView({ onClose }: Props) {
         <span style={{ fontSize: 22, color: 'var(--pixel-accent)', fontWeight: 'bold' }}>
           INSTALLATIONS ({total})
         </span>
+        {indexInfo && (
+          <span style={{ marginLeft: 12, fontSize: 13, color: DIM }}>
+            {indexInfo.error
+              ? indexInfo.error
+              : [
+                  indexInfo.embedder,
+                  indexInfo.model,
+                  indexInfo.dim != null ? `dim ${indexInfo.dim}` : null,
+                  indexInfo.chunks != null ? `${indexInfo.chunks.toLocaleString()} chunks` : null,
+                ].filter(Boolean).join(' · ')}
+          </span>
+        )}
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}

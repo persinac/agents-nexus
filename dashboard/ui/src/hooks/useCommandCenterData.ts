@@ -137,6 +137,22 @@ export async function fetchSparkIndexInfo(): Promise<SparkIndexInfo | null> {
   return fetchJson<SparkIndexInfo>('/api/system/spark-index');
 }
 
+export interface CostDay {
+  day: string;
+  model: string;
+  observations: number;
+  total_cost: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  total_tokens: number;
+}
+
+export async function fetchCostData(): Promise<CostDay[]> {
+  return (await fetchJson<CostDay[]>('/api/system/cost')) ?? [];
+}
+
 export interface MemoryHit {
   id: string;
   title: string;

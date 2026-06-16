@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Langfuse cost snapshot — 10:17 UTC (~04:17 MT)
+
+[Timer]
+OnCalendar=*-*-* 10:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
