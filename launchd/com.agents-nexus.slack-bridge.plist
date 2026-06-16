@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.slack-bridge</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>node</string>
+        <string>__AGENTS_NEXUS_DIR__/slack-bridge/index.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__AGENTS_NEXUS_DIR__/slack-bridge</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/alex.persinger@getgarner.com</string>
+        <key>AGENTS_NEXUS_DIR</key>
+        <string>__AGENTS_NEXUS_DIR__</string>
+        <!-- nvm node first (pinned to the installed version), then homebrew so the
+             bridge's child agent-send.sh can find tmux. Update the node path if the
+             nvm version changes. -->
+        <key>PATH</key>
+        <string>/Users/alex.persinger@getgarner.com/.nvm/versions/node/v20.19.6/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/alex.persinger@getgarner.com/.local/bin</string>
+    </dict>
+
+    <!-- Long-running daemon. KeepAlive only restarts on a CRASH (non-zero exit),
+         not on the clean exit 0 the boot guard takes when tokens are unset — so an
+         un-provisioned box does not thrash. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-slack-bridge.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-slack-bridge.log</string>
+</dict>
+</plist>

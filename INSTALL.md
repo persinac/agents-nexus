@@ -29,6 +29,7 @@ The installer:
 | `--profile <name>` | Use/create the named profile. Skips the profile-name prompt. |
 | `--switch <name>` | **No prompts, no deps reinstall.** Repoint `.env` symlink and `.nexus-profile` at an existing `.env.<name>`. Fails if the profile file doesn't exist. |
 | `--finish-langfuse` | Re-prompt for `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` against the active profile and recreate the `proxy` container. Use this after creating an API key in the Langfuse UI (see [Two-phase Langfuse setup](#two-phase-langfuse-setup)). |
+| `--finish-slack` | Re-prompt for `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_NEXUS_CHANNEL` against the active profile, `npm install` the bridge, and (macOS) offer to install the launchd supervisor. Use this after creating the Slack app (see [Slack bridge setup](#slack-bridge-setup) and [`docs/slack-bridge.md`](docs/slack-bridge.md)). |
 | `--non-interactive` | Skip the entire profile-setup step. Runs deps + tmux configs + skills + dashboard (matches the pre-rewrite installer behavior). Safe for CI / scripted re-runs. |
 | `--no-ui` | Skip the dashboard `npm install` step. |
 | `-h`, `--help` | Print usage. |
@@ -64,8 +65,9 @@ Numbered TUI — type a number to toggle, `a` to select all, ENTER to confirm. V
 | 1 | Langfuse observability | both | 6 stack secrets generated; pub/secret API keys handled later via `--finish-langfuse` |
 | 2 | GitLab webhook re-indexing | both | Asks `GITLAB_URL`, `GITLAB_TOKEN`; generates `SPARK_WEBHOOK_SECRET` |
 | 3 | Cloudflare tunnel | both | Asks `CLOUDFLARE_TUNNEL_TOKEN` |
-| 4 | GitHub integration | work only | Asks `GITHUB_URL`, `GITHUB_TOKEN` |
-| 5 | Corporate gateway upstream | work only | Asks `ANTHROPIC_API_BASE`. On Linux, prints a `host.docker.internal` resolution reminder. |
+| 4 | Slack bridge | both | Optionally asks the 3 Slack tokens now, else writes empty `SLACK_*` keys to finish later via `--finish-slack` |
+| 5 | GitHub integration | work only | Asks `GITHUB_URL`, `GITHUB_TOKEN` |
+| 6 | Corporate gateway upstream | work only | Asks `ANTHROPIC_API_BASE`. On Linux, prints a `host.docker.internal` resolution reminder. |
 
 ### 5. Files written
 
@@ -94,6 +96,14 @@ Langfuse needs two passes because its API keys are created in the UI (which can'
 1. **First pass** — `./install.sh` with Langfuse selected. The installer generates the six stack secrets (NextAuth, salt, encryption key, DB password, Redis auth, ClickHouse password) and starts the stack.
 2. **Open the UI** — `http://localhost:3000`. Create a user, create a project, Settings → API Keys → Create new key.
 3. **Second pass** — `./install.sh --finish-langfuse`. Paste the `pk-lf-...` and `sk-lf-...` values when prompted. The installer rewrites the active profile's `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` lines and runs `docker compose up -d --force-recreate proxy` so the proxy picks them up.
+
+## Slack bridge setup
+
+The Slack bridge gives you two-way control — message an agent from a `#nexus` Slack channel, and have agents post back when they need input (replies route straight back to the right agent). It needs a Slack app with **Socket Mode** (no public URL/tunnel required). Like Langfuse, it's a two-pass flow because the app/tokens are created in Slack's UI:
+
+1. **First pass** — `./install.sh` with the Slack bridge peripheral selected. If you already have the tokens you can paste them now; otherwise the installer writes empty `SLACK_*` keys to the profile.
+2. **Create the Slack app** — follow the manifest + scopes in [`docs/slack-bridge.md`](docs/slack-bridge.md), enable Socket Mode, generate the bot (`xoxb-…`) and app-level (`xapp-…`) tokens, and invite the bot to a private `#nexus` channel.
+3. **Second pass** — `./install.sh --finish-slack`. Paste the bot token, app token, and channel id. The installer rewrites the active profile's `SLACK_*` lines, `npm install`s the bridge, and (macOS) offers to install the launchd supervisor. Start it manually any time with `task slack:bridge`.
 
 ## Switching profiles
 

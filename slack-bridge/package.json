@@ -1,0 +1,15 @@
+{
+  "name": "nexus-slack-bridge",
+  "version": "0.1.0",
+  "description": "Slack Socket Mode bridge — routes #nexus messages and thread replies to the right tmux agent, and posts agent input-requests back to Slack",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@slack/socket-mode": "^2.0.7",
+    "@slack/web-api": "^7.17.0"
+  }
+}

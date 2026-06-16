@@ -42,6 +42,27 @@ tasks:
       - npm install
 
   # =============================================================================
+  # Slack bridge (two-way #nexus <-> agent control)
+  # =============================================================================
+  slack:bridge:
+    desc: Start the Slack bridge (Socket Mode listener + /notify endpoint)
+    dir: slack-bridge
+    cmds:
+      - npm start
+
+  slack:bridge:dev:
+    desc: Start the Slack bridge with file watching
+    dir: slack-bridge
+    cmds:
+      - npm run dev
+
+  slack:bridge:install:
+    desc: Install slack-bridge dependencies
+    dir: slack-bridge
+    cmds:
+      - npm install
+
+  # =============================================================================
   # Dashboard (pixel UI)
   # =============================================================================
 
@@ -533,6 +554,22 @@ tasks:
     cmds:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
+
+  launchd:install:slack-bridge:
+    desc: Install launchd agent to keep the Slack bridge running (KeepAlive)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/com.agents-nexus.slack-bridge.plist > ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
+      - echo "Installed — slack bridge runs under launchd (logs at /tmp/agents-nexus-slack-bridge.log)"
+
+  launchd:uninstall:slack-bridge:
+    desc: Remove the Slack bridge launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
 
   perm:suggest:
     desc: Scan recent transcripts and propose safe permission-allowlist additions (propose-only)

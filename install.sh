@@ -8,6 +8,7 @@
 #   ./install.sh --profile <name>      # use/create a specific profile
 #   ./install.sh --switch <name>       # repoint .env at an existing profile
 #   ./install.sh --finish-langfuse     # paste Langfuse keys after first run
+#   ./install.sh --finish-slack        # paste Slack bridge tokens after first run
 #   ./install.sh --non-interactive     # deps + skills + dashboard only (no prompts)
 #   ./install.sh --no-ui               # skip dashboard npm setup
 #
@@ -42,7 +43,7 @@ PLATFORM_DIR="$REPO_DIR/tmux/$OS"
 SKIP_UI=false
 INTERACTIVE=true
 PROFILE_ARG=""
-MODE="install"   # install | switch | finish-langfuse
+MODE="install"   # install | switch | finish-langfuse | finish-slack
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,8 +52,9 @@ while [ $# -gt 0 ]; do
     --profile)          shift; PROFILE_ARG="${1:-}" ;;
     --switch)           shift; PROFILE_ARG="${1:-}"; MODE="switch" ;;
     --finish-langfuse)  MODE="finish-langfuse" ;;
+    --finish-slack)     MODE="finish-slack" ;;
     -h|--help)
-      sed -n '2,16p' "$0"
+      sed -n '2,17p' "$0"
       exit 0
       ;;
     *)
@@ -472,6 +474,7 @@ interactive_setup() {
     "Langfuse observability (self-hosted trace UI)"
     "GitLab webhook re-indexing for spark"
     "Cloudflare tunnel (expose spark publicly)"
+    "Slack bridge (two-way #nexus <-> agent control)"
   )
   if [ "$flavor" = "work" ]; then
     SELECT_LABELS+=("GitHub integration (work)")
@@ -481,10 +484,11 @@ interactive_setup() {
   local sel_langfuse="${SELECT_STATE[0]}"
   local sel_gitlab="${SELECT_STATE[1]}"
   local sel_cloudflare="${SELECT_STATE[2]}"
+  local sel_slack="${SELECT_STATE[3]}"
   local sel_github="0" sel_corpgw="0"
   if [ "$flavor" = "work" ]; then
-    sel_github="${SELECT_STATE[3]:-0}"
-    sel_corpgw="${SELECT_STATE[4]:-0}"
+    sel_github="${SELECT_STATE[4]:-0}"
+    sel_corpgw="${SELECT_STATE[5]:-0}"
   fi
 
   # ── Peripheral details ───────────────────────────────────────
@@ -539,6 +543,20 @@ interactive_setup() {
     prompt_with_default anthropic_api_base "ANTHROPIC_API_BASE (e.g. http://host.docker.internal:8787/anthropic)" ""
   fi
 
+  local slack_bot_token="" slack_app_token="" slack_channel=""
+  if [ "$sel_slack" = "1" ]; then
+    echo ""
+    echo "  Slack bridge — needs a Slack app with Socket Mode enabled."
+    echo "  Full setup (app manifest, scopes, where to find each value): docs/slack-bridge.md"
+    if prompt_yes_no "Do you have the Slack tokens now?" "n"; then
+      prompt_secret       slack_bot_token "SLACK_BOT_TOKEN (xoxb-...)"
+      prompt_secret       slack_app_token "SLACK_APP_TOKEN (xapp-...)"
+      prompt_with_default slack_channel   "SLACK_NEXUS_CHANNEL (channel id, C...)" ""
+    else
+      echo "  -> writing empty SLACK_* keys; finish later with: ./install.sh --finish-slack"
+    fi
+  fi
+
   # ── Write .env.<profile> ─────────────────────────────────────
   echo ""
   echo "  Writing $env_path ..."
@@ -552,7 +570,8 @@ interactive_setup() {
     "$sel_gitlab" "$gitlab_url" "$gitlab_token" "$spark_webhook_secret" \
     "$sel_cloudflare" "$cloudflare_tunnel_token" \
     "$sel_github" "$github_url" "$github_token" \
-    "$sel_corpgw" "$anthropic_api_base"
+    "$sel_corpgw" "$anthropic_api_base" \
+    "$sel_slack" "$slack_bot_token" "$slack_app_token" "$slack_channel"
 
   chmod 600 "$env_path"
   link_profile "$profile"
@@ -570,6 +589,7 @@ interactive_setup() {
   [ "$sel_cloudflare" = "1" ] && echo "      - Cloudflare tunnel"
   [ "$sel_github"     = "1" ] && echo "      - GitHub integration"
   [ "$sel_corpgw"     = "1" ] && echo "      - Corporate gateway upstream"
+  [ "$sel_slack"      = "1" ] && echo "      - Slack bridge (finish with: ./install.sh --finish-slack)"
 
   # ── Optionally start the stack ───────────────────────────────
   echo ""
@@ -595,6 +615,7 @@ write_profile_env() {
   local sel_cloudflare="${24}" cf_token="${25}"
   local sel_github="${26}" github_url="${27}" github_token="${28}"
   local sel_corpgw="${29}" anthropic_api_base="${30}"
+  local sel_slack="${31}" slack_bot_token="${32}" slack_app_token="${33}" slack_channel="${34}"
 
   local env_path
   env_path=$(profile_path "$profile")
@@ -669,6 +690,15 @@ write_profile_env() {
       echo "# ── Corporate gateway upstream (peripheral) ──────────"
       echo "ANTHROPIC_API_BASE=$anthropic_api_base"
     fi
+
+    if [ "$sel_slack" = "1" ]; then
+      echo ""
+      echo "# ── Slack bridge (peripheral) ────────────────────────"
+      echo "SLACK_BOT_TOKEN=$slack_bot_token"
+      echo "SLACK_APP_TOKEN=$slack_app_token"
+      echo "SLACK_NEXUS_CHANNEL=$slack_channel"
+      echo "SLACK_BRIDGE_PORT=8788"
+    fi
   } > "$env_path"
 }
 
@@ -740,6 +770,55 @@ finish_langfuse() {
   fi
 }
 
+# Mode: --finish-slack — paste Slack bridge tokens into the active profile,
+# install deps, and (mac) wire up the launchd supervisor.
+finish_slack() {
+  local current
+  current=$(active_profile)
+  [ -n "$current" ] || { echo "ERROR: no active profile. Run ./install.sh first."; exit 1; }
+  local env_path
+  env_path=$(profile_path "$current")
+  [ -f "$env_path" ] || { echo "ERROR: $env_path not found."; exit 1; }
+  if ! grep -q '^SLACK_BOT_TOKEN=' "$env_path"; then
+    echo "ERROR: $env_path has no SLACK_* block — was the Slack bridge selected during install?"
+    echo "       Re-run ./install.sh and tick the Slack bridge peripheral first."
+    exit 1
+  fi
+
+  echo "  Active profile: $current"
+  echo "  Create a Slack app with Socket Mode on (manifest in docs/slack-bridge.md),"
+  echo "  invite its bot to a private #nexus channel, then paste the values below."
+  echo ""
+  local bot app chan
+  prompt_secret       bot  "SLACK_BOT_TOKEN (xoxb-...)"
+  prompt_secret       app  "SLACK_APP_TOKEN (xapp-...)"
+  prompt_with_default chan "SLACK_NEXUS_CHANNEL (channel id, C...)" ""
+
+  local tmp="$env_path.tmp.$$"
+  awk -v bot="$bot" -v app="$app" -v chan="$chan" '
+    /^SLACK_BOT_TOKEN=/     { print "SLACK_BOT_TOKEN=" bot; next }
+    /^SLACK_APP_TOKEN=/     { print "SLACK_APP_TOKEN=" app; next }
+    /^SLACK_NEXUS_CHANNEL=/ { print "SLACK_NEXUS_CHANNEL=" chan; next }
+                            { print }
+  ' "$env_path" > "$tmp"
+  mv "$tmp" "$env_path"
+  chmod 600 "$env_path"
+  echo "  -> updated $env_path"
+
+  if check_cmd npm; then
+    echo "  Installing slack-bridge dependencies..."
+    ( cd "$REPO_DIR/slack-bridge" && npm install --silent ) || true
+  fi
+
+  if [ "$OS" = "mac" ] && check_cmd task; then
+    if prompt_yes_no "Install + start the launchd supervisor now?" "y"; then
+      ( cd "$REPO_DIR" && task launchd:install:slack-bridge ) || true
+    fi
+  else
+    echo "  Start it with: task slack:bridge   (supervise with: task launchd:install:slack-bridge)"
+  fi
+}
+
 # ────────────────────────────────────────────────────────────────
 # Main
 # ────────────────────────────────────────────────────────────────
@@ -751,6 +830,10 @@ if [ "$MODE" = "switch" ]; then
 fi
 if [ "$MODE" = "finish-langfuse" ]; then
   finish_langfuse
+  exit 0
+fi
+if [ "$MODE" = "finish-slack" ]; then
+  finish_slack
   exit 0
 fi
 
