@@ -210,6 +210,36 @@ tasks:
     cmds:
       - docker compose build --no-cache
 
+  stack:profiles:
+    desc: 'Show or set the active profile''s COMPOSE_PROFILES (e.g. task stack:profiles -- proxy,langfuse)'
+    silent: true
+    cmds:
+      - cmd: |
+          env_file=".env"
+          [ -L "$env_file" ] && env_file="$(readlink "$env_file")"
+          if [ ! -f "$env_file" ]; then echo "No .env profile found — run ./install.sh"; exit 1; fi
+          if [ -z "{{.CLI_ARGS}}" ]; then
+            grep '^COMPOSE_PROFILES=' "$env_file" || echo "COMPOSE_PROFILES not set in $env_file"
+            exit 0
+          fi
+          new="{{.CLI_ARGS}}"
+          tmp="$env_file.tmp.$$"
+          if grep -q '^COMPOSE_PROFILES=' "$env_file"; then
+            awk -v v="$new" \
+              '/^COMPOSE_PROFILES=/{print "COMPOSE_PROFILES=" v; next} /^NEXUS_SERVICES=/{print "NEXUS_SERVICES=" v; next} {print}' \
+              "$env_file" > "$tmp"
+          else
+            { echo "COMPOSE_PROFILES=$new"; echo "NEXUS_SERVICES=$new"; cat "$env_file"; } > "$tmp"
+          fi
+          mv "$tmp" "$env_file"
+          chmod 600 "$env_file"
+          echo "-> COMPOSE_PROFILES=$new  ($env_file)"
+
+  observability:up:
+    desc: Bring up just proxy + langfuse ad-hoc (does not change the saved profile)
+    cmds:
+      - COMPOSE_PROFILES=proxy,langfuse docker compose -f "${NEXUS_COMPOSE_FILE:-docker-compose.yml}" up -d
+
   # =============================================================================
   # Spark (semantic repo search)
   # =============================================================================

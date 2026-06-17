@@ -20,6 +20,7 @@ services:
   # ── Database ─────────────────────────────────────────────────────────────
 
   postgres:
+    profiles: ["postgres"]
     image: pgvector/pgvector:pg17
     container_name: nexus-postgres
     restart: always
@@ -64,6 +65,7 @@ services:
   # ── Core Infrastructure ──────────────────────────────────────────────────
 
   ollama:
+    profiles: ["ollama"]
     image: ollama/ollama:latest
     container_name: nexus-ollama
     restart: always
@@ -97,6 +99,7 @@ services:
   # ── Knowledge Services ───────────────────────────────────────────────────
 
   spark:
+    profiles: ["spark"]
     build:
       context: ./spark
     container_name: nexus-spark
@@ -137,6 +140,7 @@ services:
         condition: service_healthy
 
   mnemon-flush:
+    profiles: ["mnemon"]
     build:
       context: .
       dockerfile: docker/mnemon.Dockerfile
@@ -153,6 +157,7 @@ services:
 
   # mnemon MCP server — always-on SSE endpoint for agent-memory tools
   mnemon-mcp:
+    profiles: ["mnemon"]
     build:
       context: .
       dockerfile: docker/mnemon.Dockerfile
@@ -185,6 +190,7 @@ services:
   # ── Dashboard ────────────────────────────────────────────────────────────
 
   dashboard:
+    profiles: ["dashboard"]
     build:
       context: .
       dockerfile: docker/dashboard.Dockerfile
@@ -207,6 +213,7 @@ services:
   # Bifrost unchanged, then logs each /v1/messages call to Langfuse.
   # Claude Code points ANTHROPIC_BASE_URL here (http://localhost:4000).
   proxy:
+    profiles: ["proxy"]
     build:
       context: ./proxy
     container_name: nexus-proxy

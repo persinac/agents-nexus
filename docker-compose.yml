@@ -14,6 +14,7 @@ services:
   # ── Core Infrastructure ──────────────────────────────────────────────────
 
   ollama:
+    profiles: ["ollama"]
     image: ollama/ollama:latest
     container_name: nexus-ollama
     restart: always
@@ -49,6 +50,7 @@ services:
 
   # Spark — semantic index over all repos
   spark:
+    profiles: ["spark"]
     build:
       context: ./spark
     container_name: nexus-spark
@@ -74,6 +76,7 @@ services:
 
   # mnemon flush daemon — drains ~/.tmux/memory-events.jsonl into Postgres every 2 min
   mnemon-flush:
+    profiles: ["mnemon"]
     build:
       context: .
       dockerfile: docker/mnemon.Dockerfile
@@ -88,6 +91,7 @@ services:
 
   # mnemon MCP server — always-on SSE endpoint for agent-memory tools
   mnemon-mcp:
+    profiles: ["mnemon"]
     build:
       context: .
       dockerfile: docker/mnemon.Dockerfile
@@ -113,6 +117,7 @@ services:
 
   # Pixel office UI — connects to arbiter at ws://localhost:8420
   dashboard:
+    profiles: ["dashboard"]
     build:
       context: .
       dockerfile: docker/dashboard.Dockerfile
@@ -126,6 +131,7 @@ services:
   # Anthropic-compatible passthrough proxy at /v1/messages.
   # Claude Code points ANTHROPIC_BASE_URL here so every turn is logged to Langfuse.
   proxy:
+    profiles: ["proxy"]
     build:
       context: ./proxy
     container_name: nexus-proxy

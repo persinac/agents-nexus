@@ -349,21 +349,63 @@ link_profile() {
   echo "  -> .nexus-profile = $name"
 }
 
+# Migration: profiles written before per-service selection have no
+# COMPOSE_PROFILES, so a bare `docker compose up` would now start nothing.
+# Backfill the prior always-on set so existing boxes keep running the same
+# stack. Idempotent — a no-op once COMPOSE_PROFILES is present.
+backfill_compose_profiles() {
+  local env_path="$1"
+  [ -f "$env_path" ] || return 0
+  grep -q '^COMPOSE_PROFILES=' "$env_path" && return 0
+
+  local flavor="personal"
+  grep -q '^NEXUS_COMPOSE_FILE=docker-compose.work.yml' "$env_path" && flavor="work"
+
+  local profiles="proxy,ollama,spark,mnemon,dashboard"
+  [ "$flavor" = "work" ] && profiles="proxy,ollama,postgres,spark,mnemon,dashboard"
+  # langfuse only if this profile actually configured it (avoid surprise-starting 6 containers).
+  grep -q '^LANGFUSE_DB_PASSWORD=.' "$env_path" && profiles="$profiles,langfuse"
+
+  local tmp="$env_path.tmp.$$"
+  if grep -q '^NEXUS_COMPOSE_FILE=' "$env_path"; then
+    awk -v p="$profiles" '
+      { print }
+      /^NEXUS_COMPOSE_FILE=/ && !ins {
+        print ""
+        print "# ── Service selection (backfilled by install.sh) ────"
+        print "COMPOSE_PROFILES=" p
+        print "NEXUS_SERVICES=" p
+        ins=1
+      }
+    ' "$env_path" > "$tmp"
+  else
+    { echo "COMPOSE_PROFILES=$profiles"; echo "NEXUS_SERVICES=$profiles"; cat "$env_path"; } > "$tmp"
+  fi
+  mv "$tmp" "$env_path"
+  chmod 600 "$env_path"
+  echo "  -> backfilled COMPOSE_PROFILES=$profiles into $(basename "$env_path")"
+}
+
 # ────────────────────────────────────────────────────────────────
 # Interactive setup (the new bit)
 # ────────────────────────────────────────────────────────────────
 
 # Multi-select TUI using a numbered list + toggle loop. Works on bash 3.2.
 # Inputs:  globals SELECT_LABELS[] (display names)
+#          SELECT_DEFAULTS[] (optional, aligned to SELECT_LABELS; "1" = pre-checked)
+#          SELECT_TITLE (optional header line; defaults to the peripherals prompt)
 # Outputs: SELECT_STATE[] aligned to SELECT_LABELS, "1" = selected, "0" = not
 multi_select() {
   local n=${#SELECT_LABELS[@]} i reply
+  local title="${SELECT_TITLE:-Toggle peripherals}"
   SELECT_STATE=()
-  for ((i=0; i<n; i++)); do SELECT_STATE+=("0"); done
+  for ((i=0; i<n; i++)); do
+    SELECT_STATE+=("${SELECT_DEFAULTS[$i]:-0}")
+  done
 
   while :; do
     echo ""
-    echo "  Toggle peripherals (enter # to flip, ENTER when done, 'a' selects all):"
+    echo "  $title (enter # to flip, ENTER when done, 'a' selects all):"
     for ((i=0; i<n; i++)); do
       local mark="[ ]"
       [ "${SELECT_STATE[$i]}" = "1" ] && mark="[x]"
@@ -413,6 +455,7 @@ interactive_setup() {
       :
     else
       echo "  Keeping existing $env_path. Re-pointing .env -> $env_path."
+      backfill_compose_profiles "$env_path"
       link_profile "$profile"
       return 0
     fi
@@ -438,19 +481,101 @@ interactive_setup() {
   fi
   echo "  Compose file: $compose_file"
 
-  # ── Core prompts ─────────────────────────────────────────────
+  # ── Service selection (which Docker containers this box runs) ─
+  # Every service carries a compose profile; the chosen set is written to
+  # COMPOSE_PROFILES in .env so every `docker compose up` honors it.
   echo ""
-  echo "  Core configuration:"
-  local repos_path host_tmux_dir
-  prompt_with_default repos_path     "REPOS_PATH (directory spark will index)" "$HOME/repos"
-  prompt_with_default host_tmux_dir  "HOST_TMUX_DIR (where mnemon writes event logs)" "$HOME/.tmux"
-  repos_path=$(expand_path "$repos_path")
-  host_tmux_dir=$(expand_path "$host_tmux_dir")
+  echo "  Which services should this box run?"
+  echo "  (all default-on except Langfuse — pick a subset for e.g. an observability-only box)"
+  SELECT_TITLE="Toggle services"
+  if [ "$flavor" = "work" ]; then
+    SELECT_KEYS=(proxy ollama postgres spark mnemon dashboard langfuse)
+    SELECT_LABELS=(
+      "proxy      — Anthropic API gateway + Langfuse tap"
+      "ollama     — local embedding model host"
+      "postgres   — bundled local Postgres (agent memory store)"
+      "spark      — semantic index over your repos"
+      "mnemon     — agent memory: event flush + MCP server"
+      "dashboard  — command-center web UI"
+      "langfuse   — self-hosted trace/observability stack (6 containers)"
+    )
+    SELECT_DEFAULTS=(1 1 1 1 1 1 0)
+  else
+    SELECT_KEYS=(proxy ollama spark mnemon dashboard langfuse)
+    SELECT_LABELS=(
+      "proxy      — Anthropic API gateway + Langfuse tap"
+      "ollama     — local embedding model host"
+      "spark      — semantic index over your repos"
+      "mnemon     — agent memory: event flush + MCP server (needs external Postgres)"
+      "dashboard  — command-center web UI"
+      "langfuse   — self-hosted trace/observability stack (6 containers)"
+    )
+    SELECT_DEFAULTS=(1 1 1 1 1 0)
+  fi
+  multi_select
 
+  # Map the toggle state back to per-service booleans (index-shift safe).
+  local sel_proxy=0 sel_ollama=0 sel_postgres=0 sel_spark=0 sel_mnemon=0 sel_dashboard=0 sel_langfuse=0
+  local _i
+  for ((_i=0; _i<${#SELECT_KEYS[@]}; _i++)); do
+    case "${SELECT_KEYS[$_i]}" in
+      proxy)     sel_proxy="${SELECT_STATE[$_i]}" ;;
+      ollama)    sel_ollama="${SELECT_STATE[$_i]}" ;;
+      postgres)  sel_postgres="${SELECT_STATE[$_i]}" ;;
+      spark)     sel_spark="${SELECT_STATE[$_i]}" ;;
+      mnemon)    sel_mnemon="${SELECT_STATE[$_i]}" ;;
+      dashboard) sel_dashboard="${SELECT_STATE[$_i]}" ;;
+      langfuse)  sel_langfuse="${SELECT_STATE[$_i]}" ;;
+    esac
+  done
+
+  # Dependency closure (computed here so we never lean on cross-profile depends_on):
+  #   spark  ⇒ ollama;   mnemon ⇒ ollama (+ postgres on the work flavor only).
+  [ "$sel_spark" = "1" ] && sel_ollama=1
+  if [ "$sel_mnemon" = "1" ]; then
+    sel_ollama=1
+    [ "$flavor" = "work" ] && sel_postgres=1
+  fi
+
+  # Build COMPOSE_PROFILES in a stable order.
+  local compose_profiles="" _pair _key _on
+  for _pair in "proxy:$sel_proxy" "ollama:$sel_ollama" "postgres:$sel_postgres" \
+               "spark:$sel_spark" "mnemon:$sel_mnemon" "dashboard:$sel_dashboard" \
+               "langfuse:$sel_langfuse"; do
+    _key="${_pair%%:*}"; _on="${_pair##*:}"
+    [ "$_on" = "1" ] && compose_profiles="${compose_profiles:+$compose_profiles,}$_key"
+  done
+  local nexus_services="$compose_profiles"
+  echo ""
+  echo "  Services: ${compose_profiles:-<none>}"
+
+  # ── Per-service configuration (only what the selected services need) ──
+  local repos_path="$HOME/repos" host_tmux_dir="$HOME/.tmux"
+  local anthropic_api_base=""
   local postgres_db="agents" postgres_user="agents" postgres_password="" postgres_port="5432"
   local database_url=""
+  local langfuse_db_password="" langfuse_redis_auth="" langfuse_clickhouse_password=""
+  local langfuse_nextauth_secret="" langfuse_salt="" langfuse_encryption_key=""
+  local langfuse_public_key="" langfuse_secret_key=""
+  local sel_gitlab=0 sel_cloudflare=0 sel_github=0
+  local gitlab_url="https://gitlab.com" gitlab_token="" spark_webhook_secret=""
+  local cloudflare_tunnel_token=""
+  local github_url="https://api.github.com" github_token=""
+  local sel_slack=0 slack_bot_token="" slack_app_token="" slack_channel=""
 
-  if [ "$flavor" = "work" ]; then
+  # proxy ⇒ upstream (proxy hard-requires ANTHROPIC_API_BASE)
+  if [ "$sel_proxy" = "1" ]; then
+    echo ""
+    echo "  Proxy upstream — where the gateway forwards Anthropic API calls:"
+    if [ "$OS" = "linux" ]; then
+      echo "  NOTE: for a host-local gateway on Linux, 'host.docker.internal' does not"
+      echo "        auto-resolve — use a routable IP or add extra_hosts to the proxy service."
+    fi
+    prompt_with_default anthropic_api_base "ANTHROPIC_API_BASE" "https://api.anthropic.com"
+  fi
+
+  # postgres / DATABASE_URL
+  if [ "$flavor" = "work" ] && [ "$sel_postgres" = "1" ]; then
     echo ""
     echo "  Local Postgres (bundled with work compose):"
     local pw_choice
@@ -460,42 +585,46 @@ interactive_setup() {
       *)         postgres_password=$(gen_secret_hex 16); echo "  -> generated POSTGRES_PASSWORD" ;;
     esac
     database_url="postgresql://${postgres_user}:${postgres_password}@localhost:${postgres_port}/${postgres_db}?sslmode=disable"
-  else
+  elif [ "$flavor" != "work" ] && [ "$sel_mnemon" = "1" ]; then
     echo ""
-    echo "  DATABASE_URL (used by mnemon for memory storage):"
-    echo "    Default points at a local Postgres on :5432 (assumes you'll bring one)."
+    echo "  DATABASE_URL (mnemon memory storage — bring your own Postgres):"
+    echo "    Default points at a local Postgres on :5432."
     prompt_with_default database_url "DATABASE_URL" "postgresql://agents:changeme@localhost:5432/agents?sslmode=disable"
   fi
 
-  # ── Peripherals (multi-select) ───────────────────────────────
-  echo ""
-  echo "  Optional peripherals:"
-  SELECT_LABELS=(
-    "Langfuse observability (self-hosted trace UI)"
-    "GitLab webhook re-indexing for spark"
-    "Cloudflare tunnel (expose spark publicly)"
-    "Slack bridge (two-way #nexus <-> agent control)"
-  )
-  if [ "$flavor" = "work" ]; then
-    SELECT_LABELS+=("GitHub integration (work)")
-    SELECT_LABELS+=("Corporate gateway upstream (ANTHROPIC_API_BASE)")
+  # mnemon ⇒ host tmux event-log dir
+  if [ "$sel_mnemon" = "1" ]; then
+    echo ""
+    prompt_with_default host_tmux_dir "HOST_TMUX_DIR (where mnemon reads tmux event logs)" "$HOME/.tmux"
   fi
-  multi_select
-  local sel_langfuse="${SELECT_STATE[0]}"
-  local sel_gitlab="${SELECT_STATE[1]}"
-  local sel_cloudflare="${SELECT_STATE[2]}"
-  local sel_slack="${SELECT_STATE[3]}"
-  local sel_github="0" sel_corpgw="0"
-  if [ "$flavor" = "work" ]; then
-    sel_github="${SELECT_STATE[4]:-0}"
-    sel_corpgw="${SELECT_STATE[5]:-0}"
+  host_tmux_dir=$(expand_path "$host_tmux_dir")
+
+  # spark ⇒ repo index path + (optional) indexing integrations
+  if [ "$sel_spark" = "1" ]; then
+    echo ""
+    echo "  Spark indexing:"
+    prompt_with_default repos_path "REPOS_PATH (directory spark will index)" "$HOME/repos"
+
+    if prompt_yes_no "Enable GitLab webhook re-indexing?" "n"; then
+      sel_gitlab=1
+      prompt_with_default gitlab_url "GITLAB_URL" "https://gitlab.com"
+      prompt_secret       gitlab_token "GITLAB_TOKEN (personal access token, api scope)"
+      spark_webhook_secret=$(gen_secret_hex 32)
+      echo "  -> SPARK_WEBHOOK_SECRET generated"
+    fi
+    if [ "$flavor" = "work" ] && prompt_yes_no "Enable GitHub integration?" "n"; then
+      sel_github=1
+      prompt_with_default github_url   "GITHUB_URL" "https://api.github.com"
+      prompt_secret       github_token "GITHUB_TOKEN (PAT, repo + workflow scopes)"
+    fi
+    if prompt_yes_no "Expose spark publicly via a Cloudflare tunnel?" "n"; then
+      sel_cloudflare=1
+      prompt_secret cloudflare_tunnel_token "CLOUDFLARE_TUNNEL_TOKEN"
+    fi
   fi
+  repos_path=$(expand_path "$repos_path")
 
-  # ── Peripheral details ───────────────────────────────────────
-  local langfuse_db_password="" langfuse_redis_auth="" langfuse_clickhouse_password=""
-  local langfuse_nextauth_secret="" langfuse_salt="" langfuse_encryption_key=""
-  local langfuse_public_key="" langfuse_secret_key=""
-
+  # langfuse ⇒ stack secrets
   if [ "$sel_langfuse" = "1" ]; then
     echo ""
     echo "  Generating Langfuse stack secrets..."
@@ -508,44 +637,10 @@ interactive_setup() {
     echo "  -> 6 secrets generated. Public/secret API keys are set later via --finish-langfuse."
   fi
 
-  local gitlab_url="https://gitlab.com" gitlab_token="" spark_webhook_secret=""
-  if [ "$sel_gitlab" = "1" ]; then
-    echo ""
-    echo "  GitLab webhook integration:"
-    prompt_with_default gitlab_url "GITLAB_URL" "https://gitlab.com"
-    prompt_secret       gitlab_token "GITLAB_TOKEN (personal access token, api scope)"
-    spark_webhook_secret=$(gen_secret_hex 32)
-    echo "  -> SPARK_WEBHOOK_SECRET generated"
-  fi
-
-  local cloudflare_tunnel_token=""
-  if [ "$sel_cloudflare" = "1" ]; then
-    echo ""
-    prompt_secret cloudflare_tunnel_token "CLOUDFLARE_TUNNEL_TOKEN"
-  fi
-
-  local github_url="https://api.github.com" github_token=""
-  if [ "$sel_github" = "1" ]; then
-    echo ""
-    prompt_with_default github_url   "GITHUB_URL" "https://api.github.com"
-    prompt_secret       github_token "GITHUB_TOKEN (PAT, repo + workflow scopes)"
-  fi
-
-  local anthropic_api_base=""
-  if [ "$sel_corpgw" = "1" ]; then
-    echo ""
-    echo "  Corporate gateway upstream:"
-    if [ "$OS" = "linux" ]; then
-      echo "  NOTE: on Linux 'host.docker.internal' does not auto-resolve."
-      echo "        You may need to add an 'extra_hosts: host.docker.internal:host-gateway'"
-      echo "        entry to the proxy service or point ANTHROPIC_API_BASE at a routable IP."
-    fi
-    prompt_with_default anthropic_api_base "ANTHROPIC_API_BASE (e.g. http://host.docker.internal:8787/anthropic)" ""
-  fi
-
-  local slack_bot_token="" slack_app_token="" slack_channel=""
-  if [ "$sel_slack" = "1" ]; then
-    echo ""
+  # ── Integrations (host services, outside the Docker stack) ───
+  echo ""
+  if prompt_yes_no "Enable the Slack bridge (two-way #nexus <-> agent control)?" "n"; then
+    sel_slack=1
     echo "  Slack bridge — needs a Slack app with Socket Mode enabled."
     echo "  Full setup (app manifest, scopes, where to find each value): docs/slack-bridge.md"
     if prompt_yes_no "Do you have the Slack tokens now?" "n"; then
@@ -561,16 +656,16 @@ interactive_setup() {
   echo ""
   echo "  Writing $env_path ..."
   write_profile_env \
-    "$profile" "$flavor" "$compose_file" \
+    "$profile" "$flavor" "$compose_file" "$compose_profiles" "$nexus_services" \
     "$repos_path" "$host_tmux_dir" \
-    "$postgres_db" "$postgres_user" "$postgres_password" "$postgres_port" "$database_url" \
+    "$sel_postgres" "$postgres_db" "$postgres_user" "$postgres_password" "$postgres_port" "$database_url" \
     "$sel_langfuse" "$langfuse_db_password" "$langfuse_redis_auth" "$langfuse_clickhouse_password" \
     "$langfuse_nextauth_secret" "$langfuse_salt" "$langfuse_encryption_key" \
     "$langfuse_public_key" "$langfuse_secret_key" \
     "$sel_gitlab" "$gitlab_url" "$gitlab_token" "$spark_webhook_secret" \
     "$sel_cloudflare" "$cloudflare_tunnel_token" \
     "$sel_github" "$github_url" "$github_token" \
-    "$sel_corpgw" "$anthropic_api_base" \
+    "$sel_proxy" "$anthropic_api_base" \
     "$sel_slack" "$slack_bot_token" "$slack_app_token" "$slack_channel"
 
   chmod 600 "$env_path"
@@ -581,41 +676,46 @@ interactive_setup() {
   echo "  Summary:"
   echo "    profile         $profile"
   echo "    compose file    $compose_file"
-  echo "    repos path      $repos_path"
-  echo "    host tmux dir   $host_tmux_dir"
-  echo "    peripherals:"
+  echo "    services        ${compose_profiles:-<none>}"
+  [ "$sel_proxy"  = "1" ] && echo "    proxy upstream  $anthropic_api_base"
+  [ "$sel_spark"  = "1" ] && echo "    repos path      $repos_path"
+  [ "$sel_mnemon" = "1" ] && echo "    host tmux dir   $host_tmux_dir"
+  echo "    integrations:"
   [ "$sel_langfuse"   = "1" ] && echo "      - Langfuse (6 secrets generated; finish with: ./install.sh --finish-langfuse)"
-  [ "$sel_gitlab"     = "1" ] && echo "      - GitLab webhook re-indexing"
-  [ "$sel_cloudflare" = "1" ] && echo "      - Cloudflare tunnel"
-  [ "$sel_github"     = "1" ] && echo "      - GitHub integration"
-  [ "$sel_corpgw"     = "1" ] && echo "      - Corporate gateway upstream"
+  [ "$sel_gitlab"     = "1" ] && echo "      - GitLab webhook re-indexing (spark)"
+  [ "$sel_cloudflare" = "1" ] && echo "      - Cloudflare tunnel (spark)"
+  [ "$sel_github"     = "1" ] && echo "      - GitHub integration (spark)"
   [ "$sel_slack"      = "1" ] && echo "      - Slack bridge (finish with: ./install.sh --finish-slack)"
 
   # ── Optionally start the stack ───────────────────────────────
   echo ""
   if prompt_yes_no "Start the Docker stack now?" "y"; then
-    start_stack "$compose_file" "$sel_langfuse"
+    start_stack "$compose_file" "$compose_profiles" "$sel_ollama" "$sel_postgres" "$flavor"
   else
-    echo "  Skipping. Start later with:"
+    local init_flags="--profile init --profile ollama"
+    [ "$flavor" = "work" ] && init_flags="$init_flags --profile postgres"
+    echo "  Skipping. COMPOSE_PROFILES is saved in .env, so start later with:"
     echo "    docker compose -f $compose_file up -d"
-    [ "$sel_langfuse" = "1" ] && \
-      echo "    docker compose -f $compose_file --profile langfuse up -d"
-    echo "    docker compose -f $compose_file run --rm ollama-init"
+    [ "$flavor" = "work" ] && [ "$sel_postgres" = "1" ] && \
+      echo "    docker compose -f $compose_file $init_flags run --rm db-migrate"
+    [ "$sel_ollama" = "1" ] && \
+      echo "    docker compose -f $compose_file $init_flags run --rm ollama-init"
   fi
 }
 
 write_profile_env() {
-  local profile="$1" flavor="$2" compose_file="$3"
-  local repos_path="$4" host_tmux_dir="$5"
-  local postgres_db="$6" postgres_user="$7" postgres_password="$8" postgres_port="$9" database_url="${10}"
-  local sel_langfuse="${11}" lf_db_pw="${12}" lf_redis="${13}" lf_ch_pw="${14}"
-  local lf_nextauth="${15}" lf_salt="${16}" lf_enc="${17}"
-  local lf_pub_key="${18}" lf_sec_key="${19}"
-  local sel_gitlab="${20}" gitlab_url="${21}" gitlab_token="${22}" spark_webhook_secret="${23}"
-  local sel_cloudflare="${24}" cf_token="${25}"
-  local sel_github="${26}" github_url="${27}" github_token="${28}"
-  local sel_corpgw="${29}" anthropic_api_base="${30}"
-  local sel_slack="${31}" slack_bot_token="${32}" slack_app_token="${33}" slack_channel="${34}"
+  local profile="$1" flavor="$2" compose_file="$3" compose_profiles="$4" nexus_services="$5"
+  local repos_path="$6" host_tmux_dir="$7"
+  local sel_postgres="$8"
+  local postgres_db="$9" postgres_user="${10}" postgres_password="${11}" postgres_port="${12}" database_url="${13}"
+  local sel_langfuse="${14}" lf_db_pw="${15}" lf_redis="${16}" lf_ch_pw="${17}"
+  local lf_nextauth="${18}" lf_salt="${19}" lf_enc="${20}"
+  local lf_pub_key="${21}" lf_sec_key="${22}"
+  local sel_gitlab="${23}" gitlab_url="${24}" gitlab_token="${25}" spark_webhook_secret="${26}"
+  local sel_cloudflare="${27}" cf_token="${28}"
+  local sel_github="${29}" github_url="${30}" github_token="${31}"
+  local sel_proxy="${32}" anthropic_api_base="${33}"
+  local sel_slack="${34}" slack_bot_token="${35}" slack_app_token="${36}" slack_channel="${37}"
 
   local env_path
   env_path=$(profile_path "$profile")
@@ -628,18 +728,29 @@ write_profile_env() {
     echo "NEXUS_PROFILE=$profile"
     echo "NEXUS_COMPOSE_FILE=$compose_file"
     echo ""
+    echo "# ── Service selection ────────────────────────────────"
+    echo "# docker compose reads COMPOSE_PROFILES from .env, so every"
+    echo "# 'docker compose up' (and 'task up') honors this set."
+    echo "# Valid profiles: proxy, ollama, postgres (work), spark, mnemon, dashboard, langfuse"
+    echo "COMPOSE_PROFILES=$compose_profiles"
+    echo "NEXUS_SERVICES=$nexus_services"
+    echo ""
     echo "# ── Core ─────────────────────────────────────────────"
     echo "REPOS_PATH=$repos_path"
     echo "HOST_TMUX_DIR=$host_tmux_dir"
-    echo ""
-    echo "# ── Postgres ─────────────────────────────────────────"
-    if [ "$flavor" = "work" ]; then
-      echo "POSTGRES_DB=$postgres_db"
-      echo "POSTGRES_USER=$postgres_user"
-      echo "POSTGRES_PASSWORD=$postgres_password"
-      echo "POSTGRES_PORT=$postgres_port"
+
+    if { [ "$flavor" = "work" ] && [ "$sel_postgres" = "1" ]; } || [ -n "$database_url" ]; then
+      echo ""
+      echo "# ── Postgres / memory store ──────────────────────────"
+      if [ "$flavor" = "work" ] && [ "$sel_postgres" = "1" ]; then
+        echo "POSTGRES_DB=$postgres_db"
+        echo "POSTGRES_USER=$postgres_user"
+        echo "POSTGRES_PASSWORD=$postgres_password"
+        echo "POSTGRES_PORT=$postgres_port"
+      fi
+      [ -n "$database_url" ] && echo "DATABASE_URL=$database_url"
     fi
-    echo "DATABASE_URL=$database_url"
+
     echo ""
     echo "# ── Ports (compose defaults — edit only if you have collisions) ──"
     echo "OLLAMA_PORT=11434"
@@ -648,9 +759,15 @@ write_profile_env() {
     echo "MNEMON_MCP_PORT=8330"
     echo "DASHBOARD_PORT=8421"
 
+    if [ "$sel_proxy" = "1" ]; then
+      echo ""
+      echo "# ── Proxy upstream (required by the proxy service) ───"
+      echo "ANTHROPIC_API_BASE=$anthropic_api_base"
+    fi
+
     if [ "$sel_langfuse" = "1" ]; then
       echo ""
-      echo "# ── Langfuse stack (peripheral) ──────────────────────"
+      echo "# ── Langfuse stack ───────────────────────────────────"
       echo "LANGFUSE_PORT=3000"
       echo "LANGFUSE_MINIO_PORT=9094"
       echo "LANGFUSE_HOST=http://localhost:3000"
@@ -666,7 +783,7 @@ write_profile_env() {
 
     if [ "$sel_gitlab" = "1" ]; then
       echo ""
-      echo "# ── GitLab webhook re-indexing (peripheral) ──────────"
+      echo "# ── GitLab webhook re-indexing (spark) ───────────────"
       echo "GITLAB_URL=$gitlab_url"
       echo "GITLAB_TOKEN=$gitlab_token"
       echo "SPARK_WEBHOOK_SECRET=$spark_webhook_secret"
@@ -674,26 +791,20 @@ write_profile_env() {
 
     if [ "$sel_cloudflare" = "1" ]; then
       echo ""
-      echo "# ── Cloudflare tunnel (peripheral) ───────────────────"
+      echo "# ── Cloudflare tunnel (spark) ────────────────────────"
       echo "CLOUDFLARE_TUNNEL_TOKEN=$cf_token"
     fi
 
     if [ "$sel_github" = "1" ]; then
       echo ""
-      echo "# ── GitHub integration (peripheral, work flavor) ─────"
+      echo "# ── GitHub integration (spark, work flavor) ──────────"
       echo "GITHUB_URL=$github_url"
       echo "GITHUB_TOKEN=$github_token"
     fi
 
-    if [ "$sel_corpgw" = "1" ]; then
-      echo ""
-      echo "# ── Corporate gateway upstream (peripheral) ──────────"
-      echo "ANTHROPIC_API_BASE=$anthropic_api_base"
-    fi
-
     if [ "$sel_slack" = "1" ]; then
       echo ""
-      echo "# ── Slack bridge (peripheral) ────────────────────────"
+      echo "# ── Slack bridge (host integration) ──────────────────"
       echo "SLACK_BOT_TOKEN=$slack_bot_token"
       echo "SLACK_APP_TOKEN=$slack_app_token"
       echo "SLACK_NEXUS_CHANNEL=$slack_channel"
@@ -703,20 +814,39 @@ write_profile_env() {
 }
 
 start_stack() {
-  local compose_file="$1" sel_langfuse="$2"
+  local compose_file="$1" compose_profiles="$2" sel_ollama="$3" sel_postgres="$4" flavor="$5"
   if ! check_cmd docker; then
     echo "  ERROR: docker not on PATH — skipping stack startup."
     return 0
   fi
-  echo "  docker compose -f $compose_file up -d ..."
-  ( cd "$REPO_DIR" && docker compose -f "$compose_file" up -d )
-  if [ "$sel_langfuse" = "1" ]; then
-    echo "  docker compose -f $compose_file --profile langfuse up -d ..."
-    ( cd "$REPO_DIR" && docker compose -f "$compose_file" --profile langfuse up -d )
+  if [ -z "$compose_profiles" ]; then
+    echo "  No services selected — nothing to start."
+    return 0
   fi
-  echo "  docker compose -f $compose_file run --rm ollama-init ..."
-  ( cd "$REPO_DIR" && docker compose -f "$compose_file" run --rm ollama-init ) || \
-    echo "  (ollama-init failed — re-run manually after containers stabilize)"
+  # COMPOSE_PROFILES is read from .env; this brings up exactly the chosen set.
+  echo "  docker compose -f $compose_file up -d  (profiles: $compose_profiles) ..."
+  ( cd "$REPO_DIR" && docker compose -f "$compose_file" up -d )
+
+  # One-shot init jobs live in the 'init' profile (never in COMPOSE_PROFILES, so a
+  # bare 'up' never runs them). Two gotchas drive the flags below:
+  #   1. A CLI --profile OVERRIDES (does not merge with) the .env COMPOSE_PROFILES.
+  #   2. The 'init' profile enables BOTH one-shots, and each depends on a profiled
+  #      service (ollama-init→ollama, db-migrate→postgres), so the project only
+  #      validates when every needed profile is named. `run <svc>` still starts
+  #      just the target + its direct deps.
+  local init_flags="--profile init --profile ollama"
+  [ "$flavor" = "work" ] && init_flags="$init_flags --profile postgres"
+
+  if [ "$flavor" = "work" ] && [ "$sel_postgres" = "1" ]; then
+    echo "  docker compose -f $compose_file $init_flags run --rm db-migrate ..."
+    ( cd "$REPO_DIR" && docker compose -f "$compose_file" $init_flags run --rm db-migrate ) || \
+      echo "  (db-migrate failed — re-run manually after postgres is healthy)"
+  fi
+  if [ "$sel_ollama" = "1" ]; then
+    echo "  docker compose -f $compose_file $init_flags run --rm ollama-init ..."
+    ( cd "$REPO_DIR" && docker compose -f "$compose_file" $init_flags run --rm ollama-init ) || \
+      echo "  (ollama-init failed — re-run manually after containers stabilize)"
+  fi
 }
 
 # Mode: --switch <name>
@@ -726,6 +856,7 @@ switch_profile() {
   local target
   target=$(profile_path "$name")
   [ -f "$target" ] || { echo "ERROR: $target does not exist"; exit 1; }
+  backfill_compose_profiles "$target"
   link_profile "$name"
   echo ""
   echo "  Active profile is now: $name"
