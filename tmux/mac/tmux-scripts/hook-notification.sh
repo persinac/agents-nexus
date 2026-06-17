@@ -35,13 +35,11 @@ osascript -e "display notification \"Agent ${WNAME:-?} needs input ($NTYPE)\" wi
 (
   AGENT_NAME=$(grep '^NAME=' "$HOME/.tmux/registry/$TMUX_PANE" 2>/dev/null | cut -d= -f2)
   [ -z "$AGENT_NAME" ] && AGENT_NAME="${WNAME:-agent}"
-  # Parse the message out of the notification JSON with python (robust to quotes /
-  # newlines) and emit the POST body in one shot — no fragile sed.
-  printf '%s' "$INPUT" | AN="$AGENT_NAME" PANE="$TMUX_PANE" FB="needs input ($NTYPE)" KIND="$NTYPE" python3 -c '
-import json,os,sys
-try: msg=(json.load(sys.stdin) or {}).get("message","")
-except Exception: msg=""
-print(json.dumps({"name":os.environ["AN"],"pane":os.environ["PANE"],"message":msg or os.environ["FB"],"kind":os.environ.get("KIND","")}))' 2>/dev/null \
+  # Build the POST body via the helper: it surfaces *what* the agent is asking
+  # (pending tool call / question) from the transcript, falling back to the hook's
+  # own message then $FB. Sibling script — same dir as this hook (~/.tmux symlink).
+  printf '%s' "$INPUT" | AN="$AGENT_NAME" PANE="$TMUX_PANE" FB="needs input ($NTYPE)" KIND="$NTYPE" \
+    python3 "$SCRIPT_DIR/notify-payload.py" 2>/dev/null \
     | curl -m 2 -s -o /dev/null -X POST "http://127.0.0.1:${SLACK_BRIDGE_PORT:-8788}/notify" -H 'Content-Type: application/json' --data @- 2>/dev/null
 ) &
 
