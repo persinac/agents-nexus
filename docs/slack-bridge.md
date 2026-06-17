@@ -64,22 +64,35 @@ oauth_config:
   scopes:
     bot:
       - chat:write
-      - channels:history
-      - groups:history
-      - im:history
+      - chat:write.public       # post to public channels without joining
+      - chat:write.customize     # post as the agent's name/icon
+      - channels:history         # read the public #nexus channel
+      - channels:read
+      - im:history               # DM-the-bot control (optional)
       - app_mentions:read
       - reactions:write
-      - channels:read
+      - reactions:read           # read reactions as control signals
+      - users:read               # user_id -> display name
+      - users:read.email         # email -> user_id (tag the human)
+      - files:write              # post logs / diffs / screenshots
 settings:
   event_subscriptions:
     bot_events:
       - message.channels
-      - message.groups
       - message.im
       - app_mention
+      - reaction_added           # pairs with reactions:read
   socket_mode_enabled: true
   org_deploy_enabled: false
 ```
+
+`#nexus` is a **public** channel, so `channels:history` + the `message.channels`
+event carry the inbound traffic — the private-channel scopes (`groups:history` /
+`groups:read` / `message.groups`) are intentionally omitted. Add them only if a
+*private* channel is ever used for this (a reinstall, since scopes/events change).
+The `reactions:read` / `users:read*` / `files:write` / `chat:write.*` scopes are
+future-proofing (approve-by-reaction, @-tagging the human, file posts) included now
+to avoid a later reinstall — trim them if you want a tighter least-privilege set.
 
 Then collect three values:
 
@@ -87,7 +100,7 @@ Then collect three values:
 |---|---|---|
 | **Bot token** `xoxb-…` | OAuth & Permissions → after install | `SLACK_BOT_TOKEN` |
 | **App-level token** `xapp-…` | Basic Information → App-Level Tokens → generate with scope `connections:write` | `SLACK_APP_TOKEN` |
-| **Channel id** `C…` | Create a private `#nexus` channel, **invite the bot** (`/invite @nexus-bridge`), copy the id from the channel details | `SLACK_NEXUS_CHANNEL` |
+| **Channel id** `C…` | In the public `#nexus` channel, **invite the bot** (`/invite @nexus-bridge`) — public channels still only deliver `message.channels` events to member bots — then copy the id from the channel details | `SLACK_NEXUS_CHANNEL` |
 
 `SLACK_BRIDGE_PORT` defaults to `8788`.
 
@@ -127,8 +140,10 @@ curl -s localhost:8788/health        # {"ok":true,"connected":true,"threads":N}
 ## Notes & safety
 
 - **This is remote control.** Text from Slack is typed into a live agent prompt.
-  Keep `#nexus` private and only invite the bot there; the bot cannot see channels
-  it is not a member of. Tokens live in the gitignored `.env`.
+  `#nexus` is a **public** channel, so anyone in the workspace can post there and
+  drive an agent — scope who you trust accordingly. The bot only acts on the
+  configured `#nexus` channel and DMs, and only sees channels it is a member of.
+  Tokens live in the gitignored `.env`.
 - **Tracked vs untracked threads.** Round-trip threads are posted by the *bot*
   (via the hook → `/notify`). Posts the agent makes itself through the Slack MCP
   (as you) are not tracked, so replies to those won't auto-route — address the
