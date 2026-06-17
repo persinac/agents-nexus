@@ -55,16 +55,24 @@ def _search(table, query: str, query_vector: list, where: str, limit: int) -> li
     return _search_mod.hybrid_search(table, query, query_vector, where, limit, config)
 
 
+def _score_of(row: dict) -> float:
+    """Display score: cross-encoder relevance when reranked, else cosine (1 - distance).
+
+    Reranked rows carry `_relevance_score` (a 0-1 cross-encoder score); un-reranked
+    hybrid rows carry the RRF fusion score under the same key; vector-only rows carry
+    `_distance`. Preferring `_relevance_score` keeps the displayed number meaningful."""
+    if "_relevance_score" in row:
+        return row["_relevance_score"]
+    return 1 - row.get("_distance", 0)
+
+
 def _format_results(rows: list[dict], include_content: bool = True) -> str:
     if not rows:
         return "No results found."
 
     output = []
     for i, row in enumerate(rows):
-        if "_relevance_score" in row:
-            score = row["_relevance_score"]
-        else:
-            score = 1 - row.get("_distance", 0)
+        score = _score_of(row)
         header = f"### [{i + 1}] {row['installation']} (score: {score:.3f})"
         meta = f"Team: {row['team']} | Type: {row['chunk_type']} | Path: {row['installation_path']}"
         if row.get("file_path"):
@@ -186,7 +194,7 @@ def spark_deep(
         installations = [row["installation"] for row in summary_rows]
         stage1_info = "**Stage 1 — Matching installations:**\n"
         for row in summary_rows:
-            score = 1 - row.get("_distance", 0)
+            score = _score_of(row)
             stage1_info += f"  - {row['installation']} ({row['team']}) score={score:.3f}\n"
         stage1_info += "\n"
     else:
@@ -455,10 +463,7 @@ def search_decisions(
 
     output = []
     for i, row in enumerate(rows):
-        if "_relevance_score" in row:
-            score = row["_relevance_score"]
-        else:
-            score = 1 - row.get("_distance", 0)
+        score = _score_of(row)
         header = f"### [{i + 1}] {row['installation']} (score: {score:.3f})"
         meta = f"Team: {row['team']}"
         if row.get("decision_date"):

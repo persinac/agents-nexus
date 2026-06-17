@@ -95,6 +95,14 @@ hybrid_search_enabled: true
 # Symbol chunking (optional — extracts AST-level symbols instead of blind sliding windows)
 symbol_chunking_enabled: true
 
+# Summary keyword enrichment (optional — appends a "Keywords:" line to each repo
+# summary built from in-code domain identifiers: UPPER_SNAKE string constants and
+# Enum member values, e.g. SOURCE_POE="poe"). Lets Stage-1 routing find a repo by
+# bare domain term ("which repo ingests POE") that prose summaries miss.
+# Takes effect on the next `spark reclaim` / reindex.
+summary_keywords_enabled: true
+summary_keywords_max: 40
+
 # spark_deep Stage 1 candidate set — how many summaries to discover before
 # searching code within them. Higher = better recall on broad queries, slightly
 # slower Stage 2. (default 8)

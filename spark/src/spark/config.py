@@ -36,6 +36,9 @@ class SparkConfig:
     symbol_chunking_enabled: bool
     hybrid_search_enabled: bool
     spark_deep_stage1_k: int
+    # Summary keyword enrichment — surface in-code domain identifiers into summaries
+    summary_keywords_enabled: bool
+    summary_keywords_max: int
     # Chunking constants
     chunk_size: int
     chunk_overlap: int
@@ -96,6 +99,8 @@ class SparkConfig:
             symbol_chunking_enabled=raw.get("symbol_chunking_enabled", True),
             hybrid_search_enabled=raw.get("hybrid_search_enabled", True),
             spark_deep_stage1_k=raw.get("spark_deep_stage1_k", 8),
+            summary_keywords_enabled=raw.get("summary_keywords_enabled", True),
+            summary_keywords_max=raw.get("summary_keywords_max", 40),
             chunk_size=raw.get("chunk_size", 900),
             chunk_overlap=raw.get("chunk_overlap", 150),
             summary_max_chars=raw.get("summary_max_chars", 950),

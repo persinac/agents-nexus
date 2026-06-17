@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from spark.indexer.keywords import extract_domain_keywords
 from spark.indexer.symbol_parser import parse_symbols
 
 from spark.config import SparkConfig
@@ -206,6 +207,14 @@ def build_summary_chunk(
         # this repo via both vector and BM25 search (BM25 indexes `content`).
         if det_services:
             parts.append(f"Services: {det_services}")
+
+    # Surface in-code domain vocabulary (data-source / enum / status constants)
+    # that prose summaries miss — e.g. SOURCE_POE="poe" makes "which repo
+    # ingests POE" route here via Stage-1. Placed high so it's always in budget
+    # and indexed by both vector + BM25. See indexer/keywords.py.
+    keywords = extract_domain_keywords(repo_dir, config) if config is not None else []
+    if keywords:
+        parts.append(f"Keywords: {', '.join(keywords)}")
 
     parts.append("")
     summary_max_chars = config.summary_max_chars if config is not None else SUMMARY_MAX_CHARS
