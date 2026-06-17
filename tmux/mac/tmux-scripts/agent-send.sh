@@ -11,32 +11,46 @@ MSG="$*"
 SESSION="${TMUX_AGENT_SESSION:-agents}"
 REGISTRY_DIR="$HOME/.tmux/registry"
 
-# Resolve target to a slot number
-SLOT=""
-if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
-  SLOT="$TARGET"
+# Resolve target to a tmux send-keys destination (DEST).
+# A pane id (%NN) is exact — immune to window renumbering, stale/duplicate registry
+# slots, and active-pane drift — so it's the preferred target. A bare number is a
+# window index (legacy/explicit). A name is resolved via the registry to its live
+# window index.
+DEST=""
+if [[ "$TARGET" =~ ^%[0-9]+$ ]]; then
+  if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$TARGET"; then
+    DEST="$TARGET"
+  else
+    echo "Pane not found: $TARGET"; exit 1
+  fi
 else
-  for f in "$REGISTRY_DIR"/*; do
-    [ -f "$f" ] || continue
-    name=$(grep '^NAME=' "$f" | cut -d= -f2)
-    pane_id=$(grep '^PANE_ID=' "$f" | cut -d= -f2)
-    if [ "$name" = "$TARGET" ]; then
-      SLOT=$(tmux display-message -t "$pane_id" -p '#{window_index}' 2>/dev/null)
-      [ -n "$SLOT" ] && break
-      rm -f "$f"
-    fi
-  done
-  [ -z "$SLOT" ] && { echo "Agent not found: $TARGET"; exit 1; }
+  SLOT=""
+  if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
+    SLOT="$TARGET"
+  else
+    for f in "$REGISTRY_DIR"/*; do
+      [ -f "$f" ] || continue
+      name=$(grep '^NAME=' "$f" | cut -d= -f2)
+      pane_id=$(grep '^PANE_ID=' "$f" | cut -d= -f2)
+      if [ "$name" = "$TARGET" ]; then
+        SLOT=$(tmux display-message -t "$pane_id" -p '#{window_index}' 2>/dev/null)
+        [ -n "$SLOT" ] && break
+        rm -f "$f"
+      fi
+    done
+    [ -z "$SLOT" ] && { echo "Agent not found: $TARGET"; exit 1; }
+  fi
+  DEST="${SESSION}:${SLOT}"
 fi
 
 # Flatten to single line — newlines break send-keys
 MSG=$(printf '%s' "$MSG" | tr '\n' ' ' | sed 's/  */ /g; s/^ *//; s/ *$//')
 
 if [[ "$MSG" =~ ^[0-9]$ ]]; then
-  tmux send-keys -t "${SESSION}:${SLOT}" "$MSG"
+  tmux send-keys -t "$DEST" "$MSG"
 else
-  tmux send-keys -l -t "${SESSION}:${SLOT}" "$MSG"
-  tmux send-keys -t "${SESSION}:${SLOT}" Enter
+  tmux send-keys -l -t "$DEST" "$MSG"
+  tmux send-keys -t "$DEST" Enter
 fi
 
-echo "Sent to ${TARGET} (slot ${SLOT}): ${MSG}"
+echo "Sent to ${TARGET} (${DEST}): ${MSG}"

@@ -159,10 +159,21 @@ function cleanSlackText(text) {
 // Delivery: re-resolve the agent name to a current slot, then send-keys via
 // the existing CLI. Returns { ok, slot, error }.
 // ---------------------------------------------------------------------------
+function deliverToPane(pane, text) {
+  try {
+    execFileSync(AGENT_SEND, [pane, text], { encoding: 'utf8', timeout: 5000 });
+    return { ok: true, pane };
+  } catch (e) {
+    const msg = (e.stdout || '').toString().trim() || e.message;
+    return { ok: false, pane, error: msg };
+  }
+}
+
 function deliverToName(name, text) {
   const agent = resolveByName(name);
   if (!agent) return { ok: false, error: `agent \`${name}\` is no longer active` };
-  return deliverToSlot(agent.slot, text);
+  // Prefer the exact pane id — registry slots drift and collide across windows.
+  return agent.pane ? deliverToPane(agent.pane, text) : deliverToSlot(agent.slot, text);
 }
 
 function deliverToSlot(slot, text) {
@@ -241,7 +252,9 @@ async function handleMessage(event) {
       const digit = permissionReplyToDigit(text);
       if (digit) text = digit;
     }
-    const res = deliverToName(entry.name, text);
+    // Deliver to the exact pane captured at notify-time — drift-proof, unlike the
+    // agent name (which re-resolves through stale/duplicate registry slots).
+    const res = entry.pane ? deliverToPane(entry.pane, text) : deliverToName(entry.name, text);
     if (res.ok) {
       await react(channel, event.ts, 'white_check_mark');
     } else {
@@ -263,7 +276,7 @@ async function handleMessage(event) {
         `:warning: no active agent \`${target}\`. Active: ${liveAgentList()}`);
       return;
     }
-    const res = deliverToSlot(agent.slot, text);
+    const res = agent.pane ? deliverToPane(agent.pane, text) : deliverToSlot(agent.slot, text);
     if (res.ok) {
       await react(channel, event.ts, 'white_check_mark');
     } else {
