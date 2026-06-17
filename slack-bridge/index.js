@@ -193,6 +193,23 @@ const IGNORED_SUBTYPES = new Set([
   'channel_join', 'channel_leave', 'channel_topic', 'channel_purpose',
 ]);
 
+// Claude Code permission prompts (and elicitation dialogs) are a numbered select
+// menu — by default: 1 = Yes, 2 = Yes + don't ask again, 3 = No. agent-send.sh
+// sends a bare digit as a raw selection keystroke, so a typed word like "yes"
+// never picks an option. For threads the hook tagged as a permission prompt, map
+// a natural-language reply to that digit; return null to deliver verbatim
+// (free-form guidance, or a normal question thread).
+const PERMISSION_KINDS = new Set(['permission_prompt', 'elicitation_dialog']);
+
+function permissionReplyToDigit(text) {
+  const t = text.trim().toLowerCase().replace(/[.!\s]+$/, '');
+  if (/^[123]$/.test(t)) return t;                                   // already a digit
+  if (/(don'?t ask( again)?|always|remember (this|me))/.test(t)) return '2';
+  if (/^(y|yes|yep|yeah|yup|ok|okay|sure|approve[d]?|allow|accept|proceed|go( ahead)?|do it)$/.test(t)) return '1';
+  if (/^(n|no|nope|deny|denied|reject|decline|cancel|stop)$/.test(t)) return '3';
+  return null;                                                       // no confident mapping
+}
+
 socket.on('message', async ({ event, ack }) => {
   try { await ack(); } catch { /* already acked */ }
   await handleMessage(event);
@@ -217,7 +234,13 @@ async function handleMessage(event) {
   // 1. Reply inside a tracked thread -> that thread's agent
   if (isReply && threadMap.has(event.thread_ts)) {
     const entry = threadMap.get(event.thread_ts);
-    const text = cleanSlackText(event.text);
+    let text = cleanSlackText(event.text);
+    // Permission-prompt threads: translate yes/no into the menu digit so the
+    // agent's select actually advances. Unmapped replies pass through verbatim.
+    if (PERMISSION_KINDS.has(entry.kind)) {
+      const digit = permissionReplyToDigit(text);
+      if (digit) text = digit;
+    }
     const res = deliverToName(entry.name, text);
     if (res.ok) {
       await react(channel, event.ts, 'white_check_mark');
@@ -275,7 +298,7 @@ const httpServer = http.createServer((req, res) => {
     req.on('end', async () => {
       res.setHeader('Content-Type', 'application/json');
       try {
-        const { name, message, pane } = JSON.parse(body || '{}');
+        const { name, message, pane, kind } = JSON.parse(body || '{}');
         if (!name) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'name required' })); return; }
         if (!NEXUS_CHANNEL) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'SLACK_NEXUS_CHANNEL not set' })); return; }
         const summary = (message || 'needs your input').toString().slice(0, 500);
@@ -283,7 +306,7 @@ const httpServer = http.createServer((req, res) => {
           channel: NEXUS_CHANNEL,
           text: `:hourglass_flowing_sand: *${name}* needs input:\n> ${summary}\n_Reply in this thread to answer._`,
         });
-        threadMap.set(posted.ts, { name, channel: NEXUS_CHANNEL, pane: pane || '', ts: posted.ts, createdAt: Date.now() });
+        threadMap.set(posted.ts, { name, channel: NEXUS_CHANNEL, pane: pane || '', kind: kind || '', ts: posted.ts, createdAt: Date.now() });
         saveThreadMap();
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true, ts: posted.ts }));
