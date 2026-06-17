@@ -62,6 +62,11 @@ if (!BOT_TOKEN || !APP_TOKEN) {
 const web = new WebClient(BOT_TOKEN);
 const socket = new SocketModeClient({ appToken: APP_TOKEN, logLevel: LogLevel.INFO });
 
+// Track Socket Mode connection state ourselves — @slack/socket-mode v2 fires
+// 'connected'/'disconnected' events but does not expose a stable `.connected`
+// property, so /health derives liveness from these handlers.
+let socketConnected = false;
+
 // Identity of our own bot, so we never act on our own posts (set at startup).
 let selfUserId = null;
 let selfBotId = null;
@@ -260,7 +265,7 @@ const httpServer = http.createServer((req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, connected: socket.connected === true, threads: threadMap.size }));
+    res.end(JSON.stringify({ ok: true, connected: socketConnected, threads: threadMap.size }));
     return;
   }
 
@@ -316,7 +321,7 @@ const httpServer = http.createServer((req, res) => {
     console.log(`[slack-bridge] notify endpoint: http://127.0.0.1:${PORT}/notify`);
   });
 
-  socket.on('connected', () => console.log('[slack-bridge] socket mode connected'));
-  socket.on('disconnected', () => console.log('[slack-bridge] socket mode disconnected'));
+  socket.on('connected', () => { socketConnected = true; console.log('[slack-bridge] socket mode connected'); });
+  socket.on('disconnected', () => { socketConnected = false; console.log('[slack-bridge] socket mode disconnected'); });
   await socket.start();
 })();
