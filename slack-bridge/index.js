@@ -190,6 +190,25 @@ async function react(channel, ts, name) {
   try { await web.reactions.add({ channel, timestamp: ts, name }); } catch { /* dup / perms */ }
 }
 
+// Mirror a Slack-originated answer onto the agent's terminal — a tmux status-line
+// flash on the target pane — so someone watching the CLI sees what was answered
+// remotely. Best-effort and non-blocking (tmux may be off the bridge's PATH).
+function flashPane(pane, label) {
+  if (!pane) return;
+  try {
+    execFileSync('tmux', ['display-message', '-d', '6000', '-t', pane, `↩ Slack: ${label}`], { timeout: 3000 });
+  } catch { /* tmux unreachable / pane gone — non-critical */ }
+}
+
+// Human-readable label for the flash, from the delivered keystroke/text.
+function answerLabel(text) {
+  const t = String(text).trim();
+  if (t === '1') return 'approved';
+  if (t === '2') return "approved (won't ask again)";
+  if (t === '3') return 'denied';
+  return `“${t.slice(0, 50)}”`;
+}
+
 async function replyInThread(channel, thread_ts, text) {
   try { await web.chat.postMessage({ channel, thread_ts, text }); } catch (e) {
     console.error(`[slack-bridge] reply failed: ${e.message}`);
@@ -266,6 +285,7 @@ async function handleInteractive(body) {
     return;
   }
   const res = entry.pane ? deliverToPane(entry.pane, digit) : deliverToName(entry.name, digit);
+  if (res.ok) flashPane(entry.pane, answerLabel(digit));            // mirror into the terminal
   const verb = digit === '1' ? 'Approved' : digit === '2' ? "Approved (won't ask again)" : 'Denied';
   const note = res.ok ? `:white_check_mark: *${verb}* by <@${user}>` : `:warning: ${res.error}`;
   if (channel && ts) {
@@ -292,6 +312,7 @@ async function handleReaction(event) {
   if (!entry) return;
   const res = entry.pane ? deliverToPane(entry.pane, digit) : deliverToName(entry.name, digit);
   if (res.ok) {
+    flashPane(entry.pane, answerLabel(digit));                      // mirror into the terminal
     try { await react(item.channel, item.ts, 'eyes'); } catch { /* ack reaction — best effort */ }
   } else {
     try { await replyInThread(item.channel, item.ts, `:warning: ${res.error}`); } catch { /* ignore */ }
@@ -328,6 +349,7 @@ async function handleMessage(event) {
     // agent name (which re-resolves through stale/duplicate registry slots).
     const res = entry.pane ? deliverToPane(entry.pane, text) : deliverToName(entry.name, text);
     if (res.ok) {
+      flashPane(entry.pane, answerLabel(text));                     // mirror into the terminal
       await react(channel, event.ts, 'white_check_mark');
     } else {
       await react(channel, event.ts, 'x');
@@ -350,6 +372,7 @@ async function handleMessage(event) {
     }
     const res = agent.pane ? deliverToPane(agent.pane, text) : deliverToSlot(agent.slot, text);
     if (res.ok) {
+      flashPane(agent.pane, answerLabel(text));                     // mirror into the terminal
       await react(channel, event.ts, 'white_check_mark');
     } else {
       await react(channel, event.ts, 'x');
