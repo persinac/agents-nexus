@@ -76,6 +76,8 @@ oauth_config:
       - users:read.email         # email -> user_id (tag the human)
       - files:write              # post logs / diffs / screenshots
 settings:
+  interactivity:
+    is_enabled: true             # required for the Approve/Deny buttons (block_actions)
   event_subscriptions:
     bot_events:
       - message.channels

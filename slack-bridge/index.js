@@ -239,6 +239,48 @@ socket.on('reaction_added', async ({ event, ack }) => {
   await handleReaction(event);
 });
 
+// Approve/Deny button clicks on a permission card. The button value is the menu
+// digit; deliver it to the thread's agent, then resolve the card (drop buttons,
+// show the outcome). Requires the Slack app to have Interactivity enabled.
+socket.on('interactive', async ({ body, ack }) => {
+  try { await ack(); } catch { /* already acked */ }
+  await handleInteractive(body);
+});
+
+async function handleInteractive(body) {
+  if (!body || body.type !== 'block_actions') return;
+  const action = (body.actions || [])[0];
+  const digit = action && action.value;
+  if (!['1', '2', '3'].includes(digit)) return;
+  const channel = body.channel && body.channel.id;
+  const ts = body.message && body.message.ts;
+  const user = body.user && body.user.id;
+  const entry = ts && threadMap.get(ts);
+  if (!entry) {
+    if (channel && ts) {
+      try {
+        await web.chat.update({ channel, ts, text: 'request expired',
+          blocks: _resolveCard(body.message, ':warning: no longer tracked (bridge restarted) — answer in the terminal') });
+      } catch { /* ignore */ }
+    }
+    return;
+  }
+  const res = entry.pane ? deliverToPane(entry.pane, digit) : deliverToName(entry.name, digit);
+  const verb = digit === '1' ? 'Approved' : digit === '2' ? "Approved (won't ask again)" : 'Denied';
+  const note = res.ok ? `:white_check_mark: *${verb}* by <@${user}>` : `:warning: ${res.error}`;
+  if (channel && ts) {
+    try { await web.chat.update({ channel, ts, text: note, blocks: _resolveCard(body.message, note) }); } catch { /* ignore */ }
+  }
+}
+
+// Rebuild a resolved card: keep the section block(s), drop the action buttons + hint,
+// append the outcome as a context line.
+function _resolveCard(message, note) {
+  const kept = (((message || {}).blocks) || []).filter((b) => b.type === 'section');
+  kept.push({ type: 'context', elements: [{ type: 'mrkdwn', text: note }] });
+  return kept;
+}
+
 async function handleReaction(event) {
   if (!event || event.type !== 'reaction_added') return;
   if (selfUserId && event.user === selfUserId) return;        // ignore the bot's own reactions
@@ -344,19 +386,29 @@ const httpServer = http.createServer((req, res) => {
         const { name, message, pane, kind, category, summary } = JSON.parse(body || '{}');
         if (!name) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'name required' })); return; }
         if (!NEXUS_CHANNEL) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'SLACK_NEXUS_CHANNEL not set' })); return; }
-        // Rich middle-man payload ({category, summary}) renders as a [category] tag +
-        // an attributed summary; a bare {message} (elicitation / no-classifier fallback)
-        // keeps the simple one-line form. Each line is `> `-prefixed for a clean blockquote.
-        let text;
-        if (summary) {
-          const cat = category ? `> [${String(category).slice(0, 60)}]\n` : '';
-          const sumLines = String(summary).slice(0, 1200).split('\n').map((l) => `> 🤖 ${l}`).join('\n');
-          text = `:hourglass_flowing_sand: *${name}* needs input:\n${cat}${sumLines}\n_Reply in thread_ · or react :one: / :two: / :three:`;
-        } else {
-          const s = (message || 'needs your input').toString().slice(0, 500);
-          text = `:hourglass_flowing_sand: *${name}* needs input:\n> ${s}\n_Reply in this thread to answer._`;
+        // Block Kit card: a section with the [category] + middle-man summary, then
+        // (for permission prompts) Approve / Approve+don't-ask / Deny buttons whose
+        // values are the menu digits. `text` is the notification fallback.
+        const isPerm = (kind || '') === 'permission_prompt';
+        const detail = summary
+          ? `${category ? `*[${String(category).slice(0, 60)}]*\n` : ''}:robot_face: ${String(summary).slice(0, 1500)}`
+          : (message || 'needs your input').toString().slice(0, 1500);
+        const blocks = [
+          { type: 'section', text: { type: 'mrkdwn', text: `:hourglass_flowing_sand: *${name}* needs input\n${detail}` } },
+        ];
+        if (isPerm) {
+          blocks.push({
+            type: 'actions', block_id: 'perm_actions',
+            elements: [
+              { type: 'button', action_id: 'perm:1', style: 'primary', value: '1', text: { type: 'plain_text', text: '✅ Approve', emoji: true } },
+              { type: 'button', action_id: 'perm:2', value: '2', text: { type: 'plain_text', text: "Approve + don't ask", emoji: true } },
+              { type: 'button', action_id: 'perm:3', style: 'danger', value: '3', text: { type: 'plain_text', text: '❌ Deny', emoji: true } },
+            ],
+          });
         }
-        const posted = await web.chat.postMessage({ channel: NEXUS_CHANNEL, text });
+        blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: isPerm ? '_or reply in thread · react :one: / :two: / :three:_' : '_reply in this thread to answer_' }] });
+        const fallback = `${name} needs input: ${(summary || message || '').toString().slice(0, 200)}`;
+        const posted = await web.chat.postMessage({ channel: NEXUS_CHANNEL, text: fallback, blocks });
         threadMap.set(posted.ts, { name, channel: NEXUS_CHANNEL, pane: pane || '', kind: kind || '', ts: posted.ts, createdAt: Date.now() });
         saveThreadMap();
         res.writeHead(200);
