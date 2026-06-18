@@ -225,6 +225,7 @@ def _emit_modify(category, summary):
         "name": os.environ.get("AN", ""),
         "pane": os.environ.get("PANE", ""),
         "kind": os.environ.get("KIND", ""),
+        "wait_since": os.environ.get("WAIT_SINCE", ""),
         "category": category,
         "summary": summary,
     }))

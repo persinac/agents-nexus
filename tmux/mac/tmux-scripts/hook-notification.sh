@@ -37,7 +37,7 @@ if [ "$NTYPE" = "permission_prompt" ] && [ -x "$CLASSIFY_PY" ]; then
   TIMEOUT_BIN=""
   if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout 20"
   elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 20"; fi
-  BODY=$(printf '%s' "$INPUT" | AN="$AGENT_NAME" PANE="$TMUX_PANE" KIND="$NTYPE" FB="needs input ($NTYPE)" \
+  BODY=$(printf '%s' "$INPUT" | AN="$AGENT_NAME" PANE="$TMUX_PANE" KIND="$NTYPE" WAIT_SINCE="$NOW" FB="needs input ($NTYPE)" \
     $TIMEOUT_BIN "$CLASSIFY_PY" "$SCRIPT_DIR/notify-classify.py" 2>/dev/null)
   RC=$?
   if [ "$RC" -eq 0 ]; then
@@ -61,7 +61,7 @@ osascript -e "display notification \"Agent ${WNAME:-?} needs input ($NTYPE)\" wi
   # The brain set BODY for a modify decision; otherwise (elicitation, or no classifier
   # venv) fall back to the deterministic payload helper.
   if [ -z "$BODY" ]; then
-    BODY=$(printf '%s' "$INPUT" | AN="$AGENT_NAME" PANE="$TMUX_PANE" FB="needs input ($NTYPE)" KIND="$NTYPE" \
+    BODY=$(printf '%s' "$INPUT" | AN="$AGENT_NAME" PANE="$TMUX_PANE" FB="needs input ($NTYPE)" KIND="$NTYPE" WAIT_SINCE="$NOW" \
       python3 "$SCRIPT_DIR/notify-payload.py" 2>/dev/null)
   fi
   printf '%s' "$BODY" \

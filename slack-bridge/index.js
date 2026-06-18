@@ -209,6 +209,75 @@ function answerLabel(text) {
   return `“${t.slice(0, 50)}”`;
 }
 
+// Current @wait_since on the pane's window (set by the Notification hook when a
+// prompt appears, unset by PreToolUse once answered). We compare it to the value
+// captured when the card was posted, so a Slack answer only lands on the SAME
+// prompt — never a stale card or a different/newer prompt on that pane.
+function paneWaitSince(pane) {
+  if (!pane) return null;
+  try {
+    return execFileSync('tmux', ['display-message', '-t', pane, '-p', '#{@wait_since}'], { encoding: 'utf8', timeout: 3000 }).trim();
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent threads. Each agent gets ONE anchor message in #nexus; its requests
+// post as replies under it. All state is derived from threadMap (each request
+// entry carries `root` = its anchor ts) — an anchor exists exactly while the
+// agent has >=1 pending request. On resolve we delete the request card (and the
+// anchor when its last request clears), so the channel only shows live asks.
+// ---------------------------------------------------------------------------
+function rootForAgent(name) {
+  for (const v of threadMap.values()) if (v.name === name && v.root) return v.root;
+  return null;
+}
+function pendingCount(rootTs) {
+  let n = 0; for (const v of threadMap.values()) if (v.root === rootTs) n += 1; return n;
+}
+function isAgentRoot(ts) {
+  for (const v of threadMap.values()) if (v.root === ts) return true; return false;
+}
+function latestPendingForRoot(rootTs) {
+  let best = null;
+  for (const [ts, v] of threadMap) {
+    if (v.root === rootTs && (!best || Number(ts) > Number(best.ts))) best = { ts, ...v };
+  }
+  return best;
+}
+
+// Deliver an answer to a tracked request, then remove the card (and the anchor if
+// it was the last pending one). `deliverText` is the menu digit or free-form text.
+async function resolveRequest(reqTs, channel, deliverText) {
+  const entry = threadMap.get(reqTs);
+  if (!entry) return { ok: false, error: 'this request is no longer tracked' };
+  // Same-prompt guard: only inject if the pane is still sitting at THE prompt this
+  // card was posted for. If it moved on (answered locally, a newer prompt, or idle),
+  // its @wait_since won't match — so drop the card instead of firing a stray
+  // keystroke into live work (the cross-window "phantom reject" bug).
+  if (entry.pane && entry.wait_since && paneWaitSince(entry.pane) !== entry.wait_since) {
+    threadMap.delete(reqTs);
+    const ch = channel || entry.channel;
+    try { await web.chat.delete({ channel: ch, ts: reqTs }); } catch { /* already gone / perms */ }
+    if (entry.root && pendingCount(entry.root) === 0) {
+      try { await web.chat.delete({ channel: entry.channel, ts: entry.root }); } catch { /* ignore */ }
+    }
+    saveThreadMap();
+    return { ok: false, stale: true, error: 'that prompt is no longer active (already handled) — nothing delivered' };
+  }
+  const res = entry.pane ? deliverToPane(entry.pane, deliverText) : deliverToName(entry.name, deliverText);
+  if (res.ok) {
+    flashPane(entry.pane, answerLabel(deliverText));   // mirror the answer onto the agent's terminal
+    threadMap.delete(reqTs);
+    const ch = channel || entry.channel;
+    try { await web.chat.delete({ channel: ch, ts: reqTs }); } catch { /* already gone / perms */ }
+    if (entry.root && pendingCount(entry.root) === 0) {
+      try { await web.chat.delete({ channel: entry.channel, ts: entry.root }); } catch { /* ignore */ }
+    }
+    saveThreadMap();
+  }
+  return res;
+}
+
 async function replyInThread(channel, thread_ts, text) {
   try { await web.chat.postMessage({ channel, thread_ts, text }); } catch (e) {
     console.error(`[slack-bridge] reply failed: ${e.message}`);
@@ -273,9 +342,7 @@ async function handleInteractive(body) {
   if (!['1', '2', '3'].includes(digit)) return;
   const channel = body.channel && body.channel.id;
   const ts = body.message && body.message.ts;
-  const user = body.user && body.user.id;
-  const entry = ts && threadMap.get(ts);
-  if (!entry) {
+  if (!ts || !threadMap.has(ts)) {
     if (channel && ts) {
       try {
         await web.chat.update({ channel, ts, text: 'request expired',
@@ -284,12 +351,12 @@ async function handleInteractive(body) {
     }
     return;
   }
-  const res = entry.pane ? deliverToPane(entry.pane, digit) : deliverToName(entry.name, digit);
-  if (res.ok) flashPane(entry.pane, answerLabel(digit));            // mirror into the terminal
-  const verb = digit === '1' ? 'Approved' : digit === '2' ? "Approved (won't ask again)" : 'Denied';
-  const note = res.ok ? `:white_check_mark: *${verb}* by <@${user}>` : `:warning: ${res.error}`;
-  if (channel && ts) {
-    try { await web.chat.update({ channel, ts, text: note, blocks: _resolveCard(body.message, note) }); } catch { /* ignore */ }
+  // Deliver + remove the card (and the anchor if it was the last). On failure, keep
+  // the card and surface the error in place.
+  const res = await resolveRequest(ts, channel, digit);
+  // On `stale` the card was already removed (prompt no longer active) — nothing to do.
+  if (!res.ok && !res.stale && channel) {
+    try { await web.chat.update({ channel, ts, text: 'error', blocks: _resolveCard(body.message, `:warning: ${res.error}`) }); } catch { /* ignore */ }
   }
 }
 
@@ -307,14 +374,9 @@ async function handleReaction(event) {
   const digit = REACTION_DIGIT[event.reaction];
   if (!digit) return;
   const item = event.item;
-  if (!item || item.type !== 'message') return;
-  const entry = threadMap.get(item.ts);                       // reacted on a tracked prompt root?
-  if (!entry) return;
-  const res = entry.pane ? deliverToPane(entry.pane, digit) : deliverToName(entry.name, digit);
-  if (res.ok) {
-    flashPane(entry.pane, answerLabel(digit));                      // mirror into the terminal
-    try { await react(item.channel, item.ts, 'eyes'); } catch { /* ack reaction — best effort */ }
-  } else {
+  if (!item || item.type !== 'message' || !threadMap.has(item.ts)) return;  // tracked card?
+  const res = await resolveRequest(item.ts, item.channel, digit);            // deliver + remove card
+  if (!res.ok && !res.stale) {
     try { await replyInThread(item.channel, item.ts, `:warning: ${res.error}`); } catch { /* ignore */ }
   }
 }
@@ -335,27 +397,42 @@ async function handleMessage(event) {
   const channel = event.channel;
   const isReply = event.thread_ts && event.thread_ts !== event.ts;
 
-  // 1. Reply inside a tracked thread -> that thread's agent
-  if (isReply && threadMap.has(event.thread_ts)) {
-    const entry = threadMap.get(event.thread_ts);
-    let text = cleanSlackText(event.text);
-    // Permission-prompt threads: translate yes/no into the menu digit so the
-    // agent's select actually advances. Unmapped replies pass through verbatim.
-    if (PERMISSION_KINDS.has(entry.kind)) {
-      const digit = permissionReplyToDigit(text);
-      if (digit) text = digit;
+  // 1. Reply inside a request thread -> answer that request. The reply may land on
+  //    the request card directly (legacy top-level) or on the agent's anchor thread
+  //    (per-agent threads) — in which case it answers the latest pending request.
+  if (isReply) {
+    let reqTs = null, entry = null;
+    if (threadMap.has(event.thread_ts)) {
+      reqTs = event.thread_ts; entry = threadMap.get(reqTs);
+    } else if (isAgentRoot(event.thread_ts)) {
+      const p = latestPendingForRoot(event.thread_ts);
+      if (p) { reqTs = p.ts; entry = threadMap.get(reqTs); }
     }
-    // Deliver to the exact pane captured at notify-time — drift-proof, unlike the
-    // agent name (which re-resolves through stale/duplicate registry slots).
-    const res = entry.pane ? deliverToPane(entry.pane, text) : deliverToName(entry.name, text);
-    if (res.ok) {
-      flashPane(entry.pane, answerLabel(text));                     // mirror into the terminal
-      await react(channel, event.ts, 'white_check_mark');
-    } else {
-      await react(channel, event.ts, 'x');
-      await replyInThread(channel, event.thread_ts, `:warning: ${res.error}`);
+    if (entry) {
+      const raw = cleanSlackText(event.text);
+      let deliverText = raw;
+      if (PERMISSION_KINDS.has(entry.kind)) {
+        const digit = permissionReplyToDigit(raw);
+        if (!digit) {  // free-form text doesn't pick a menu option
+          await replyInThread(channel, event.thread_ts,
+            ':information_source: reply `1` / `2` / `3` (or use the buttons / a number reaction)');
+          return;
+        }
+        deliverText = digit;
+      }
+      // resolveRequest delivers to the captured pane, then removes the card (+ anchor
+      // if it was the last pending request for that agent).
+      const res = await resolveRequest(reqTs, channel, deliverText);
+      if (res.ok) {
+        await react(channel, event.ts, 'white_check_mark');
+      } else if (res.stale) {
+        await react(channel, event.ts, 'heavy_check_mark');   // prompt already handled — card removed, nothing injected
+      } else {
+        await react(channel, event.ts, 'x');
+        await replyInThread(channel, event.thread_ts, `:warning: ${res.error}`);
+      }
+      return;
     }
-    return;
   }
 
   // 2. Addressed top-level: "name: text" or "slot: text" (after any @bot mention)
@@ -372,7 +449,7 @@ async function handleMessage(event) {
     }
     const res = agent.pane ? deliverToPane(agent.pane, text) : deliverToSlot(agent.slot, text);
     if (res.ok) {
-      flashPane(agent.pane, answerLabel(text));                     // mirror into the terminal
+      flashPane(agent.pane, answerLabel(text));          // mirror the message onto the agent's terminal
       await react(channel, event.ts, 'white_check_mark');
     } else {
       await react(channel, event.ts, 'x');
@@ -406,7 +483,7 @@ const httpServer = http.createServer((req, res) => {
     req.on('end', async () => {
       res.setHeader('Content-Type', 'application/json');
       try {
-        const { name, message, pane, kind, category, summary } = JSON.parse(body || '{}');
+        const { name, message, pane, kind, category, summary, wait_since } = JSON.parse(body || '{}');
         if (!name) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'name required' })); return; }
         if (!NEXUS_CHANNEL) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'SLACK_NEXUS_CHANNEL not set' })); return; }
         // Block Kit card: a section with the [category] + middle-man summary, then
@@ -431,8 +508,15 @@ const httpServer = http.createServer((req, res) => {
         }
         blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: isPerm ? '_or reply in thread · react :one: / :two: / :three:_' : '_reply in this thread to answer_' }] });
         const fallback = `${name} needs input: ${(summary || message || '').toString().slice(0, 200)}`;
-        const posted = await web.chat.postMessage({ channel: NEXUS_CHANNEL, text: fallback, blocks });
-        threadMap.set(posted.ts, { name, channel: NEXUS_CHANNEL, pane: pane || '', kind: kind || '', ts: posted.ts, createdAt: Date.now() });
+        // Per-agent thread: post under the agent's anchor (create it if this is the
+        // agent's first pending request), so #nexus top-level stays one line per agent.
+        let rootTs = rootForAgent(name);
+        if (!rootTs) {
+          const anchor = await web.chat.postMessage({ channel: NEXUS_CHANNEL, text: `:thread: *${name}* — waiting on you` });
+          rootTs = anchor.ts;
+        }
+        const posted = await web.chat.postMessage({ channel: NEXUS_CHANNEL, thread_ts: rootTs, text: fallback, blocks });
+        threadMap.set(posted.ts, { name, channel: NEXUS_CHANNEL, pane: pane || '', kind: kind || '', wait_since: wait_since || '', root: rootTs, ts: posted.ts, createdAt: Date.now() });
         saveThreadMap();
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true, ts: posted.ts }));

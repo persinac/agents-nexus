@@ -113,6 +113,7 @@ def main() -> None:
         "pane": os.environ.get("PANE", ""),
         "message": message,
         "kind": os.environ.get("KIND", ""),
+        "wait_since": os.environ.get("WAIT_SINCE", ""),
     }))
 
 
