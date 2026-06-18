@@ -24,6 +24,8 @@ interface BottomToolbarProps {
   onToggleCost: () => void;
   isMemorySearchOpen: boolean;
   onToggleMemorySearch: () => void;
+  isMemoryGraphOpen: boolean;
+  onToggleMemoryGraph: () => void;
 }
 
 const panelStyle: React.CSSProperties = {
@@ -77,6 +79,8 @@ export function BottomToolbar({
   onToggleCost,
   isMemorySearchOpen,
   onToggleMemorySearch,
+  isMemoryGraphOpen,
+  onToggleMemoryGraph,
 }: BottomToolbarProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -350,6 +354,22 @@ export function BottomToolbar({
         title="Search agent memory"
       >
         Search
+      </button>
+      <button
+        onClick={onToggleMemoryGraph}
+        onMouseEnter={() => setHovered('memgraph')}
+        onMouseLeave={() => setHovered(null)}
+        style={
+          isMemoryGraphOpen
+            ? { ...btnActive }
+            : {
+                ...btnBase,
+                background: hovered === 'memgraph' ? 'var(--pixel-btn-hover-bg)' : btnBase.background,
+              }
+        }
+        title="Visualize the agent-memory knowledge graph"
+      >
+        Graph
       </button>
       <div style={{ position: 'relative' }}>
         <button

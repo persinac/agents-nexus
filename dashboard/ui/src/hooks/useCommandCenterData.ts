@@ -172,6 +172,36 @@ export async function searchMemory(
   return (await fetchJson<MemoryHit[]>(`/api/system/memory/search?${params}`)) ?? [];
 }
 
+export interface MemoryGraphNode {
+  id: string;
+  type: 'note' | 'entity';
+  label: string;
+  title?: string;
+  content?: string;
+  tags?: string[];
+  project?: string;
+  created_at?: string;
+  entity_type?: string;
+}
+
+export interface MemoryGraphLink {
+  source: string;
+  target: string;
+  type: string;
+  confidence: number;
+}
+
+export interface MemoryGraph {
+  nodes: MemoryGraphNode[];
+  links: MemoryGraphLink[];
+  meta?: { notes: number; entities: number; links: number; project: string; limit: number };
+}
+
+export async function fetchMemoryGraph(project: string, limit = 150): Promise<MemoryGraph> {
+  const params = new URLSearchParams({ project, limit: String(limit) });
+  return (await fetchJson<MemoryGraph>(`/api/system/memory/graph?${params}`)) ?? { nodes: [], links: [] };
+}
+
 export function useCommandCenterData(enabled: boolean): CommandCenterData {
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [agents, setAgents] = useState<AgentInfo[] | null>(null);

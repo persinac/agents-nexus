@@ -35,6 +35,7 @@ if (existsSync(_envPath)) {
 const MEMORY_RECALL_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-recall.py');
 const MEMORY_STATS_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-stats.py');
 const MEMORY_SEARCH_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-search.py');
+const MEMORY_GRAPH_SCRIPT = resolve(__dirname, '../tmux/mac/tmux-scripts/memory-graph.py');
 
 const PORT = parseInt(process.env.PORT || '8420', 10);
 const POLL_MS = 100;  // fast baseline poll
@@ -561,6 +562,29 @@ const httpServer = http.createServer((req, res) => {
       res.end(out || '[]');
     } catch {
       res.end('[]');
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/system/memory/graph') {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    const project = url.searchParams.get('project') || 'all';
+    let limit = parseInt(url.searchParams.get('limit') || '150', 10);
+    if (!Number.isFinite(limit) || limit < 1) limit = 150;
+    if (limit > 500) limit = 500;
+    const empty = '{"nodes":[],"links":[]}';
+    try {
+      // execFileSync with an args array — no shell; project/limit are not
+      // interpolated into SQL (the script parameterizes them).
+      const out = execFileSync(
+        MEMORY_PYTHON,
+        [MEMORY_GRAPH_SCRIPT, '--project', project, '--limit', String(limit), '--format', 'json'],
+        { encoding: 'utf8', timeout: 15000, maxBuffer: 16 * 1024 * 1024 },
+      ).trim();
+      res.end(out || empty);
+    } catch {
+      res.end(empty);
     }
     return;
   }

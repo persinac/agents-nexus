@@ -6,6 +6,7 @@ import { ChangelogModal } from './components/ChangelogModal.js';
 import { CommandCenter } from './components/CommandCenter.js';
 import { InstallationsView } from './components/InstallationsView.js';
 import { CostView } from './components/CostView.js';
+import { MemoryGraphView } from './components/MemoryGraphView.js';
 import { MemorySearchView } from './components/MemorySearchView.js';
 import { DebugView } from './components/DebugView.js';
 import { MemoryWidget } from './components/MemoryWidget.js';
@@ -172,6 +173,7 @@ function App() {
   const [isInstallationsOpen, setIsInstallationsOpen] = useState(false);
   const [isCostOpen, setIsCostOpen] = useState(false);
   const [isMemorySearchOpen, setIsMemorySearchOpen] = useState(false);
+  const [isMemoryGraphOpen, setIsMemoryGraphOpen] = useState(false);
 
   const currentMajorMinor = toMajorMinor(extensionVersion);
 
@@ -326,6 +328,8 @@ function App() {
         onToggleCost={() => setIsCostOpen((v) => !v)}
         isMemorySearchOpen={isMemorySearchOpen}
         onToggleMemorySearch={() => setIsMemorySearchOpen((v) => !v)}
+        isMemoryGraphOpen={isMemoryGraphOpen}
+        onToggleMemoryGraph={() => setIsMemoryGraphOpen((v) => !v)}
       />
 
       <VersionIndicator
@@ -440,6 +444,10 @@ function App() {
 
       {isMemorySearchOpen && (
         <MemorySearchView onClose={() => setIsMemorySearchOpen(false)} />
+      )}
+
+      {isMemoryGraphOpen && (
+        <MemoryGraphView onClose={() => setIsMemoryGraphOpen(false)} />
       )}
 
       {showMigrationNotice && (
