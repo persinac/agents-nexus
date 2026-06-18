@@ -22,17 +22,25 @@ esac
 NOW=$(date +%s)
 WNAME=$(tmux display-message -t "$TMUX_PANE" -p '#W' 2>/dev/null)
 
-# Auto-approve gate: a read-only permission prompt answers itself (selects "1. Yes")
-# instead of pinging a human. The classifier categorizes the pending tool call and
-# fails safe to "modify" (ask) on any error. Read-only -> approve locally, no Slack.
+# Agent name — used by both the classifier and the Slack post.
+AGENT_NAME=$(grep '^NAME=' "$HOME/.tmux/registry/$TMUX_PANE" 2>/dev/null | cut -d= -f2)
+[ -z "$AGENT_NAME" ] && AGENT_NAME="${WNAME:-agent}"
+
+# Auto-approve gate + middle-man summary. The brain categorizes the pending tool:
+#   exit 0  -> read-only: answer "1. Yes" locally, no human, no Slack
+#   exit 10 -> needs a human: prints the /notify body ([category] + summary) on stdout
+# Fails safe to "modify" (ask) on any error.
 CLASSIFY_PY="$HOME/.tmux/.classify-venv/bin/python"
+BODY=""
 if [ "$NTYPE" = "permission_prompt" ] && [ -x "$CLASSIFY_PY" ]; then
   # Optional external timeout (macOS lacks `timeout`); litellm bounds the API call itself.
   TIMEOUT_BIN=""
   if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout 20"
   elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 20"; fi
-  DECISION=$(printf '%s' "$INPUT" | KIND="$NTYPE" $TIMEOUT_BIN "$CLASSIFY_PY" "$SCRIPT_DIR/notify-classify.py" 2>/dev/null)
-  if [ "$DECISION" = "read" ]; then
+  BODY=$(printf '%s' "$INPUT" | AN="$AGENT_NAME" PANE="$TMUX_PANE" KIND="$NTYPE" FB="needs input ($NTYPE)" \
+    $TIMEOUT_BIN "$CLASSIFY_PY" "$SCRIPT_DIR/notify-classify.py" 2>/dev/null)
+  RC=$?
+  if [ "$RC" -eq 0 ]; then
     ( sleep 0.4; tmux send-keys -t "$TMUX_PANE" 1 2>/dev/null ) &
     tmux set-window-option -t "$TMUX_PANE" @waiting 0 2>/dev/null
     echo "$NOW auto-approve $TMUX_PANE" >> "$HOME/.tmux/auto-approve.log" 2>/dev/null
@@ -40,6 +48,7 @@ if [ "$NTYPE" = "permission_prompt" ] && [ -x "$CLASSIFY_PY" ]; then
   fi
 fi
 
+# --- needs a human: flag + macOS notify + surface to Slack ---
 tmux set-window-option -t "$TMUX_PANE" @waiting 1 2>/dev/null
 tmux set-option -w -t "$TMUX_PANE" @wait_since "$NOW" 2>/dev/null
 tmux set-option -w -t "$TMUX_PANE" @wait_type "$NTYPE" 2>/dev/null
@@ -47,17 +56,15 @@ tmux set-option -w -t "$TMUX_PANE" @wait_type "$NTYPE" 2>/dev/null
 # macOS notification
 osascript -e "display notification \"Agent ${WNAME:-?} needs input ($NTYPE)\" with title \"Claude Code\" sound name \"Glass\"" 2>/dev/null &
 
-# Slack round-trip: ping the slack-bridge so the request surfaces in #nexus and a
-# reply in that thread routes back here. Backgrounded with a short timeout; if the
-# bridge isn't running, curl just no-ops — never blocks or fails the agent.
+# Slack round-trip — backgrounded; curl no-ops if the bridge is down.
 (
-  AGENT_NAME=$(grep '^NAME=' "$HOME/.tmux/registry/$TMUX_PANE" 2>/dev/null | cut -d= -f2)
-  [ -z "$AGENT_NAME" ] && AGENT_NAME="${WNAME:-agent}"
-  # Build the POST body via the helper: it surfaces *what* the agent is asking
-  # (pending tool call / question) from the transcript, falling back to the hook's
-  # own message then $FB. Sibling script — same dir as this hook (~/.tmux symlink).
-  printf '%s' "$INPUT" | AN="$AGENT_NAME" PANE="$TMUX_PANE" FB="needs input ($NTYPE)" KIND="$NTYPE" \
-    python3 "$SCRIPT_DIR/notify-payload.py" 2>/dev/null \
+  # The brain set BODY for a modify decision; otherwise (elicitation, or no classifier
+  # venv) fall back to the deterministic payload helper.
+  if [ -z "$BODY" ]; then
+    BODY=$(printf '%s' "$INPUT" | AN="$AGENT_NAME" PANE="$TMUX_PANE" FB="needs input ($NTYPE)" KIND="$NTYPE" \
+      python3 "$SCRIPT_DIR/notify-payload.py" 2>/dev/null)
+  fi
+  printf '%s' "$BODY" \
     | curl -m 2 -s -o /dev/null -X POST "http://127.0.0.1:${SLACK_BRIDGE_PORT:-8788}/notify" -H 'Content-Type: application/json' --data @- 2>/dev/null
 ) &
 

@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
-"""Permission-prompt auto-approval classifier for the slack-bridge round-trip.
+"""Permission-prompt middle-man: auto-approve gate + human-friendly summary.
 
-Reads a Claude Code Notification hook payload on stdin and prints ONE word:
-  read    -> safe to auto-approve (the hook selects menu option 1)
-  modify  -> needs a human (surfaced to Slack)
+Reads a Claude Code Notification hook payload (stdin) for a permission_prompt and:
+  * decides read vs modify (the auto-approve gate), and
+  * for prompts that need a human, produces a `category` + a 1-2 sentence
+    middle-man `summary` (what the agent wants, what it's pertinent to, an honest
+    safety read).
 
-Policy (conservative — when in doubt, "modify"):
-  * Only fires for KIND=permission_prompt (elicitation/questions always -> modify).
-  * Local read tools (Read/Glob/Grep/LS/NotebookRead) -> read.
-  * Mutating tools (Edit/Write/MultiEdit/NotebookEdit), MCP tools, web egress
-    (WebFetch/WebSearch), and anything unknown -> modify.
-  * Bash: a hard denylist of irreversible/dangerous patterns -> modify; otherwise
-    a small LLM (Anthropic Haiku via litellm) categorizes the command. A compound
-    command counts as "read" only if every part is read-only.
+Output contract (so the hook needs no JSON parsing in bash):
+  exit 0   -> READ: safe to auto-approve. Nothing printed.
+  exit 10  -> MODIFY: needs a human. Prints the /notify JSON body on stdout
+              ({name,pane,kind,category,summary}) ready to POST.
+Any error -> exit 10 with a deterministic fallback summary (fail safe to "ask").
 
-Fail-safe: ANY error (no key, import failure, API/timeout, parse issue) -> "modify".
-The worst case is "ask the human", never an accidental auto-run.
+Policy: local reads (Read/Glob/Grep/LS/NotebookRead) -> read (no LLM, fast).
+Bash -> hard denylist (rm/sudo/dd/redirect/pipe-to-shell/--force/...) forces modify,
+otherwise an Anthropic Haiku call (litellm) decides + summarizes. Writes / MCP / web
+egress / unknown -> modify (LLM summarizes, decision forced modify). Compound shell
+commands are "read" only if every part is read-only.
 
-Env: KIND=notification_type. Anthropic key loaded from the repo .env if not already
-in the environment. No api_base override (the .env base is container-only).
+Env: AN=agent name, PANE=tmux pane id, KIND=notification_type, FB=fallback text.
+Anthropic key loaded from the repo .env; default api base (the .env base is container-only).
 """
 from __future__ import annotations
 
@@ -29,12 +31,8 @@ import sys
 from collections import deque
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
-
 READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread"}
-WRITE_TOOLS = {"edit", "write", "multiedit", "notebookedit"}
 
-# Irreversible / dangerous shell patterns that must NEVER auto-approve, even if the
-# LLM mis-classifies. Belt-and-suspenders over the model's own judgement.
 _DENY = re.compile(
     r"(\brm\b|\brmdir\b|\bsudo\b|\bdd\b|\bmkfs|\bshutdown\b|\breboot\b|\bkillall\b"
     r"|:\(\)\s*\{|>\s*/dev/|\bgit\s+push\b|--force\b|(^|\s)-[a-zA-Z]*f[a-zA-Z]*\b"
@@ -43,33 +41,31 @@ _DENY = re.compile(
     re.I,
 )
 
-_PROMPT = """You are a safety gate that decides whether a shell command may be auto-approved.
+_PROMPT = """You are the middle-man between an autonomous coding agent and its human operator on Slack. The agent has paused to ask permission to use a tool. Read the tool call and reply with ONLY a compact JSON object:
 
-Reply with exactly one word: "read" or "modify".
+{{"decision":"read|modify","category":"<2-4 word label>","summary":"<one or two sentences>"}}
 
-"read"  = the command ONLY inspects or reads state and changes nothing (e.g. ls, cat,
-          grep, find (without -delete or a mutating -exec), git status/log/diff/show,
-          ps, head, tail, wc, echo, which, env, pwd, jq). For a compound command
-          (&&, ||, ;, |) it is "read" only if EVERY part is read-only.
-"modify" = it writes/creates/deletes/moves files, redirects to a file (>, >>), changes
-          git state, installs/downloads, runs via sudo, pipes into a shell, mutates a
-          remote/service, or you are at all unsure.
+- decision: "read" if the action only inspects/reads state and changes nothing. For a shell command, EVERY part of a compound (&&, ||, ;, |) must be read-only. Otherwise "modify". When unsure, "modify".
+- category: a short label, e.g. "read-only inspection", "file edit", "package install", "helm/k8s deploy", "git push", "delete files", "network write".
+- summary: 1-2 sentences for the operator — what the agent wants to do, what it's pertinent to, and a brief HONEST safety read (e.g. "routine, looks safe" or "destructive — deletes data, review"). Refer to it as "the agent". Do not invent facts.
 
-When uncertain, answer "modify".
+Tool: {name}
+Input: {inp}
 
-Command:
-{cmd}
-
-One word:"""
+JSON:"""
 
 
-def _load_key() -> None:
+def _trunc(s, n=240):
+    s = " ".join(str(s).split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _load_key():
     if os.environ.get("ANTHROPIC_API_KEY"):
         return
     try:
-        # tmux/mac/tmux-scripts/notify-classify.py -> repo root is 4 levels up.
         root = os.path.realpath(__file__)
-        for _ in range(4):
+        for _ in range(4):  # tmux/mac/tmux-scripts/ -> repo root
             root = os.path.dirname(root)
         for ln in open(os.path.join(root, ".env"), errors="replace"):
             ln = ln.strip()
@@ -80,28 +76,59 @@ def _load_key() -> None:
         pass
 
 
-def _classify_bash(cmd: str) -> str:
+def _deterministic_summary(name, inp):
+    short = (name or "").split("__")[-1].lower()
+    if short in ("bash", "shell"):
+        return f"`{_trunc(inp.get('command', ''))}`"
+    if short in ("edit", "multiedit", "write", "notebookedit"):
+        return f"`{inp.get('file_path') or inp.get('notebook_path', '?')}`"
+    for k in ("command", "url", "query", "path", "file_path", "prompt"):
+        if inp.get(k):
+            return _trunc(inp[k])
+    return name or "a tool call"
+
+
+def _llm(name, inp):
+    """Return (decision, category, summary) from the LLM, or None on any failure."""
     _load_key()
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return "modify"
+        return None
     try:
         import litellm
         litellm.suppress_debug_info = True
+        body = json.dumps(inp)[:1500]
         resp = litellm.completion(
             model=MODEL,
-            messages=[{"role": "user", "content": _PROMPT.format(cmd=cmd[:1500])}],
-            max_tokens=5,
+            messages=[{"role": "user", "content": _PROMPT.format(name=name, inp=body)}],
+            max_tokens=200,
             temperature=0,
-            timeout=10,
+            timeout=12,
         )
-        out = (resp.choices[0].message.content or "").strip().lower()
-        return "read" if out.startswith("read") else "modify"
+        text = (resp.choices[0].message.content or "").strip()
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return None
+        obj = json.loads(m.group(0))
+        decision = "read" if str(obj.get("decision", "")).lower().startswith("read") else "modify"
+        category = _trunc(obj.get("category") or "change", 40)
+        summary = _trunc(obj.get("summary") or "", 500)
+        return decision, category, summary
     except Exception:
-        return "modify"
+        return None
 
 
-def _last_tool_use(transcript_path: str):
-    """(name, input) of the last tool_use in the most recent assistant message, or None."""
+def _emit_modify(category, summary):
+    print(json.dumps({
+        "name": os.environ.get("AN", ""),
+        "pane": os.environ.get("PANE", ""),
+        "kind": os.environ.get("KIND", ""),
+        "category": category,
+        "summary": summary,
+    }))
+    sys.exit(10)
+
+
+def _last_tool_use(transcript_path):
     if not transcript_path or not os.path.exists(transcript_path):
         return None
     try:
@@ -123,34 +150,48 @@ def _last_tool_use(transcript_path: str):
         for b in content:
             if isinstance(b, dict) and b.get("type") == "tool_use":
                 tool = (b.get("name") or "", b.get("input") or {})
-        return tool  # last tool_use in this assistant message (or None)
+        return tool
     return None
 
 
-def classify() -> str:
+def main():
     if os.environ.get("KIND") != "permission_prompt":
-        return "modify"  # elicitation / questions always go to a human
+        _emit_modify("question", os.environ.get("FB", "needs input"))
     try:
         data = json.load(sys.stdin) or {}
     except Exception:
-        return "modify"
+        data = {}
     tool = _last_tool_use(data.get("transcript_path", ""))
     if not tool:
-        return "modify"
+        _emit_modify("needs review", os.environ.get("FB", "needs input"))
     name, inp = tool
     short = name.split("__")[-1].lower()
+
+    # Fast path: clearly read-only local tools auto-approve without an LLM call.
+    if short in READ_TOOLS:
+        sys.exit(0)
+
+    llm = _llm(name, inp)
+    det = _deterministic_summary(name, inp)
+
     if short in ("bash", "shell"):
         cmd = (inp.get("command") or "").strip()
-        if not cmd or _DENY.search(cmd):
-            return "modify"
-        return _classify_bash(cmd)
-    if short in READ_TOOLS:
-        return "read"
-    return "modify"  # writes, MCP tools, web egress, unknown -> ask
+        if cmd and not _DENY.search(cmd) and llm and llm[0] == "read":
+            sys.exit(0)  # read-only command -> auto-approve
+        if llm:
+            _emit_modify(llm[1], llm[2] or det)
+        _emit_modify("shell command", det)
+
+    # writes / web egress / MCP / unknown -> always ask (decision forced modify)
+    if llm:
+        _emit_modify(llm[1], llm[2] or det)
+    _emit_modify("needs review", det)
 
 
 if __name__ == "__main__":
     try:
-        print(classify())
+        main()
+    except SystemExit:
+        raise
     except Exception:
-        print("modify")
+        _emit_modify("needs review", os.environ.get("FB", "needs input"))

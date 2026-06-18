@@ -226,6 +226,36 @@ socket.on('message', async ({ event, ack }) => {
   await handleMessage(event);
 });
 
+// Emoji reactions on a tracked permission-prompt message answer the menu directly:
+// :one:/:two:/:three: -> that option; ✅/👍 -> approve (1); ❌/👎 -> deny (3).
+const REACTION_DIGIT = {
+  one: '1', two: '2', three: '3',
+  white_check_mark: '1', heavy_check_mark: '1', '+1': '1', thumbsup: '1',
+  x: '3', no_entry: '3', '-1': '3', thumbsdown: '3',
+};
+
+socket.on('reaction_added', async ({ event, ack }) => {
+  try { await ack(); } catch { /* already acked */ }
+  await handleReaction(event);
+});
+
+async function handleReaction(event) {
+  if (!event || event.type !== 'reaction_added') return;
+  if (selfUserId && event.user === selfUserId) return;        // ignore the bot's own reactions
+  const digit = REACTION_DIGIT[event.reaction];
+  if (!digit) return;
+  const item = event.item;
+  if (!item || item.type !== 'message') return;
+  const entry = threadMap.get(item.ts);                       // reacted on a tracked prompt root?
+  if (!entry) return;
+  const res = entry.pane ? deliverToPane(entry.pane, digit) : deliverToName(entry.name, digit);
+  if (res.ok) {
+    try { await react(item.channel, item.ts, 'eyes'); } catch { /* ack reaction — best effort */ }
+  } else {
+    try { await replyInThread(item.channel, item.ts, `:warning: ${res.error}`); } catch { /* ignore */ }
+  }
+}
+
 async function handleMessage(event) {
   if (!event) return;
   // --- self / noise filtering (prevent feedback loops) ---
@@ -311,14 +341,22 @@ const httpServer = http.createServer((req, res) => {
     req.on('end', async () => {
       res.setHeader('Content-Type', 'application/json');
       try {
-        const { name, message, pane, kind } = JSON.parse(body || '{}');
+        const { name, message, pane, kind, category, summary } = JSON.parse(body || '{}');
         if (!name) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'name required' })); return; }
         if (!NEXUS_CHANNEL) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'SLACK_NEXUS_CHANNEL not set' })); return; }
-        const summary = (message || 'needs your input').toString().slice(0, 500);
-        const posted = await web.chat.postMessage({
-          channel: NEXUS_CHANNEL,
-          text: `:hourglass_flowing_sand: *${name}* needs input:\n> ${summary}\n_Reply in this thread to answer._`,
-        });
+        // Rich middle-man payload ({category, summary}) renders as a [category] tag +
+        // an attributed summary; a bare {message} (elicitation / no-classifier fallback)
+        // keeps the simple one-line form. Each line is `> `-prefixed for a clean blockquote.
+        let text;
+        if (summary) {
+          const cat = category ? `> [${String(category).slice(0, 60)}]\n` : '';
+          const sumLines = String(summary).slice(0, 1200).split('\n').map((l) => `> 🤖 ${l}`).join('\n');
+          text = `:hourglass_flowing_sand: *${name}* needs input:\n${cat}${sumLines}\n_Reply in thread_ · or react :one: / :two: / :three:`;
+        } else {
+          const s = (message || 'needs your input').toString().slice(0, 500);
+          text = `:hourglass_flowing_sand: *${name}* needs input:\n> ${s}\n_Reply in this thread to answer._`;
+        }
+        const posted = await web.chat.postMessage({ channel: NEXUS_CHANNEL, text });
         threadMap.set(posted.ts, { name, channel: NEXUS_CHANNEL, pane: pane || '', kind: kind || '', ts: posted.ts, createdAt: Date.now() });
         saveThreadMap();
         res.writeHead(200);
