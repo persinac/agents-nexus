@@ -74,13 +74,45 @@ _HTTP_WRITE = re.compile(
     r"|--upload-file|(^|\s)-T\b|(^|\s)-[oO]\b|--output)", re.I)
 
 
+# Global flags that take a separate-token value and can appear BEFORE the
+# subcommand (e.g. `kubectl --context prod get`, `git -C /repo show`). Their value
+# is skipped when locating the real subcommand.
+_VALUE_FLAGS = frozenset({
+    "-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "--as",
+    "--server", "-s", "-C", "--git-dir", "--work-tree", "--profile", "--region", "-o",
+})
+
+
+def _subcommand(toks):
+    """First non-flag token (skipping flags and known flag-values) = the subcommand."""
+    skip = False
+    for t in toks:
+        if skip:
+            skip = False
+            continue
+        if t.startswith("-"):
+            if "=" not in t and t in _VALUE_FLAGS:
+                skip = True
+            continue
+        return t
+    return ""
+
+
 def _segment_is_read(seg):
     seg = seg.strip()
     if not seg:
         return True
     toks = seg.split()
-    while toks and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):  # strip VAR=val prefixes
-        toks = toks[1:]
+    while toks:  # strip VAR=val prefixes and benign command wrappers
+        b = os.path.basename(toks[0])
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
+            toks = toks[1:]
+        elif b == "timeout":
+            toks = toks[2:] if len(toks) > 1 and re.match(r"^[\d.]+[smhd]?$", toks[1]) else toks[1:]
+        elif b in ("command", "nice", "stdbuf", "nohup"):
+            toks = toks[1:]
+        else:
+            break
     if not toks:
         return True
     cmd = os.path.basename(toks[0])
@@ -93,7 +125,7 @@ def _segment_is_read(seg):
     if cmd in _READ_CMDS:
         return True
     if cmd in _READ_SUB:
-        sub = toks[1] if len(toks) > 1 and not toks[1].startswith("-") else ""
+        sub = _subcommand(toks[1:])                                # skip leading flags (e.g. --context X)
         if cmd == "gh":  # gh subcommands need a read action (view/list/status)
             return sub in _READ_SUB[cmd] and bool(re.search(r"\b(view|list|status|get)\b", seg))
         return sub in _READ_SUB[cmd]
