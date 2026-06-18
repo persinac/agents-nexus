@@ -35,19 +35,24 @@ READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread"}
 
 _DENY = re.compile(
     r"(\brm\b|\brmdir\b|\bsudo\b|\bdd\b|\bmkfs|\bshutdown\b|\breboot\b|\bkillall\b"
-    r"|:\(\)\s*\{|>\s*/dev/|\bgit\s+push\b|--force\b|(^|\s)-[a-zA-Z]*f[a-zA-Z]*\b"
+    r"|:\(\)\s*\{|>\s*/dev/|\bgit\s+push\b|--force\b|--hard\b"
     r"|\|\s*(sh|bash|zsh)\b|\b(curl|wget)\b[^|]*\|\s*(sh|bash)"
     r"|\bchmod\s+-R|\bchown\s+-R|\bnpm\s+publish\b|\btruncate\b|\bmv\s)",
     re.I,
 )
 
-_PROMPT = """You are the middle-man between an autonomous coding agent and its human operator on Slack. The agent has paused to ask permission to use a tool. Read the tool call and reply with ONLY a compact JSON object:
+_PROMPT = """You are the middle-man between an autonomous coding agent and its human operator on Slack. The agent paused to ask permission to use a tool. Reply with ONLY a compact JSON object:
 
 {{"decision":"read|modify","category":"<2-4 word label>","summary":"<one or two sentences>"}}
 
-- decision: "read" if the action only inspects/reads state and changes nothing. For a shell command, EVERY part of a compound (&&, ||, ;, |) must be read-only. Otherwise "modify". When unsure, "modify".
-- category: a short label, e.g. "read-only inspection", "file edit", "package install", "helm/k8s deploy", "git push", "delete files", "network write".
-- summary: 1-2 sentences for the operator — what the agent wants to do, what it's pertinent to, and a brief HONEST safety read (e.g. "routine, looks safe" or "destructive — deletes data, review"). Refer to it as "the agent". Do not invent facts.
+decision rules:
+- "read" = the command only INSPECTS and does not change files, branches, remotes, deployed resources, or download-and-run / install anything. Treat ALL of these as read: git status/log/diff/show/branch -l/rev-parse/merge-base/range-diff/blame/ls-files, `git fetch` (updates only remote-tracking refs — safe), kubectl get/describe/logs/top, helm template/diff/get/list, terraform plan, docker ps/images/logs/inspect, and cat/ls/grep/find(without -delete)/head/tail (incl. -f follow)/wc/echo/which/jq.
+- "modify" = changes state: writes/edits/deletes/moves files, redirects to a file (> or >>), git add/commit/push/reset/checkout/merge/rebase/stash, kubectl apply/create/delete/patch/scale/rollout/edit, helm install/upgrade/uninstall, terraform apply/destroy, package installs, sudo, or piping into a shell.
+- Compound command (&&, ||, ;, |): "read" only if EVERY part is read; one modifying part makes the whole "modify".
+- BE DECISIVE: if every part is plainly an inspection, answer "read" — do NOT hedge to "modify" just because the domain (git/k8s/deploy) feels operational. Reserve "modify" for an actual state change or genuine ambiguity. Your decision MUST agree with your summary: if the summary concludes nothing is modified, decision is "read".
+
+category: short label, e.g. "read-only inspection", "git fetch", "file edit", "k8s apply", "package install", "delete files".
+summary: 1-2 sentences for the operator — what the agent wants to do, what it's pertinent to, and a brief HONEST safety read. Refer to it as "the agent". Do not invent facts.
 
 Tool: {name}
 Input: {inp}
