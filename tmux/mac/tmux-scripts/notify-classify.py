@@ -41,6 +41,72 @@ _DENY = re.compile(
     re.I,
 )
 
+# --- Deterministic read-only allowlist -------------------------------------
+# Common inspection commands auto-approve WITHOUT an LLM call — instant and 100%
+# reliable, so the gate never wavers on dual-use tools (curl, git, kubectl). The
+# LLM only sees commands this can't vouch for. Conservative: any output redirect
+# or unknown command head falls through to the LLM.
+_READ_CMDS = frozenset({
+    "ls", "cat", "head", "tail", "wc", "echo", "pwd", "which", "whoami", "hostname",
+    "uname", "date", "env", "printenv", "df", "du", "stat", "file", "tree", "realpath",
+    "dirname", "basename", "grep", "egrep", "fgrep", "rg", "ag", "ack", "sort", "uniq",
+    "cut", "tr", "column", "jq", "yq", "xxd", "od", "cmp", "tac", "nl", "cd", "true",
+    "sleep", "test", "readlink", "type", "id", "ps", "top", "free", "uptime", "comm",
+})
+_READ_SUB = {
+    "git": frozenset({"status", "log", "diff", "show", "merge-base", "range-diff",
+                      "rev-parse", "rev-list", "blame", "ls-files", "ls-tree", "describe",
+                      "shortlog", "reflog", "cat-file", "for-each-ref", "show-ref",
+                      "fetch", "whatchanged", "grep", "version", "remote"}),
+    "kubectl": frozenset({"get", "describe", "logs", "top", "explain", "api-resources",
+                          "api-versions", "version", "cluster-info"}),
+    "helm": frozenset({"template", "diff", "get", "list", "status", "show", "history",
+                       "version", "lint"}),
+    "terraform": frozenset({"plan", "show", "output", "validate", "version", "providers"}),
+    "docker": frozenset({"ps", "images", "logs", "inspect", "version", "info", "top",
+                         "stats", "history"}),
+    "gh": frozenset({"pr", "issue", "run", "repo", "release", "api", "status"}),  # gh ... view/list mostly read; api below
+}
+# curl/wget become "modify" if they carry a write method, a request body, an upload,
+# or write the response to a file.
+_HTTP_WRITE = re.compile(
+    r"(-X\s*(post|put|patch|delete)|--data\b|--data-[a-z]+|(^|\s)-d\b"
+    r"|--upload-file|(^|\s)-T\b|(^|\s)-[oO]\b|--output)", re.I)
+
+
+def _segment_is_read(seg):
+    seg = seg.strip()
+    if not seg:
+        return True
+    toks = seg.split()
+    while toks and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):  # strip VAR=val prefixes
+        toks = toks[1:]
+    if not toks:
+        return True
+    cmd = os.path.basename(toks[0])
+    if cmd in ("curl", "wget"):
+        return not _HTTP_WRITE.search(seg)
+    if cmd == "sed":
+        return "-i" not in toks                                    # not in-place
+    if cmd == "find":
+        return not re.search(r"-(delete|exec|execdir|ok|fprint|fls|fprintf)\b", seg)
+    if cmd in _READ_CMDS:
+        return True
+    if cmd in _READ_SUB:
+        sub = toks[1] if len(toks) > 1 and not toks[1].startswith("-") else ""
+        if cmd == "gh":  # gh subcommands need a read action (view/list/status)
+            return sub in _READ_SUB[cmd] and bool(re.search(r"\b(view|list|status|get)\b", seg))
+        return sub in _READ_SUB[cmd]
+    return False
+
+
+def _deterministic_read(cmd):
+    """True only if EVERY segment is a known read-only operation. Any output redirect
+    (>, >>) or unrecognized command falls through to the LLM."""
+    if ">" in cmd:
+        return False
+    return all(_segment_is_read(s) for s in re.split(r"&&|\|\||;|\|", cmd))
+
 _PROMPT = """You are the middle-man between an autonomous coding agent and its human operator on Slack. The agent paused to ask permission to use a tool. Reply with ONLY a compact JSON object:
 
 {{"decision":"read|modify","category":"<2-4 word label>","summary":"<one or two sentences>"}}
@@ -171,26 +237,26 @@ def main():
         _emit_modify("needs review", os.environ.get("FB", "needs input"))
     name, inp = tool
     short = name.split("__")[-1].lower()
+    det = _deterministic_summary(name, inp)
 
-    # Fast path: clearly read-only local tools auto-approve without an LLM call.
+    # 1. Clearly read-only local tools -> auto-approve, no LLM.
     if short in READ_TOOLS:
         sys.exit(0)
 
-    llm = _llm(name, inp)
-    det = _deterministic_summary(name, inp)
-
+    # 2. Bash: hard denylist (modify) -> deterministic read allowlist (auto) -> LLM.
     if short in ("bash", "shell"):
         cmd = (inp.get("command") or "").strip()
-        if cmd and not _DENY.search(cmd) and llm and llm[0] == "read":
-            sys.exit(0)  # read-only command -> auto-approve
-        if llm:
-            _emit_modify(llm[1], llm[2] or det)
-        _emit_modify("shell command", det)
+        safe = bool(cmd) and not _DENY.search(cmd)
+        if safe and _deterministic_read(cmd):
+            sys.exit(0)                                   # known read-only -> auto, no LLM
+        llm = _llm(name, inp)
+        if safe and llm and llm[0] == "read":
+            sys.exit(0)                                   # LLM-judged read -> auto
+        _emit_modify(llm[1] if llm else "shell command", (llm[2] if llm and llm[2] else det))
 
-    # writes / web egress / MCP / unknown -> always ask (decision forced modify)
-    if llm:
-        _emit_modify(llm[1], llm[2] or det)
-    _emit_modify("needs review", det)
+    # 3. Writes / web egress / MCP / unknown -> always ask (LLM summarizes).
+    llm = _llm(name, inp)
+    _emit_modify(llm[1] if llm else "needs review", (llm[2] if llm and llm[2] else det))
 
 
 if __name__ == "__main__":
