@@ -42,6 +42,10 @@
 | 22 | 3 | **Memory search box in the Command Center** — mnemon already speaks SSE on `:8330/sse`. Add a search input in the Command Center that fans out to mnemon's `search_similar` / `query_notes` tools and renders results inline. Bridges the agent-memory DB to a human surface — you can browse what the agents have learned without dropping into Claude or psql. Probably a new "Memory" tab in `CommandCenter.tsx` plus a small arbiter proxy for the MCP call. | done |
 | 23 | 4 | **Rotate Spark off Ollama** — `nomic-embed-text` via Ollama is the sustained bottleneck (~2.8 chunks/sec, single-threaded). Candidates: FastEmbed (Qdrant's ONNX runner, identical `nomic-embed-text` vectors, 5-10× faster on CPU, no daemon), Anthropic/OpenAI embeddings (batched, ~$3-5 per full reclaim, higher recall), or sentence-transformers on Apple MPS. Drop-in friendly because the vector dim stays the same. Likely behind a `SPARK_EMBEDDER` config flag for A/B comparison before committing. | done (FastEmbed bge-small-en-v1.5, 384d; bumped from #1 priority — nomic gave no speedup) |
 | 24 | 1 | **Spark search in the Command Center** — add a "Spark Search" toolbar view (mirroring the memory-search view, #22) that runs semantic/structured code search against the live bedrock index. New arbiter endpoint `/api/system/spark/query?q=…&mode=summary/flat/registry` shells into the container (`docker exec nexus-spark /app/.venv/bin/spark query` / `registry`) and returns JSON; UI is a search box + mode toggle (which-repo / file-content / registry filter) with ranked, click-to-expand results showing file paths. Makes `spark query`, `query_registry`, and `--flat` usable from the dashboard, not just CLI/MCP. Container already serves bedrock-rich2 + reranker, so results match the terminal. | |
+| 25 | 1 | **Interactive Block Kit approve/deny cards** — render permission requests in `#nexus` as Block Kit cards (agent + repo/cwd, command in a code block, risk tag from the classifier) with `[Approve] [Approve+don't ask] [Deny]` buttons. Tap → Socket Mode `block_actions` → bridge sends the digit. One tap beats typing `1`. See "Slack Bridge UX & Agent Bus" below. | backlog |
+| 26 | 1 | **Live fleet status board** — one bot-maintained message (`chat.update`) listing every agent + state (working / ⏳ waiting / 🟢 auto-approving / idle / done), driven by existing hooks; pinned in `#nexus`. At-a-glance mission control. | backlog |
+| 27 | 3 | **Per-agent threads + lifecycle feed** — group each agent's requests under a persistent root message; post agent start / turn-finished (Stop hook) / idle as a feed so `#nexus` is fleet activity, not just prompts. | backlog |
+| 28 | 2 | **Slack as the inter-agent message bus** — route `agent-send.sh` through Slack (dual-mode: local→send-keys, remote→Slack) so the Mac fleet and the Linux box can talk, with full observability. Delivery half already exists (bridge inbound routing). See below. | backlog |
 
 ## Spark Discovery Enrichment (idea 20)
 
@@ -123,3 +127,43 @@ The existing `reclaim()` function rebuilds the full index but uses the same shal
 4. **Terraform resource extraction** — subset of #1, straightforward regex
 5. **Env var signal extraction** — moderate effort, good for catching config-level service hints
 6. **Deep re-indexing schedule** — ops concern, do after the detection code lands
+
+## Slack Bridge — bot & channel UX + agent bus (ideas 25-28)
+
+The Slack bridge is live: `#nexus` (public) surfaces mutating permission prompts + questions; the auto-approve classifier keeps read-only noise out; replies route back via thread / `name: text` and answer permission menus (`yes/approve→1`, etc.). Two directions to build on that.
+
+### A. Make the bot + channel more useful & organized
+
+**Quick, high-impact**
+1. **Interactive Block Kit cards (idea 25).** Replace the plain-text request with a card: agent name + repo/cwd, the command in a code block, a **risk tag** (the classifier already returns read/modify → show "⚠️ modifies state"), and buttons `[Approve] [Approve + don't ask] [Deny]`. A tap emits a Socket Mode `block_actions` event → the bridge maps it to the menu digit and delivers (reusing the pane-id delivery + word→digit logic). The Socket Mode pipe already exists; this adds an action handler + a card builder. Biggest UX win.
+2. **Approve-by-reaction.** ✅ on the request approves. Scopes already requested (`reactions:read` + `reaction_added`). Lightest possible path.
+
+**Organization**
+3. **Live fleet status board (idea 26).** One bot-maintained message the bot edits (`chat.update`) listing every active agent + state (working / ⏳ waiting-on-you / 🟢 auto-approving / idle / done), pinned. Driven by the existing `PreToolUse` / `Stop` / `Notification` hooks (same data as the tmux status bar). At-a-glance mission control in Slack. Biggest "organized" win.
+4. **Per-agent threads (idea 27).** Group each agent's requests under a persistent root message (`🧵 svc-chatbot`) so top-level stays clean.
+5. **Lifecycle feed (idea 27).** Agent start / turn-finished (`Stop` hook) / idle → posts, so `#nexus` is a fleet activity feed.
+
+**Bigger:** command surface (`@nexus status`, `@nexus <name> <msg>`, `@nexus pause <name>`); or a Slack Canvas dashboard.
+
+→ Lead with **#1 (buttons) + #3 (status board)** — they transform UX and organization respectively.
+
+### B. Slack as the inter-agent message bus (idea 28)
+
+Reframe: **Slack becomes the agent transport.** `agent-send.sh` is local-tmux-only today. Routing it through Slack unlocks:
+- **Cross-machine comms** — the Mac fleet ↔ the Linux "nexus" box can finally talk (impossible now; tmux is per-host).
+- **Full observability** — every agent-to-agent message is visible/auditable; watch the mesh think, inject from a phone.
+- **Durability** — Slack as the comms log.
+
+**Delivery half already exists:** the bridge's inbound routing already does `name: text → deliver to that agent's pane`. So an agent posting `targetname: message` is *already* delivered. Missing pieces:
+- **Bridge `/send` endpoint** (localhost): `agent-send.sh → curl :8788/send {to,from,msg}` → bridge posts an addressed message → every host's bridge sees it via Socket Mode → the one whose registry has `to` delivers locally. Loop-safe (bridges already ignore bot/own messages).
+- **Dual-mode `agent-send.sh`:** `to` is local → direct send-keys (fast, no noise, default); else → route via Slack for a remote bridge. Optional `--via-slack` to force visibility. Local stays instant; Slack is the cross-host path.
+- **Presence registry:** Slack itself can be the registry — bridges maintain an agent↔host map so the Linux box can join the mesh.
+- **Hygiene:** agent chatter is noisy → a dedicated `#nexus-agents` channel or thread, separate from human-control `#nexus`.
+
+**Decisions to settle:** globally-unique agent names across hosts; noise control (dedicated channel/thread); local latency (hence dual-mode); ordering (Slack best-effort — acceptable).
+
+**Phasing**
+1. Dual-mode `agent-send.sh` + `/send` endpoint, same-machine, posting to a `#nexus-agents` thread — proves the loop and gives instant observability.
+2. Multi-host presence registry so the Linux box joins the mesh.
+
+The status board (A3) + agent-comms feed (B) together make `#nexus` live mission-control for a distributed agent mesh.
