@@ -22,6 +22,24 @@ esac
 NOW=$(date +%s)
 WNAME=$(tmux display-message -t "$TMUX_PANE" -p '#W' 2>/dev/null)
 
+# Auto-approve gate: a read-only permission prompt answers itself (selects "1. Yes")
+# instead of pinging a human. The classifier categorizes the pending tool call and
+# fails safe to "modify" (ask) on any error. Read-only -> approve locally, no Slack.
+CLASSIFY_PY="$HOME/.tmux/.classify-venv/bin/python"
+if [ "$NTYPE" = "permission_prompt" ] && [ -x "$CLASSIFY_PY" ]; then
+  # Optional external timeout (macOS lacks `timeout`); litellm bounds the API call itself.
+  TIMEOUT_BIN=""
+  if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout 20"
+  elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 20"; fi
+  DECISION=$(printf '%s' "$INPUT" | KIND="$NTYPE" $TIMEOUT_BIN "$CLASSIFY_PY" "$SCRIPT_DIR/notify-classify.py" 2>/dev/null)
+  if [ "$DECISION" = "read" ]; then
+    ( sleep 0.4; tmux send-keys -t "$TMUX_PANE" 1 2>/dev/null ) &
+    tmux set-window-option -t "$TMUX_PANE" @waiting 0 2>/dev/null
+    echo "$NOW auto-approve $TMUX_PANE" >> "$HOME/.tmux/auto-approve.log" 2>/dev/null
+    exit 0
+  fi
+fi
+
 tmux set-window-option -t "$TMUX_PANE" @waiting 1 2>/dev/null
 tmux set-option -w -t "$TMUX_PANE" @wait_since "$NOW" 2>/dev/null
 tmux set-option -w -t "$TMUX_PANE" @wait_type "$NTYPE" 2>/dev/null
