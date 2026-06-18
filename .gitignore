@@ -37,3 +37,6 @@ spark/*.log
 scripts/.obs-tag-state.json
 
 repos-manifest.yaml
+
+# Stray credential/sample drops (never commit secrets)
+sample.json
