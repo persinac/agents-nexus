@@ -232,12 +232,16 @@ def _emit_modify(category, summary):
 
 
 def _last_tool_use(transcript_path):
+    """Most recent tool_use in the transcript tail. Scans back through the last few
+    assistant messages (not just the latest, which may be text-only) so a pending
+    tool call is still found when the assistant wrote prose around it."""
     if not transcript_path or not os.path.exists(transcript_path):
         return None
     try:
         lines = deque(open(transcript_path, errors="replace"), maxlen=500)
     except OSError:
         return None
+    seen = 0
     for ln in reversed(lines):
         try:
             obj = json.loads(ln)
@@ -247,13 +251,13 @@ def _last_tool_use(transcript_path):
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
         content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        tool = None
-        for b in content:
-            if isinstance(b, dict) and b.get("type") == "tool_use":
-                tool = (b.get("name") or "", b.get("input") or {})
-        return tool
+        if isinstance(content, list):
+            for b in reversed(content):
+                if isinstance(b, dict) and b.get("type") == "tool_use":
+                    return (b.get("name") or "", b.get("input") or {})
+        seen += 1
+        if seen >= 6:                # bound the look-back so we don't grab a stale tool
+            break
     return None
 
 
