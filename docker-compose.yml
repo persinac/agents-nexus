@@ -60,6 +60,19 @@ services:
       SPARK_CONFIG: /app/config.yaml
       SPARK_INSTALLATIONS_PATH: /repos
       SPARK_INDEX_PATH: /app/data/the-index
+      # Embedder backend. Default keeps the local Ollama path; set SPARK_EMBEDDER=bedrock
+      # in .env (with the AWS_* keys below) to offload embedding to AWS Bedrock
+      # (Titan Text v2, 1024-dim). Switching embedders needs a full `task spark:reclaim`
+      # — the index is dropped + rebuilt at the new dimension.
+      SPARK_EMBEDDER: ${SPARK_EMBEDDER:-litellm}
+      # Bedrock credentials (only read when SPARK_EMBEDDER=bedrock). Long-lived IAM
+      # keys are preferred over SSO on an unattended box — SSO tokens expire and
+      # would fail write-time embedding mid-reclaim. boto3 picks these up from env.
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # Quiet LanceDB's benign manifest-namespace WARN spam.
+      RUST_LOG: ${RUST_LOG:-error}
       GITLAB_URL: ${GITLAB_URL:-}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       SPARK_WEBHOOK_SECRET: ${SPARK_WEBHOOK_SECRET:-}
