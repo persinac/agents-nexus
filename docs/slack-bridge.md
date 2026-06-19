@@ -41,8 +41,13 @@ It connects over **Socket Mode**, so there is **no public URL / tunnel** to set 
 2. **Addressed top-level** message `name: your message`, `slot: your message`, or
    `@nexus-bot name: your message` → resolved against the live registry.
    Unknown name → the bot replies listing the active agents.
-3. **Anything else** (no address, untracked thread) → a one-line usage hint. No
-   delivery.
+3. **Anything else** (no address, untracked thread) → **smart routing**: a haiku
+   classifier scores the message against the active agents (name + working dir)
+   and, above the confidence floor (`SLACK_ROUTE_MIN_CONFIDENCE`, default 0.6),
+   delivers to the best match and replies `routed to \`name\` (auto · NN%)`.
+   Below the floor (or no clear match) it falls back to the usage hint and asks
+   you to address an agent explicitly. Set `SLACK_ROUTE_ENABLED=0` to disable;
+   routing also no-ops when `ANTHROPIC_API_KEY` is unset.
 
 Only the configured `#nexus` channel and DMs to the bot are acted on; messages in
 any other channel are ignored.

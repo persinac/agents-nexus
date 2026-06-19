@@ -56,6 +56,15 @@ const THREAD_TTL_MS = 7 * 24 * 60 * 60 * 1000; // prune mappings older than 7 da
 // catches the ones answered locally in the CLI (or whose window closed).
 const PRUNE_INTERVAL_MS = parseInt(process.env.SLACK_PRUNE_INTERVAL_MS || '10000', 10);
 
+// Smart routing: when a message names no agent, an LLM (haiku — fast/cheap, same
+// middle-man pattern as notify-classify.py) infers the target from the active
+// agent list. Disabled with SLACK_ROUTE_ENABLED=0 or when no API key is present;
+// below the confidence floor it asks instead of guessing.
+const ROUTE_ENABLED = process.env.SLACK_ROUTE_ENABLED !== '0';
+const ROUTE_MODEL = process.env.SLACK_ROUTE_MODEL || 'claude-haiku-4-5';
+const ROUTE_MIN_CONFIDENCE = parseFloat(process.env.SLACK_ROUTE_MIN_CONFIDENCE || '0.6');
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
 // Boot guard: on an un-provisioned box this is a clean no-op so launchd doesn't thrash.
 if (!BOT_TOKEN || !APP_TOKEN) {
   console.log('[slack-bridge] SLACK_BOT_TOKEN / SLACK_APP_TOKEN not set — nothing to do, exiting 0.');
@@ -121,7 +130,8 @@ function loadRegistry() {
       const name = (c.match(/^NAME=(.*)$/m) || [])[1];
       const slot = (c.match(/^SLOT=(\d+)/m) || [])[1];
       const pane = (c.match(/^PANE_ID=(.*)$/m) || [])[1];
-      if (name && slot) out.push({ name: name.trim(), slot: slot.trim(), pane: (pane || '').trim() });
+      const cwd = (c.match(/^CWD=(.*)$/m) || [])[1];
+      if (name && slot) out.push({ name: name.trim(), slot: slot.trim(), pane: (pane || '').trim(), cwd: (cwd || '').trim() });
     } catch { /* ignore unreadable registry file */ }
   }
   return out;
@@ -140,6 +150,60 @@ function liveAgentList() {
   const reg = loadRegistry();
   if (!reg.length) return '_no agents currently active_';
   return reg.map((a) => `\`${a.name}\` (slot ${a.slot})`).join(', ');
+}
+
+// ---------------------------------------------------------------------------
+// Smart routing: classify an unaddressed message to the most likely agent.
+// The Anthropic SDK is dynamic-imported so a deploy that hasn't run
+// `npm install` yet (the dep is new) degrades to "ask" instead of crashing.
+// ---------------------------------------------------------------------------
+let _anthropic = null;          // cached client; false once we know it's unavailable
+async function getAnthropic() {
+  if (_anthropic !== null) return _anthropic || null;
+  if (!ANTHROPIC_API_KEY) { _anthropic = false; return null; }
+  try {
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    _anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  } catch (e) {
+    console.error(`[slack-bridge] routing disabled — @anthropic-ai/sdk unavailable: ${e.message}`);
+    _anthropic = false;
+  }
+  return _anthropic || null;
+}
+
+// Returns { agent, confidence, reason } or null. `agent` is "" when no clear match.
+async function classifyTarget(text, agents) {
+  const client = await getAnthropic();
+  if (!client) return null;
+  const roster = agents.map((a) => `- ${a.name}${a.cwd ? ` (${a.cwd})` : ''}`).join('\n');
+  try {
+    const resp = await client.messages.create({
+      model: ROUTE_MODEL,
+      max_tokens: 256,
+      system: 'You route Slack messages to coding agents. You are given the list of currently active agents (name + working directory) and one message that did NOT explicitly name an agent. Decide which single agent the message is most likely directed at, by matching the message topic to an agent\'s repo/working directory. Set agent to the exact agent name, or "" if no agent is a clear match. confidence is 0..1.',
+      messages: [{ role: 'user', content: `Active agents:\n${roster}\n\nMessage:\n${text}` }],
+      output_config: {
+        format: {
+          type: 'json_schema',
+          schema: {
+            type: 'object',
+            properties: {
+              agent: { type: 'string' },
+              confidence: { type: 'number' },
+              reason: { type: 'string' },
+            },
+            required: ['agent', 'confidence', 'reason'],
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+    const block = (resp.content || []).find((b) => b.type === 'text');
+    return block ? JSON.parse(block.text) : null;
+  } catch (e) {
+    console.error(`[slack-bridge] routing classify failed: ${e.message}`);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +562,28 @@ async function handleMessage(event) {
     return;
   }
 
-  // 3. Unaddressed / untracked -> usage hint
+  // 3. Unaddressed / untracked -> try to classify a target, else a usage hint.
+  if (ROUTE_ENABLED) {
+    const agents = loadRegistry();
+    if (agents.length) {
+      const verdict = await classifyTarget(cleaned, agents);
+      if (verdict && verdict.agent) {
+        const match = agents.find((a) => a.name.toLowerCase() === String(verdict.agent).toLowerCase());
+        if (match && Number(verdict.confidence) >= ROUTE_MIN_CONFIDENCE) {
+          const res = match.pane ? deliverToPane(match.pane, cleaned) : deliverToSlot(match.slot, cleaned);
+          if (res.ok) {
+            flashPane(match.pane, answerLabel(cleaned));
+            await react(channel, event.ts, 'white_check_mark');
+            await replyInThread(channel, event.ts,
+              `:robot_face: routed to \`${match.name}\` (auto · ${Math.round(Number(verdict.confidence) * 100)}%). Use \`name: …\` to override.`);
+            return;
+          }
+          // delivery failed — fall through to the usage hint below
+        }
+      }
+    }
+  }
+
   await replyInThread(channel, event.ts,
     `:information_source: Address an agent with \`name: your message\` (or reply in a thread I started). Active: ${liveAgentList()}`);
 }

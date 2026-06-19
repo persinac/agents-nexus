@@ -9,6 +9,7 @@
     "dev": "node --watch index.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0",
     "@slack/socket-mode": "^2.0.7",
     "@slack/web-api": "^7.17.0"
   }
