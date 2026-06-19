@@ -1,6 +1,13 @@
 # Linux (mini-pc) ↔ Mac parity — what's missing, what already works
 
-State of affairs as of 2026-04-30. Mac is the daily driver and well-exercised; Linux is the canonical-host plan with substantial scaffolding (PLAN.md, install.sh, systemd units) but several gaps. This doc is a concrete checklist for closing them.
+State of affairs as of 2026-06-19 (originally drafted 2026-04-30). Mac is the daily driver and well-exercised; Linux is the canonical-host plan with substantial scaffolding (PLAN.md, install.sh, systemd units). Most of the original gaps are now closed — see the **2026-06 update** below before trusting the older checklist rows.
+
+## 2026-06 update — what's been closed since the 2026-04-30 draft
+
+- **Shell init** — `tmux/linux/bashrc` now exists and is sourced by `tmux/linux/install.sh` (the `bashrc` mirror the checklist asked for). No longer a gap.
+- **Scheduling** — `tmux/linux/install.sh` now installs *all* `systemd/*.{service,timer}` units automatically (templating `__HOME__`/`__AGENTS_NEXUS_DIR__`/`__NODE_BIN__`). Ported since the draft: `muninn-sync`, `obs-digest`, `obs-tidy`, `langfuse-cost-snapshot`, `permission-suggest`, `agent-memory-flush`. The "missing systemd unit" rows in the inventory tables below are therefore **stale** — only `gl-reviews`/`gl-reviews-prune` (GitLab; mini-pc uses GitHub) and `svc-chatbot-*` (work-repo only) remain intentionally unported.
+- **Slack bridge** — now at parity: `tmux/linux/systemd/slack-bridge.service` (systemd analog of `launchd/com.agents-nexus.slack-bridge.plist`, `Restart=on-failure` to honor the no-token boot-guard) + the `/notify` round-trip added to `tmux/linux/tmux-scripts/hook-notification.sh` (with `notify-send`/bell in place of `osascript`). Installed by `bash tmux/linux/install.sh`. See `docs/slack-bridge.md`.
+- **Remaining genuine gaps**: Caddy + Tailscale (deferred — only needed to expose services off-LAN). The launcher source-of-truth split (below) is resolved on the Mac side (Option B — `agents-nexus` is canonical).
 
 ## TL;DR
 

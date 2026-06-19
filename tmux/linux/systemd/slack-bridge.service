@@ -1,0 +1,26 @@
+[Unit]
+Description=Slack bridge — two-way #nexus <-> agent control (Socket Mode + /notify)
+# Soft ordering: the bridge delivers keystrokes into the agents tmux session via
+# ~/.tmux/agent-send.sh. Wants (not Requires) so the bridge still starts and
+# no-ops deliveries if the session is down.
+After=tmux-agents-session.service
+Wants=tmux-agents-session.service
+
+[Service]
+Type=simple
+WorkingDirectory=__AGENTS_NEXUS_DIR__/slack-bridge
+ExecStart=__NODE_BIN__ index.js
+# Restart only on a CRASH (non-zero exit). The bridge boot-guards to a clean
+# exit 0 when SLACK_BOT_TOKEN / SLACK_APP_TOKEN are unset; on-failure (not
+# always) keeps an un-provisioned box from thrashing — mirrors the launchd
+# KeepAlive{SuccessfulExit:false} on the Mac plist.
+Restart=on-failure
+RestartSec=10
+Environment=HOME=__HOME__
+Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+# tmux must be on PATH so the bridge's child agent-send.sh can deliver keystrokes
+# (node is invoked by absolute path in ExecStart, so it needs no PATH entry).
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

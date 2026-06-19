@@ -945,8 +945,18 @@ finish_slack() {
     if prompt_yes_no "Install + start the launchd supervisor now?" "y"; then
       ( cd "$REPO_DIR" && task launchd:install:slack-bridge ) || true
     fi
+  elif [ "$OS" = "linux" ]; then
+    # systemd unit is installed/enabled by tmux/linux/install.sh; just (re)start it.
+    if systemctl --user list-unit-files slack-bridge.service >/dev/null 2>&1; then
+      systemctl --user restart slack-bridge.service 2>/dev/null \
+        && echo "  -> restarted slack-bridge.service" \
+        || echo "  Start it with: systemctl --user restart slack-bridge.service"
+    else
+      echo "  Install the systemd supervisor with: bash tmux/linux/install.sh"
+      echo "  (or start ad-hoc with: task slack:bridge)"
+    fi
   else
-    echo "  Start it with: task slack:bridge   (supervise with: task launchd:install:slack-bridge)"
+    echo "  Start it with: task slack:bridge"
   fi
 }
 

@@ -116,14 +116,20 @@ task slack:bridge              # foreground (logs to the terminal)
 Supervised (recommended — restarts on crash, starts at login):
 
 ```bash
+# macOS (launchd)
 task launchd:install:slack-bridge     # or: task launchd:install:all
 launchctl list | grep slack-bridge    # confirm loaded
 # logs: /tmp/agents-nexus-slack-bridge.log
+
+# Linux (systemd user unit) — installed + started by the tmux installer:
+bash tmux/linux/install.sh            # installs deps + enables + starts the unit
+systemctl --user status slack-bridge.service
+journalctl --user -u slack-bridge.service -f    # logs
 ```
 
-`KeepAlive` is configured with `SuccessfulExit: false`, so launchd **only restarts
-on a crash** — when tokens are unset the bridge exits 0 cleanly and is left alone
-(no thrash).
+On macOS, launchd `KeepAlive` is `SuccessfulExit: false`; on Linux the systemd
+unit uses `Restart=on-failure`. Both **only restart on a crash** — when tokens
+are unset the bridge exits 0 cleanly and is left alone (no thrash).
 
 ## Verify
 
@@ -154,6 +160,12 @@ curl -s localhost:8788/health        # {"ok":true,"connected":true,"threads":N}
   bridge). Entries older than 7 days are pruned on write.
 - **launchd node path** is pinned to the installed nvm version in the plist
   `PATH`. If you upgrade node, update
-  `launchd/com.agents-nexus.slack-bridge.plist` and reinstall.
-- **Linux parity** is not wired yet (Mac-only for now). Porting needs a systemd
-  unit plus the same `hook-notification.sh` edit in `tmux/linux/`.
+  `launchd/com.agents-nexus.slack-bridge.plist` and reinstall. The Linux unit
+  resolves node at install time (`__NODE_BIN__`, via `readlink -f`), so it just
+  needs a re-run of `tmux/linux/install.sh` after a node upgrade.
+- **Linux parity** is wired: `tmux/linux/systemd/slack-bridge.service` (the
+  systemd analog of the plist) plus the `/notify` round-trip in
+  `tmux/linux/tmux-scripts/hook-notification.sh`. The Linux hook uses
+  `notify-send` (console) + a terminal bell (SSH) in place of macOS `osascript`.
+  The auto-approve classifier gate is included but stays inert unless the
+  `~/.tmux/.classify-venv` is present.

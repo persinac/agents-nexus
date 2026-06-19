@@ -108,6 +108,20 @@ for unit in "$SCRIPT_DIR"/systemd/*.service "$SCRIPT_DIR"/systemd/*.timer; do
 done
 systemctl --user daemon-reload
 
+# Slack bridge — install deps + start the long-running service now (the loop
+# above only enables .service units; timers it starts). If SLACK_* tokens are
+# unset in .env the bridge boot-guards to exit 0, so starting it is harmless.
+if [ -d "$NEXUS_DIR/slack-bridge" ]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "  Installing slack-bridge dependencies..."
+    ( cd "$NEXUS_DIR/slack-bridge" && npm install --silent ) || true
+  else
+    echo "  WARNING: npm not found — slack-bridge deps not installed"
+  fi
+  systemctl --user restart slack-bridge.service 2>/dev/null || true
+  echo "  Started slack-bridge.service (no-ops if SLACK_* tokens are unset in .env)"
+fi
+
 # Merge claude settings
 mkdir -p "$HOME/.claude"
 
