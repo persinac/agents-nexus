@@ -400,6 +400,11 @@ tasks:
   # Autostart (macOS launchd)
   # =============================================================================
 
+  mac:audit:
+    desc: "Audit the Mac stack — launchd jobs loaded, Slack bridge healthy, classifier venv + routing deps present"
+    cmds:
+      - bash scripts/mac-audit.sh
+
   launchd:install:
     desc: Install launchd agent so Docker stack starts at login
     vars:
