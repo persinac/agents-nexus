@@ -9,6 +9,17 @@
       "Bash(ping *)",
       "Bash(gh search *)",
       "Bash(tasklist *)",
+      "Bash(docker exec:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker inspect:*)",
+      "Bash(python3:*)",
+      "Bash(curl:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git diff:*)",
+      "Bash(git fetch:*)",
       "mcp__excalidraw__read_checkpoint"
     ]
   }
