@@ -55,7 +55,21 @@ here; the agents you spawn are separate, reapable windows.
 | `REAP_IDLE_SECS` | `14400` (4h) | idle threshold |
 | `REAP_DRY_RUN` | `0` | `1` = log decisions, close nothing |
 | `REAP_EXCLUDE` | _(empty)_ | csv of extra names/panes to protect |
+| `REAP_ALL` | `0` | `1` = prune everything idle, command post included (see below) |
 | `TMUX_SESSION` | `agents` | session to scan |
+
+### `REAP_ALL` — unattended "leave it for days" boxes
+
+By default the reaper protects your command post (Mac: you're actively driving
+it). For a box that just sits idle — the personal Linux mini-pc — set
+`REAP_ALL=1` to prune **everything** idle, command post included, so the whole
+box gets checkpointed and cleaned without manual hygiene. It still honors
+`~/.tmux/overseer-exclude` / `$REAP_EXCLUDE`, and still won't yank a window an
+attached client is actively viewing (so an SSH session you're looking at is
+safe; everything gets cleaned once you detach and it goes idle).
+
+**The Linux systemd unit sets `REAP_ALL=1` by default; the Mac launchd job does
+not** (Mac = active driver, command post protected).
 
 Decisions + actions are logged to `~/.tmux/overseer-reap.log`; each reap also
 appends a `reap` event to `~/.tmux/apm.log`.

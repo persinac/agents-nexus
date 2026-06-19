@@ -18,11 +18,19 @@
 #       ~/.tmux/overseer-exclude (one name or %pane per line).
 #   - Skips actively-working agents (@waiting=0) and dead panes.
 #   - REAP_DRY_RUN=1 logs decisions without closing anything.
+#   - REAP_ALL=1 prunes EVERYTHING idle incl. the command post (drops the name +
+#     @orchestrator exemptions; keeps the exclude list + attached-window guard).
+#     For unattended "leave it for days" boxes — the Linux systemd unit sets it.
 set -uo pipefail
 
 IDLE_SECS="${REAP_IDLE_SECS:-14400}"          # 4 hours
 SESSION="${TMUX_SESSION:-agents}"
 DRY_RUN="${REAP_DRY_RUN:-0}"
+# REAP_ALL=1 — prune EVERYTHING idle, command post included: drops the automatic
+# orchestrator exemptions (the overseer/orchestrator name skip + the @orchestrator
+# tag). Still honors ~/.tmux/overseer-exclude/$REAP_EXCLUDE and still won't yank a
+# window an attached client is actively viewing. For "leave it for days" boxes.
+REAP_ALL="${REAP_ALL:-0}"
 NEXUS_DIR="${AGENTS_NEXUS_DIR:-$HOME/garner/repos/agents-nexus}"
 REGISTRY_DIR="$HOME/.tmux/registry"
 EXCLUDE_FILE="$HOME/.tmux/overseer-exclude"
@@ -52,9 +60,10 @@ if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout 180"
 elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 180"; fi
 
 # Build the exclude set (lowercased names + raw pane ids). The command-post
-# windows (`overseer`/`orchestrator`) are ALWAYS protected — they are where you
-# drive from, never agents to reap.
-EXCLUDES=" overseer orchestrator "
+# windows (`overseer`/`orchestrator`) are protected by name — unless REAP_ALL=1,
+# which prunes them too.
+EXCLUDES=" "
+[ "$REAP_ALL" != "1" ] && EXCLUDES=" overseer orchestrator "
 [ -n "${REAP_EXCLUDE:-}" ] && EXCLUDES="$EXCLUDES$(printf '%s' "$REAP_EXCLUDE" | tr ',' ' ' | tr '[:upper:]' '[:lower:]') "
 if [ -f "$EXCLUDE_FILE" ]; then
   while IFS= read -r line; do
@@ -87,9 +96,9 @@ for f in "$REGISTRY_DIR"/*; do
   # Dead pane? Leave it — agent-deregister cleans the registry on pane-died.
   tmux display-message -t "$PANE_ID" -p '#{pane_id}' >/dev/null 2>&1 || continue
 
-  # Hard exclusions: orchestrator tag, attached-and-viewed window, or an
-  # explicitly excluded name/pane.
-  if [ "$(tmux show-options -wqv -t "$PANE_ID" @orchestrator 2>/dev/null)" = "1" ]; then continue; fi
+  # Hard exclusions: orchestrator tag (unless REAP_ALL), attached-and-viewed
+  # window, or an explicitly excluded name/pane.
+  if [ "$REAP_ALL" != "1" ] && [ "$(tmux show-options -wqv -t "$PANE_ID" @orchestrator 2>/dev/null)" = "1" ]; then continue; fi
   if excluded "$NAME" || excluded "$PANE_ID"; then continue; fi
   PANE_WINDOW="$(tmux display-message -t "$PANE_ID" -p '#{window_id}' 2>/dev/null)"
   if [ -n "$ATTACHED_ACTIVE" ] && [ "$PANE_WINDOW" = "$ATTACHED_ACTIVE" ]; then continue; fi

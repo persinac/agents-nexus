@@ -10,5 +10,8 @@ WorkingDirectory=__AGENTS_NEXUS_DIR__
 ExecStart=__AGENTS_NEXUS_DIR__/scripts/overseer-reap.sh
 Environment=HOME=__HOME__
 Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+# This box is unattended for days — prune everything idle, command post included
+# (checkpointed first). Drop a name/%pane into ~/.tmux/overseer-exclude to spare it.
+Environment=REAP_ALL=1
 # tmux + claude must be reachable for the reaper and its checkpoint step.
 Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
