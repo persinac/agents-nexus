@@ -9,6 +9,23 @@ work() {
   fi
 }
 
+# overseer — open (or jump to) the dedicated command-post window. It registers
+# as `overseer` and self-tags @orchestrator, so the idle reaper never reaps it.
+# This is the window you drive from; agents you spawn are separate.
+overseer() {
+  local session="${TMUX_AGENT_SESSION:-agents}"
+  tmux has-session -t "$session" 2>/dev/null || tmux new-session -d -s "$session"
+  if ! tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -qx overseer; then
+    tmux new-window -d -t "$session" -n overseer -c "$HOME" "env PROJECT_SLUG=overseer $HOME/.tmux/open-claude.sh"
+  fi
+  if [ -n "$TMUX" ]; then
+    tmux switch-client -t "$session" 2>/dev/null
+    tmux select-window -t "${session}:overseer"
+  else
+    tmux attach -t "$session" \; select-window -t "${session}:overseer"
+  fi
+}
+
 # wt — manage agent worktrees
 wt() {
   local REPO_DIR="${REPO_DIR:-$HOME/repos}"

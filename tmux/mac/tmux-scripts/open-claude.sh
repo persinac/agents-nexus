@@ -34,6 +34,12 @@ MY_NAME="$project_slug"
 tmux rename-window -t "$MY_PANE_ID" "$MY_NAME" 2>/dev/null
 tmux set-window-option -t "$MY_PANE_ID" automatic-rename off 2>/dev/null
 
+# The command post (overseer/orchestrator) is where you drive from — never an
+# agent to reap. Tag it so the idle reaper protects it even if later renamed.
+case "$MY_NAME" in
+  overseer|orchestrator) tmux set-window-option -t "$MY_PANE_ID" @orchestrator 1 2>/dev/null ;;
+esac
+
 # ── Tag LLM traffic so Langfuse names the trace after this window ───────────
 # The proxy reads a `sess/<name>/` path prefix and uses it as the trace name +
 # session id; without it every agent shows up as "claude-code". Slugify to a

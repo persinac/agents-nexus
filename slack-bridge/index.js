@@ -52,6 +52,9 @@ const APP_TOKEN = process.env.SLACK_APP_TOKEN;
 const NEXUS_CHANNEL = process.env.SLACK_NEXUS_CHANNEL || '';
 const PORT = parseInt(process.env.SLACK_BRIDGE_PORT || '8788', 10);
 const THREAD_TTL_MS = 7 * 24 * 60 * 60 * 1000; // prune mappings older than 7 days
+// Proactive stale-card sweep cadence. Cards answered IN SLACK self-resolve; this
+// catches the ones answered locally in the CLI (or whose window closed).
+const PRUNE_INTERVAL_MS = parseInt(process.env.SLACK_PRUNE_INTERVAL_MS || '10000', 10);
 
 // Boot guard: on an un-provisioned box this is a clean no-op so launchd doesn't thrash.
 if (!BOT_TOKEN || !APP_TOKEN) {
@@ -282,6 +285,43 @@ async function replyInThread(channel, thread_ts, text) {
   try { await web.chat.postMessage({ channel, thread_ts, text }); } catch (e) {
     console.error(`[slack-bridge] reply failed: ${e.message}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Proactive prune sweep. A card is normally removed when answered IN SLACK, but
+// a prompt answered locally in the CLI/tmux (PreToolUse clears @wait_since) or an
+// agent whose window was closed leaves the card orphaned in #nexus until TTL —
+// the "12 stale prompts in a thread" problem. This applies the SAME staleness
+// test as the same-prompt guard (paneWaitSince mismatch / pane gone) across all
+// tracked cards and deletes the dead ones, so the channel only shows live asks.
+async function pruneStaleCards() {
+  let changed = false;
+  // Snapshot the entries up front — we delete from threadMap while iterating.
+  for (const [reqTs, entry] of [...threadMap]) {
+    // Without the guard fields we can't tell live from stale — leave to TTL.
+    if (!entry.pane || !entry.wait_since) continue;
+    // paneWaitSince returns null if the pane/window is gone, or the current
+    // @wait_since (different once the prompt is answered locally or superseded).
+    if (paneWaitSince(entry.pane) === entry.wait_since) continue;  // still the live prompt — keep
+    threadMap.delete(reqTs);
+    changed = true;
+    try { await web.chat.delete({ channel: entry.channel, ts: reqTs }); } catch { /* already gone / perms */ }
+    if (entry.root && pendingCount(entry.root) === 0) {
+      try { await web.chat.delete({ channel: entry.channel, ts: entry.root }); } catch { /* ignore */ }
+    }
+  }
+  if (changed) saveThreadMap();
+}
+
+// Reentrancy-guarded loop body for setInterval — a slow sweep (many chat.delete
+// calls) must not overlap the next tick.
+let pruning = false;
+async function pruneLoop() {
+  if (pruning || threadMap.size === 0) return;
+  pruning = true;
+  try { await pruneStaleCards(); }
+  catch (e) { console.error(`[slack-bridge] prune sweep error: ${e.message}`); }
+  finally { pruning = false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -556,5 +596,12 @@ const httpServer = http.createServer((req, res) => {
 
   socket.on('connected', () => { socketConnected = true; console.log('[slack-bridge] socket mode connected'); });
   socket.on('disconnected', () => { socketConnected = false; console.log('[slack-bridge] socket mode disconnected'); });
+
+  // Background sweep to retire cards answered locally / for closed windows.
+  if (NEXUS_CHANNEL) {
+    setInterval(pruneLoop, PRUNE_INTERVAL_MS);
+    console.log(`[slack-bridge] stale-card prune sweep every ${PRUNE_INTERVAL_MS}ms`);
+  }
+
   await socket.start();
 })();

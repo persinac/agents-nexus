@@ -1,0 +1,14 @@
+[Unit]
+Description=Overseer reaper — checkpoint + close agents idle >4h (opt-in)
+# OPT-IN: lives under systemd/optional/ so tmux/linux/install.sh does NOT
+# auto-enable it (it would otherwise start closing windows). Enable deliberately
+# with the steps in docs/overseer.md.
+
+[Service]
+Type=oneshot
+WorkingDirectory=__AGENTS_NEXUS_DIR__
+ExecStart=__AGENTS_NEXUS_DIR__/scripts/overseer-reap.sh
+Environment=HOME=__HOME__
+Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+# tmux + claude must be reachable for the reaper and its checkpoint step.
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin

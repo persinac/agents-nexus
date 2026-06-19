@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.overseer-reap</string>
+
+    <!-- OPT-IN job: closes agents idle >4h (checkpoint first). Lives under
+         launchd/optional/ so `launchd:install:all` does NOT sweep it in — you
+         enable it deliberately with `task launchd:install:overseer-reap`.
+         Login shell so ~/.zprofile populates PATH (tmux + claude for the
+         checkpoint). The script itself is fail-open and idempotent. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__ __AGENTS_NEXUS_DIR__/scripts/overseer-reap.sh</string>
+    </array>
+
+    <!-- Every 15 minutes. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-overseer-reap.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-overseer-reap.log</string>
+</dict>
+</plist>

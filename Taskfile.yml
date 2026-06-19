@@ -601,6 +601,33 @@ tasks:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
 
+  launchd:install:overseer-reap:
+    desc: "(opt-in, DESTRUCTIVE) Install launchd timer to close agents idle >4h (checkpoints first, every 15m)"
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" launchd/optional/com.agents-nexus.overseer-reap.plist > ~/Library/LaunchAgents/com.agents-nexus.overseer-reap.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.overseer-reap.plist
+      - echo "Installed — reaper runs every 15m. FIRST tag your command post (run overseer, or set-window-option @orchestrator 1). Logs at ~/.tmux/overseer-reap.log"
+
+  launchd:uninstall:overseer-reap:
+    desc: Remove the overseer reaper launchd timer
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.overseer-reap.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.overseer-reap.plist
+
+  overseer:reap:
+    desc: "Run the idle-agent reaper once (closes agents idle >4h, checkpoint first)"
+    cmds:
+      - bash scripts/overseer-reap.sh
+
+  overseer:reap:dry:
+    desc: "Dry-run the reaper — log what WOULD be closed, change nothing (REAP_IDLE_SECS=0 to see all)"
+    cmds:
+      - REAP_DRY_RUN=1 bash scripts/overseer-reap.sh
+      - 'echo "decisions logged to ~/.tmux/overseer-reap.log"'
+
   perm:suggest:
     desc: Scan recent transcripts and propose safe permission-allowlist additions (propose-only)
     cmds:
