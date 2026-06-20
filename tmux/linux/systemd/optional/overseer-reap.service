@@ -14,4 +14,9 @@ Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
 # (checkpointed first). Drop a name/%pane into ~/.tmux/overseer-exclude to spare it.
 Environment=REAP_ALL=1
 # tmux + claude must be reachable for the reaper and its checkpoint step.
-Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+# `claude` is installed via fnm at ~/.local/share/fnm/aliases/default/bin (the
+# stable `default` alias symlink), NOT ~/.local/bin — so it MUST be on PATH here
+# or checkpoint-transcript.sh fails its `command -v claude` guard, exits 0 (fail
+# open), and agents get reaped WITHOUT a checkpoint. (Same fnm-PATH gotcha as the
+# display-popup window-launch bug.)
+Environment=PATH=__HOME__/.local/share/fnm/aliases/default/bin:__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin

@@ -29,7 +29,11 @@ command -v jq >/dev/null 2>&1 || exit 0
 TRANSCRIPT="${TRANSCRIPT/#\~/$HOME}"
 [ -f "$TRANSCRIPT" ] || exit 0
 
-NEXUS_DIR="${AGENTS_NEXUS_DIR:-$HOME/garner/repos/agents-nexus}"
+# Prefer the env the caller sets (overseer-reap.service / auto-checkpoint hook);
+# else derive the repo root from this script's own location (scripts/..) so it
+# works on any box — the old hardcoded ~/garner/repos/agents-nexus was a Mac-ism
+# that silently broke the .env/API-key lookup elsewhere.
+NEXUS_DIR="${AGENTS_NEXUS_DIR:-$(cd "$(dirname "$(readlink -f "$0")")/.." 2>/dev/null && pwd)}"
 STATE_DIR="$HOME/.claude/auto-checkpoint"
 MCP_CONFIG="$STATE_DIR/mcp.json"
 CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
