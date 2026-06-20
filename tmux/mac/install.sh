@@ -18,6 +18,29 @@ for script in "$SCRIPT_DIR"/tmux-scripts/*.py; do
   ln -sf "$script" "$HOME/.tmux/$(basename "$script")"
 done
 
+# Auto-approve classifier venv — the permission-prompt gate (notify-classify.py)
+# runs under this venv. hook-notification.sh skips the gate entirely when the venv
+# is absent, so without this the read-only auto-approve silently never fires.
+# Idempotent: only (re)builds when `import litellm` fails. Non-fatal — a failure
+# just leaves the gate inert, which is the same as the pre-existing behavior.
+CLASSIFY_VENV="$HOME/.tmux/.classify-venv"
+CLASSIFY_PY="$CLASSIFY_VENV/bin/python"
+if ! "$CLASSIFY_PY" -c "import litellm" >/dev/null 2>&1; then
+  echo "Provisioning auto-approve classifier venv (~/.tmux/.classify-venv)..."
+  if python3 -m venv "$CLASSIFY_VENV" >/dev/null 2>&1; then
+    "$CLASSIFY_PY" -m pip install -q --upgrade pip >/dev/null 2>&1 || true
+    if "$CLASSIFY_PY" -m pip install -q litellm >/dev/null 2>&1; then
+      echo "  Installed litellm — read-only auto-approve gate is now live"
+    else
+      echo "  WARNING: litellm install failed — auto-approve gate stays inert (prompts fall through to Slack)"
+    fi
+  else
+    echo "  WARNING: venv creation failed (python3 -m venv) — gate stays inert until resolved"
+  fi
+else
+  echo "Auto-approve classifier venv OK (litellm importable)"
+fi
+
 # Launchd agents — substitute __HOME__ and __AGENTS_NEXUS_DIR__ placeholders
 NEXUS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 mkdir -p "$HOME/Library/LaunchAgents"

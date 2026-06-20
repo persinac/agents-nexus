@@ -31,6 +31,29 @@ for script in "$MAC_DIR"/tmux-scripts/*.sh "$MAC_DIR"/tmux-scripts/*.py; do
   fi
 done
 
+# Auto-approve classifier venv — the permission-prompt gate (notify-classify.py)
+# runs under this venv. hook-notification.sh skips the gate entirely when the venv
+# is absent, so without this the read-only auto-approve silently never fires.
+# Idempotent: only (re)builds when `import litellm` fails. Non-fatal — a failure
+# just leaves the gate inert, which is the same as the pre-existing behavior.
+CLASSIFY_VENV="$HOME/.tmux/.classify-venv"
+CLASSIFY_PY="$CLASSIFY_VENV/bin/python"
+if ! "$CLASSIFY_PY" -c "import litellm" >/dev/null 2>&1; then
+  echo "Provisioning auto-approve classifier venv (~/.tmux/.classify-venv)..."
+  if python3 -m venv "$CLASSIFY_VENV" >/dev/null 2>&1; then
+    "$CLASSIFY_PY" -m pip install -q --upgrade pip >/dev/null 2>&1 || true
+    if "$CLASSIFY_PY" -m pip install -q litellm >/dev/null 2>&1; then
+      echo "  Installed litellm — read-only auto-approve gate is now live"
+    else
+      echo "  WARNING: litellm install failed — auto-approve gate stays inert (prompts fall through to Slack)"
+    fi
+  else
+    echo "  WARNING: venv creation failed — on Debian/Ubuntu run 'sudo apt install python3-venv', then re-run this script. Gate stays inert until then."
+  fi
+else
+  echo "Auto-approve classifier venv OK (litellm importable)"
+fi
+
 # Write machine-specific env (sourced by tmux scripts at runtime).
 # NOTES_DIR is intentionally not seeded — open-claude.sh now resolves
 # CHECKPOINT_DIR first and only falls back to NOTES_DIR for older installs.
