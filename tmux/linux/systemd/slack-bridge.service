@@ -9,7 +9,11 @@ Wants=tmux-agents-session.service
 [Service]
 Type=simple
 WorkingDirectory=__AGENTS_NEXUS_DIR__/slack-bridge
-ExecStart=__NODE_BIN__ index.js
+# Secrets come from Doppler (nexus/prd), not repo-root .env. `doppler run` injects
+# SLACK_* into the process env; index.js's .env loader stays as a harmless fallback.
+# Pinned to -p/-c so it ignores whatever scope the working dir inherits. Needs the
+# Doppler CLI authed for this user (~/.doppler, found via HOME below).
+ExecStart=__DOPPLER_BIN__ run -p nexus -c prd -- __NODE_BIN__ index.js
 # Restart only on a CRASH (non-zero exit). The bridge boot-guards to a clean
 # exit 0 when SLACK_BOT_TOKEN / SLACK_APP_TOKEN are unset; on-failure (not
 # always) keeps an un-provisioned box from thrashing — mirrors the launchd
