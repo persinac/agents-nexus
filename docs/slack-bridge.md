@@ -214,6 +214,26 @@ so each inter-agent message gets its own turn. `#nexus-agents` is the durable re
 4. Verify: `curl :8788/health` shows `"bus":true`; a `--via-slack` send to a local
    agent round-trips through `#nexus-agents` and is delivered with the `↩ from` tag.
 
+#### Per-host rollout (e.g. a second box / the Mac work machine)
+
+Steps 1–2 are **app- and Doppler-level — done once for the whole fleet** (Doppler
+`nexus/prd` is shared across hosts, so the bridge-side flags already apply
+everywhere). Bringing the bus up on another box is just local plumbing:
+
+1. `git pull` (the bridge code + `agent-send.sh` are shared/symlinked; nothing host-specific to port).
+2. Make sure the **Doppler CLI is authed** for that user — the bridge is launched via
+   `doppler run -p nexus -c prd` (systemd unit on Linux, launchd plist on macOS), so
+   without it the service won't start.
+3. Run the installer (`bash tmux/linux/install.sh` or `bash tmux/mac/install.sh`) — it
+   seeds `SLACK_BUS_ENABLED` + `SLACK_A2A_SAMEHOST` into `~/.tmux/env.sh` (default
+   off/local) and reinstalls the service.
+4. Opt in locally: set `SLACK_BUS_ENABLED=1` (and `SLACK_A2A_SAMEHOST=channel` for the
+   idle-gated buffer) in that box's `~/.tmux/env.sh`. Restart the bridge; **relaunch
+   agents** so they pick up the exported env.
+5. `curl :8788/health` → `"bus":true`. Same-host A2A now buffers through `#nexus-agents`
+   and delivers on idle — independently on each box (no cross-host coordination needed
+   unless both bridges run against the same channel at once + presence is enabled).
+
 > **Windows parity:** the dual-mode logic lives in `tmux/mac/tmux-scripts/agent-send.sh`
 > (symlinked as `~/.tmux/agent-send.sh` on mac + Linux). The Windows copy
 > (`tmux/windows/tmux-scripts/agent-send.sh`) is not yet updated and remains local-only.

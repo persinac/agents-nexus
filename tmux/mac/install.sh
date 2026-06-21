@@ -62,6 +62,12 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/notes}\"" >> "$ENV_FILE"
   echo "AGENTS_NEXUS_DIR=\"\${AGENTS_NEXUS_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}\"" >> "$ENV_FILE"
   echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-8}\"" >> "$ENV_FILE"
+  # Inter-agent Slack bus (A2A). EXPORTED so agent-send.sh (an agent subprocess)
+  # sees them. SLACK_BUS_ENABLED: attempt the bus for a non-local name (opt-in,
+  # off by default). SLACK_A2A_SAMEHOST=channel: route same-host NAME peers through
+  # the bus so they're buffered + delivered when the recipient is idle.
+  echo "export SLACK_BUS_ENABLED=\"\${SLACK_BUS_ENABLED:-0}\"" >> "$ENV_FILE"
+  echo "export SLACK_A2A_SAMEHOST=\"\${SLACK_A2A_SAMEHOST:-local}\"" >> "$ENV_FILE"
   echo "Created ~/.tmux/env.sh (edit REPO_DIR/NOTES_DIR/AGENTS_NEXUS_DIR if your paths differ)"
 else
   # Add NOTES_DIR if missing
@@ -89,6 +95,15 @@ else
   if ! grep -q "CLAUDE_MODEL" "$ENV_FILE"; then
     echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-8}\"" >> "$ENV_FILE"
     echo "Added CLAUDE_MODEL to ~/.tmux/env.sh"
+  fi
+  # Inter-agent Slack bus (A2A) — EXPORTED so agent-send.sh (an agent subprocess) sees them.
+  if ! grep -q "SLACK_BUS_ENABLED" "$ENV_FILE"; then
+    echo "export SLACK_BUS_ENABLED=\"\${SLACK_BUS_ENABLED:-0}\"" >> "$ENV_FILE"
+    echo "Added SLACK_BUS_ENABLED to ~/.tmux/env.sh"
+  fi
+  if ! grep -q "SLACK_A2A_SAMEHOST" "$ENV_FILE"; then
+    echo "export SLACK_A2A_SAMEHOST=\"\${SLACK_A2A_SAMEHOST:-local}\"" >> "$ENV_FILE"
+    echo "Added SLACK_A2A_SAMEHOST to ~/.tmux/env.sh"
   fi
 fi
 
