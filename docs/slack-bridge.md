@@ -179,6 +179,14 @@ the prompt) and a **window with no registered agent** (there's no name to route 
 > its own delivery calls, so a final-hop send-keys can never re-route back through the
 > bus and loop, regardless of ambient config.
 
+**Launch-caveat nudge.** `SLACK_A2A_SAMEHOST` is read at agent **launch**, so an agent
+started before you set `=channel` keeps doing local `send-keys` until relaunched — the
+classic "why didn't it hit the channel?" trap. To surface it, when the bus is on but a
+message to a real agent goes local only because same-host routing is off, `agent-send.sh`
+prints a one-line **stderr** note (`delivered locally — SLACK_A2A_SAMEHOST≠channel …`).
+It's silent for digits/unregistered windows (which stay local by design), in channel mode,
+and for the bridge's own deliveries (`SLACK_A2A_NUDGE=0`).
+
 ### Idle-gated delivery (`SLACK_BUS_DEFER`, default on)
 
 Every bus delivery is gated on the recipient's `@waiting` window-option (the
@@ -197,7 +205,8 @@ so each inter-agent message gets its own turn. `#nexus-agents` is the durable re
 | `SLACK_BUS_ENABLED` | `0` (off) | Master switch. On the **bridge** it enables `POST /send` + delivery on `#nexus-agents`. In an **agent's** env it tells `agent-send.sh` to attempt the bus for a non-local name (else it prints "Agent not found", as today). |
 | `SLACK_AGENTS_CHANNEL` | — | Channel id of `#nexus-agents`. Required on the bridge for the bus to be live. |
 | `SLACK_BRIDGE_PORT` | `8788` | Port `agent-send.sh` POSTs `/send` to (shared with `/notify`). |
-| `SLACK_A2A_SAMEHOST` | `local` | **Agent env.** `local` = same-host A2A via instant `send-keys`; `channel` = route same-host NAME targets through the bus so they're buffered + idle-gated. |
+| `SLACK_A2A_SAMEHOST` | `local` | **Agent env.** `local` = same-host A2A via instant `send-keys`; `channel` = route same-host targets (name, or slot/%pane resolved to name) through the bus so they're buffered + idle-gated. |
+| `SLACK_A2A_NUDGE` | `1` | Agent env. `1` = print the launch-caveat stderr note when a message to a real agent goes local only because routing is off. The bridge sets `0` on its own deliveries. |
 | `SLACK_BUS_DEFER` | `1` (on) | **Bridge.** Idle-gate bus delivery: inject only when the recipient is idle (`@waiting=2`), else queue + flush on idle. `0` = immediate `send-keys`. |
 | `SLACK_BUS_FLUSH_MS` | `4000` | Bridge: how often the queue-flush poll runs. |
 | `SLACK_BUS_QUEUE_MAX` | `50` | Bridge: max held messages per pane; oldest dropped beyond (still in `#nexus-agents`). |

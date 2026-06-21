@@ -42,6 +42,10 @@ BUS_ENABLED="${SLACK_BUS_ENABLED:-0}"
 # Same-host routing: 'local' (fast send-keys, default) or 'channel' (route NAME
 # targets through #nexus-agents for visibility, with a local fallback).
 SAMEHOST_MODE="${SLACK_A2A_SAMEHOST:-local}"
+# Emit a one-line stderr nudge when a message to a real agent goes LOCAL only
+# because same-host channel routing is off (the launch-caveat trap). The bridge
+# sets SLACK_A2A_NUDGE=0 on its own deliveries (which are intentionally local).
+NUDGE="${SLACK_A2A_NUDGE:-1}"
 
 # Flatten to single line — newlines break both send-keys and the JSON payload.
 MSG=$(printf '%s' "$MSG" | tr '\n' ' ' | sed 's/  */ /g; s/^ *//; s/ *$//')
@@ -157,6 +161,15 @@ if [ -n "$DEST" ]; then
       route_via_bus "$route_name" && exit 0
       echo "bus: unreachable — delivering locally instead"
     fi
+  fi
+  # Launch-caveat nudge: the bus is on and this targets a real agent, but it went
+  # local because same-host routing is off — so it did NOT post to #nexus-agents.
+  # (Skipped for digits/unregistered windows, which stay local by design, and for
+  # the bridge's own deliveries via SLACK_A2A_NUDGE=0.)
+  if [ "$NUDGE" = "1" ] && [ "$BUS_ENABLED" = "1" ] && [ "$SAMEHOST_MODE" != "channel" ] \
+     && [ "$FORCE_LOCAL" != "1" ] && ! [[ "$MSG" =~ ^[0-9]$ ]]; then
+    rn="$TARGET"; [ "$TARGET_IS_NAME" = "1" ] || rn="$(resolve_pane_name "$DEST" "$TARGET")"
+    [ -n "$rn" ] && echo "note: delivered locally — SLACK_A2A_SAMEHOST≠channel, so this did NOT post to #nexus-agents. Set it to 'channel' (and relaunch this agent) for channel routing." >&2
   fi
   deliver_local "$DEST"; exit 0
 fi

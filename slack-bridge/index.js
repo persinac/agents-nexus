@@ -330,7 +330,7 @@ function cleanSlackText(text) {
 // stay local send-keys. Force SLACK_A2A_SAMEHOST=local in the child env so a
 // delivery can never re-route a pane back through the bus and loop, regardless of
 // how the bridge's ambient env happens to be configured.
-const DELIVER_ENV = { ...process.env, SLACK_A2A_SAMEHOST: 'local' };
+const DELIVER_ENV = { ...process.env, SLACK_A2A_SAMEHOST: 'local', SLACK_A2A_NUDGE: '0' };
 
 function deliverToPane(pane, text) {
   try {
