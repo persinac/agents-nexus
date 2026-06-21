@@ -76,6 +76,7 @@ const SPAWN_ENABLED = process.env.SLACK_SPAWN_ENABLED === '1';
 const AGENTS_NEXUS_DIR = process.env.AGENTS_NEXUS_DIR || join(HOME, 'repos', 'agents-nexus');
 const SPAWN_SESSION = process.env.SLACK_SPAWN_SESSION || 'agents';
 const SPAWN_ALLOWLIST_FILE = process.env.SLACK_SPAWN_ALLOWLIST_FILE || join(HOME, '.tmux', 'spawnable-repos.json');
+const SPAWN_SUMMARIES_FILE = process.env.SLACK_SPAWN_SUMMARIES_FILE || join(HOME, '.tmux', 'spark-summaries.json'); // Spark-derived desc cache (scripts/spark-summary.py); hand-written desc overrides
 const SPAWN_MIN_SCORE = parseFloat(process.env.SLACK_SPAWN_MIN_SCORE || '0'); // (legacy Spark resolver) permissive: the confirm card is the gate
 const SPAWN_MIN_CONFIDENCE = parseFloat(process.env.SLACK_SPAWN_MIN_CONFIDENCE || '0.5'); // repo classifier floor
 const SPAWN_RATE_MAX = parseInt(process.env.SLACK_SPAWN_RATE_MAX || '3', 10);
@@ -506,7 +507,7 @@ function spawnableListMsg(entries) {
 async function offerSpawn(channel, threadTs, text, requester, opts = {}) {
   const explicit = !!opts.explicit;
   const allow = orch.loadAllowlist(SPAWN_ALLOWLIST_FILE);
-  const entries = orch.allowlistEntries(allow);
+  const entries = orch.mergeSummaries(orch.allowlistEntries(allow), orch.loadSummaries(SPAWN_SUMMARIES_FILE));
   console.log(`[orch-debug] offerSpawn${explicit ? '(explicit)' : ''} allowlist=[${entries.map((e) => e.name).join(',')}]`);
   if (!entries.length) {
     if (explicit) { await replyInThread(channel, threadTs, ':warning: no repos are on the spawnable allowlist yet.'); return true; }

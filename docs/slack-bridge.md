@@ -60,13 +60,23 @@ bridge can offer to spin one up instead of just showing the usage hint. This is
 
 Flow:
 
-1. **Resolve the repo.** `scripts/spark-resolve.py` asks the live Spark MCP
-   service (`localhost:8343`) which repo the message is about.
-2. **Allowlist + path.** The resolved repo must be a key in the spawnable-repo
-   allowlist (`~/.tmux/spawnable-repos.json` by default) — a JSON object mapping
-   repo name → absolute local checkout path. This is both the safety gate and the
-   name→path resolver (Spark indexes many repos that aren't cloned here). A repo
-   not on the list is never offered.
+1. **Resolve the repo.** An LLM classifier (haiku) picks which *spawnable* repo
+   the message concerns, matching it against each allowlisted repo's name +
+   description. This replaced a Spark index lookup — we only ever spawn
+   allowlisted repos, so classifying within that small, described set is more
+   reliable than embedding a one-line message against the whole index.
+   (`scripts/spark-resolve.py`, the MCP resolver, stays in-tree but is no longer
+   on the spawn path.)
+2. **Allowlist + path.** The repo must be a key in the spawnable-repo allowlist
+   (`~/.tmux/spawnable-repos.json` by default) — a JSON object mapping repo name →
+   `{ "path": "/abs/checkout", "desc": "what it is" }` (a bare path string still
+   works). This is both the safety gate and the name→path resolver (Spark indexes
+   many repos that aren't cloned here). A repo not on the list is never offered.
+   The **descriptions** feed the classifier and auto-fill from Spark:
+   `scripts/spark-summary.py` distills each repo's Spark `installation_summary`
+   into `~/.tmux/spark-summaries.json`, which the bridge merges in — a hand-written
+   `desc` always overrides. `nightly-spark.service` refreshes that cache after each
+   nightly index sync (`ExecStartPost`).
 3. **Confirm.** The bridge posts a Block Kit *"Spin up an agent in `repo`? [🚀 / No]"*
    card. **Nothing spawns without an explicit click** — a No, or a 5-minute
    timeout, cancels and releases the lock.
@@ -108,14 +118,16 @@ systemd-persistent. What sweeps them while you're away is the overseer reaper
 | Var | Default | Meaning |
 | --- | --- | --- |
 | `SLACK_SPAWN_ENABLED` | `0` (off) | Master switch for the spawn branch + restore/nudge. Off ⇒ original usage-hint behavior, zero change. |
-| `SLACK_SPAWN_ALLOWLIST_FILE` | `~/.tmux/spawnable-repos.json` | JSON `{ "repo": "/abs/path", … }`. See `slack-bridge/spawnable-repos.example.json`. |
+| `SLACK_SPAWN_ALLOWLIST_FILE` | `~/.tmux/spawnable-repos.json` | JSON `{ "repo": { "path": "/abs", "desc": "…" }, … }` (a bare path string is also accepted). See `slack-bridge/spawnable-repos.example.json`. |
+| `SLACK_SPAWN_SUMMARIES_FILE` | `~/.tmux/spark-summaries.json` | Spark-derived description cache (`scripts/spark-summary.py`); fills any repo with no hand-written `desc`. Refreshed nightly. |
 | `SLACK_SPAWN_SESSION` | `agents` | tmux session to spawn into. |
-| `SLACK_SPAWN_MIN_SCORE` | `0` | Min Spark score to offer a spawn. Permissive by default — the confirm card is the real gate (Spark scores are small/reranked). |
+| `SLACK_SPAWN_MIN_CONFIDENCE` | `0.5` | Min repo-classifier confidence to offer a spawn. |
+| `SLACK_SPAWN_MIN_SCORE` | `0` | _Legacy_ Spark-resolver score floor — the resolver is off the spawn path; kept for the in-tree `spark-resolve.py`. |
 | `SLACK_SPAWN_RATE_MAX` | `3` | Max spawns per rolling window. |
 | `SLACK_SPAWN_RATE_WINDOW_MS` | `600000` | Rate-limit window (10 min). |
 | `SLACK_SPAWN_CONFIRM_TTL_MS` | `300000` | Confirm-card lifetime before it expires + releases the lock (5 min). |
 | `SLACK_NUDGE_MIN_INTERVAL_MS` | `3600000` | Min gap between reconnect nudges (1 h). |
-| `SLACK_SPARK_PYTHON` | `$AGENTS_NEXUS_DIR/spark/.venv/bin/python` | Interpreter for the Spark resolver (needs the `mcp` SDK). |
+| `SLACK_SPARK_PYTHON` | `$AGENTS_NEXUS_DIR/spark/.venv/bin/python` | Interpreter for the Spark resolver/summary scripts (needs the `mcp` SDK). |
 | `SLACK_OPEN_CLAUDE` | `~/.tmux/open-claude.sh` | Launch script used for spawns/restores. |
 | `AGENT_LEDGER` | `~/.tmux/agent-ledger.jsonl` | Durable agent ledger path (shared with the reaper). |
 

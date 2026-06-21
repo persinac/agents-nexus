@@ -67,6 +67,29 @@ export function allowlistEntries(allowlist) {
     .map(([name, v]) => ({ name, ...normalizeEntry(v) }));
 }
 
+// Spark-derived descriptions cache: { repo -> description }, produced by
+// scripts/spark-summary.py from the live Spark index (auto-maintained nightly).
+// Best-effort: a missing/garbage file yields {} so the classifier still runs on
+// whatever hand-written descriptions exist. Re-read on each call like the
+// allowlist, so a nightly refresh takes effect without a bridge restart.
+export function loadSummaries(file) {
+  try {
+    if (!file || !existsSync(file)) return {};
+    const obj = JSON.parse(readFileSync(file, 'utf8'));
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch {
+    return {};
+  }
+}
+
+// Fill each entry's `desc` from the Spark cache ONLY where no hand-written desc
+// exists — a hand-written description in the allowlist always wins (it is the
+// curator's override). Returns a new array; never mutates its inputs.
+export function mergeSummaries(entries, summaries) {
+  const cache = summaries || {};
+  return entries.map((e) => (e.desc ? e : { ...e, desc: cache[e.name] || '' }));
+}
+
 // --------------------------------------------------------------------------
 // Spark repo resolution — shell out to scripts/spark-resolve.py (which talks to
 // the live Spark MCP service). Returns { repo, score } or null. NEVER throws.
