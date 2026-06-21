@@ -20,9 +20,9 @@ import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { execFileSync } from 'child_process';
 import {
-  readFileSync, writeFileSync, renameSync, existsSync, readdirSync,
+  readFileSync, writeFileSync, renameSync, existsSync, readdirSync, watch,
 } from 'fs';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import { SocketModeClient, LogLevel } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
 import * as orch from './orchestrator.js';
@@ -89,6 +89,42 @@ const SPARK_RESOLVE_SCRIPT = process.env.SLACK_SPARK_RESOLVE || join(AGENTS_NEXU
 const LEDGER_PYTHON = process.env.SLACK_LEDGER_PYTHON || 'python3';
 const LEDGER_SCRIPT = process.env.SLACK_LEDGER_SCRIPT || join(AGENTS_NEXUS_DIR, 'scripts', 'agent-ledger.py');
 const LEDGER_FILE = process.env.AGENT_LEDGER || join(HOME, '.tmux', 'agent-ledger.jsonl');
+
+// --- Inter-agent bus (opt-in; default OFF) ---
+// Routes agent-to-agent messages that can't be delivered locally through Slack,
+// so agents on different hosts can talk. agent-send.sh stays local-first
+// (send-keys); only a non-local target (or --via-slack) hits POST /send, which
+// posts an addressed, sender-tagged line to SLACK_AGENTS_CHANNEL. Every host's
+// bridge sees it over Socket Mode and the one whose registry owns the target
+// delivers it (handleBusMessage). Inert unless both vars are set.
+const BUS_ENABLED = process.env.SLACK_BUS_ENABLED === '1';
+const AGENTS_CHANNEL = process.env.SLACK_AGENTS_CHANNEL || '';
+
+// --- Presence registry (Phase 2; opt-in on top of the bus; default OFF) ---
+// Each bridge announces its live local agent set on the bus channel and consumes
+// peers into presenceMap (host -> { agents:Set, ts, seen }). From it we derive a
+// single deterministic owner per name (lexically-smallest claiming host) so
+// exactly one host delivers a remote-addressed message, detect name collisions,
+// and answer reachability (GET /agents). Reuses the Socket Mode fan-out — no
+// shared store. Inert unless SLACK_PRESENCE_ENABLED=1 (keeps Phase 1 unchanged).
+const SELF_HOST = (process.env.SLACK_PRESENCE_HOST || hostname() || 'unknown').trim();
+const PRESENCE_ENABLED = BUS_ENABLED && !!AGENTS_CHANNEL && process.env.SLACK_PRESENCE_ENABLED === '1';
+const PRESENCE_HEARTBEAT_MS = parseInt(process.env.SLACK_PRESENCE_HEARTBEAT_MS || '300000', 10); // 5 min
+const PRESENCE_TTL_MS = parseInt(process.env.SLACK_PRESENCE_TTL_MS || String(16 * 60 * 1000), 10); // ~3 missed beats
+const presenceMap = new Map(); // host -> { agents:Set<string>, ts, seen }
+
+// --- Idle-gated bus delivery (default ON when the bus is on) ---
+// A bus message is a real keystroke injection (send-keys). Injected into an agent
+// that is mid-task it gets lost or interrupts the run. So delivery is gated on the
+// recipient's `@waiting` window-option (the hook-maintained state the arbiter +
+// reaper read): deliver only when it is idle at the prompt (`@waiting=2`); when it
+// is working (`0`/unset) or at a permission prompt (`1`), hold the message in a
+// per-pane queue and flush it when the agent next goes idle. The channel is the
+// durable record (replay/audit); the queue makes delivery non-lossy + non-interrupting.
+const BUS_DEFER = BUS_ENABLED && process.env.SLACK_BUS_DEFER !== '0';
+const BUS_FLUSH_MS = parseInt(process.env.SLACK_BUS_FLUSH_MS || '4000', 10);
+const BUS_QUEUE_MAX = parseInt(process.env.SLACK_BUS_QUEUE_MAX || '50', 10); // per pane; oldest dropped beyond (still in channel)
+const busQueue = new Map(); // pane -> [{ target, body, at }]
 
 // Boot guard: on an un-provisioned box this is a clean no-op so launchd doesn't thrash.
 if (!BOT_TOKEN || !APP_TOKEN) {
@@ -853,8 +889,178 @@ async function handleReaction(event) {
   }
 }
 
+// Presence: this host's live local agent names. Reads the registry, then keeps
+// only names whose pane is actually alive (registry files persist briefly after
+// a window closes) so we never announce a dead agent. If tmux is unreachable we
+// fall back to announcing all registry names rather than going dark.
+function localLiveAgents() {
+  const reg = loadRegistry();
+  if (!reg.length) return [];
+  let live = null;
+  try {
+    const out = execFileSync('tmux', ['list-panes', '-a', '-F', '#{pane_id}'], { encoding: 'utf8', timeout: 3000 });
+    live = new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
+  } catch { live = null; }
+  const names = new Set();
+  for (const a of reg) {
+    if (!a.name) continue;
+    if (live && a.pane && !live.has(a.pane)) continue; // stale registry file — pane gone
+    names.add(a.name);
+  }
+  return Array.from(names);
+}
+
+// Throttle the re-announce-on-new-host nudge so a fleet booting together can't
+// trigger a publish storm.
+let lastPresencePublish = 0;
+
+// Announce this host's live agent set on the bus channel (full-state snapshot)
+// and update our own presence entry synchronously so deliveries don't wait for
+// the round-trip. Best-effort; never throws.
+async function publishPresence() {
+  if (!PRESENCE_ENABLED) return;
+  const agents = localLiveAgents();
+  const ts = Math.floor(Date.now() / 1000);
+  orch.applyPresence(presenceMap, { host: SELF_HOST, agents, ts }, { now: Date.now() });
+  try {
+    await web.chat.postMessage({ channel: AGENTS_CHANNEL, text: orch.formatPresence({ host: SELF_HOST, agents, ts }) });
+  } catch (e) {
+    console.error(`[presence] publish failed: ${e.message}`);
+  }
+}
+
+// Consume a peer's presence snapshot into the map; warn on any name collision.
+// Re-announce ourselves when a host we hadn't seen appears, so a freshly-booted
+// bridge learns the fleet (and is learned) without waiting a full heartbeat.
+function consumePresence(snap) {
+  if (!PRESENCE_ENABLED || !snap) return;
+  const isNewHost = snap.host !== SELF_HOST && !presenceMap.has(snap.host);
+  orch.applyPresence(presenceMap, snap, { now: Date.now() });
+  const cols = orch.presenceCollisions(presenceMap);
+  if (cols.length) {
+    console.warn(`[presence] name collision: ${cols.map((c) => `${c.name}@{${c.hosts.join(',')}}`).join(' ')}`);
+  }
+  if (isNewHost) {
+    const since = Date.now() - lastPresencePublish;
+    if (since > 8000) { lastPresencePublish = Date.now(); publishPresence().catch(() => {}); }
+  }
+}
+
+// `@waiting` for a pane's window (hook-maintained; same option the arbiter +
+// reaper read): '2' = idle/done at the prompt, '1' = at a permission prompt,
+// '0'/'' = actively working. Empty on any error / non-agent window.
+function paneWaiting(pane) {
+  if (!pane) return '';
+  try {
+    return execFileSync('tmux', ['show-options', '-wqv', '-t', pane, '@waiting'], { encoding: 'utf8', timeout: 3000 }).trim();
+  } catch { return ''; }
+}
+
+// Hold a bus message for a busy recipient. Bounded per pane so a perpetually-busy
+// agent can't grow it without limit (oldest dropped — still in #nexus-agents).
+function enqueueBus(pane, target, body) {
+  const q = busQueue.get(pane) || [];
+  q.push({ target, body, at: Date.now() });
+  while (q.length > BUS_QUEUE_MAX) {
+    q.shift();
+    console.warn(`[bus] queue for ${target} (${pane}) over ${BUS_QUEUE_MAX} — dropped oldest (still in channel)`);
+  }
+  busQueue.set(pane, q);
+}
+
+// Flush poll: deliver ONE queued message to each now-idle recipient; drop queues
+// for dead panes. One per tick — after a send-keys the agent goes busy, so the
+// next message waits for its next idle window (each gets its own turn rather than
+// being concatenated into one input).
+function flushBusQueue() {
+  if (!busQueue.size) return;
+  let live = null;
+  try {
+    const out = execFileSync('tmux', ['list-panes', '-a', '-F', '#{pane_id}'], { encoding: 'utf8', timeout: 3000 });
+    live = new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
+  } catch { live = null; }
+  for (const [pane, q] of busQueue) {
+    if (live && !live.has(pane)) {
+      busQueue.delete(pane);
+      console.warn(`[bus] dropped ${q.length} queued msg(s) for dead pane ${pane} (still in channel)`);
+      continue;
+    }
+    if (!q.length) { busQueue.delete(pane); continue; }
+    if (paneWaiting(pane) !== '2') continue;     // still busy / at a prompt — keep holding
+    const msg = q[0];
+    const res = deliverToPane(pane, msg.body);
+    if (res.ok) {
+      q.shift();
+      flashPane(pane, 'bus msg');
+      console.log(`[bus] flushed to ${msg.target} (${pane}) after idle: ${msg.body.slice(0, 60)}`);
+    } else {
+      console.error(`[bus] flush to ${msg.target} (${pane}) failed: ${res.error}`);  // keep queued, retry next tick
+    }
+    if (!q.length) busQueue.delete(pane);
+  }
+}
+
+// Inter-agent bus delivery: a message on the dedicated agents channel, of the
+// form `to: text` (posted by some host's /send). Deliver to `to` ONLY if it is a
+// live agent in THIS host's registry; otherwise ignore (another host owns it).
+// This never posts anything back, so there is no feedback loop. The delivered
+// text already carries the `↩ from <sender>:` prefix, baked in at post time.
+async function handleBusMessage(event) {
+  if (!event.text) return;
+  const m = cleanSlackText(event.text).match(/^([A-Za-z0-9][\w.-]*)\s*:\s*([\s\S]+)$/);
+  if (!m) return;                          // not an addressed bus message — ignore
+  const target = m[1];
+  const body = m[2].trim();
+  const agent = resolveByName(target);     // local registry only
+  if (!agent) return;                      // not ours — the owning host delivers
+  // Single-owner rule (Phase 2): if presence positively designates another host
+  // as the owner of this name, defer to it even though our local registry also
+  // matches (our entry may be stale, or it's a genuine collision). Presence
+  // unavailable / no positive owner → fall back to Phase 1 (local match wins).
+  if (PRESENCE_ENABLED) {
+    const owner = orch.ownerOf(presenceMap, target);
+    if (owner && owner !== SELF_HOST) {
+      console.warn(`[bus] ${target} owned by ${owner}, not ${SELF_HOST} — deferring delivery`);
+      return;
+    }
+  }
+  // Idle-gate: inject only when the recipient is idle at the prompt (@waiting=2);
+  // if it is mid-task or at a permission prompt, hold the message and let
+  // flushBusQueue deliver it when the agent next goes idle — so a running task is
+  // never interrupted and the message is never lost into a busy pane.
+  if (BUS_DEFER && agent.pane) {
+    const w = paneWaiting(agent.pane);
+    if (w !== '2') {
+      enqueueBus(agent.pane, target, body);
+      console.log(`[bus] ${target} busy (@waiting=${w || 'unset'}) — queued for idle delivery`);
+      return;
+    }
+  }
+  const res = agent.pane ? deliverToPane(agent.pane, body) : deliverToSlot(agent.slot, body);
+  if (res.ok) {
+    flashPane(agent.pane, 'bus msg');
+    console.log(`[bus] delivered to ${target} (${agent.pane || agent.slot}): ${body.slice(0, 60)}`);
+  } else {
+    console.error(`[bus] delivery to ${target} failed: ${res.error}`);
+  }
+}
+
 async function handleMessage(event) {
   if (!event) return;
+
+  // --- Inter-agent bus: traffic on the dedicated agents channel is bot-posted
+  // by some host's /send, so it bypasses the human-message bot/self filters
+  // below. It only ever delivers to a LOCAL agent and never re-posts — no loop. ---
+  if (BUS_ENABLED && AGENTS_CHANNEL && event.channel === AGENTS_CHANNEL) {
+    // Presence announcements share this channel — route them out of the
+    // addressed-delivery path. They only update the in-memory map (consumePresence
+    // never delivers and never re-posts), so there is still no loop.
+    const snap = orch.parsePresence(event.text || '');
+    if (snap) { consumePresence(snap); return; }
+    await handleBusMessage(event);
+    return;
+  }
+
   // --- self / noise filtering (prevent feedback loops) ---
   if (event.bot_id) return;
   if (event.subtype && IGNORED_SUBTYPES.has(event.subtype)) return;
@@ -1001,7 +1207,24 @@ const httpServer = http.createServer((req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, connected: socketConnected, threads: threadMap.size }));
+    res.end(JSON.stringify({ ok: true, connected: socketConnected, threads: threadMap.size, bus: BUS_ENABLED && !!AGENTS_CHANNEL, presence: PRESENCE_ENABLED, host: SELF_HOST }));
+    return;
+  }
+
+  // Reachability (Phase 2): the fleet-wide live agent set derived from the
+  // presence map — each agent, its owning host, the resolved single owner, and a
+  // collision flag. Expire dead hosts first so a crashed bridge ages out.
+  if (req.method === 'GET' && url.pathname === '/agents') {
+    orch.expirePresence(presenceMap, { now: Date.now(), ttlMs: PRESENCE_TTL_MS });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      presence: PRESENCE_ENABLED,
+      self: SELF_HOST,
+      hosts: presenceMap.size,
+      agents: orch.reachability(presenceMap),
+      collisions: orch.presenceCollisions(presenceMap),
+    }));
     return;
   }
 
@@ -1056,6 +1279,38 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
+  // Inter-agent bus: agent-send.sh POSTs here when a target isn't local (or
+  // --via-slack). We only PUBLISH to the agents channel — delivery happens via
+  // the channel round-trip (handleBusMessage on whichever host owns the target),
+  // so cross-host works and we never deliver twice.
+  if (req.method === 'POST' && url.pathname === '/send') {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', async () => {
+      res.setHeader('Content-Type', 'application/json');
+      try {
+        if (!BUS_ENABLED || !AGENTS_CHANNEL) {
+          res.writeHead(409);
+          res.end(JSON.stringify({ ok: false, error: 'bus disabled (set SLACK_BUS_ENABLED=1 + SLACK_AGENTS_CHANNEL)' }));
+          return;
+        }
+        const { to, from, msg } = JSON.parse(body || '{}');
+        if (!to || !msg) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'to and msg required' })); return; }
+        const sender = String(from || 'unknown').slice(0, 80);
+        // `to: ↩ from <sender>: <msg>` — the leading `to:` is what the receiving
+        // bridge's addressed-message parser keys on; the rest is delivered verbatim.
+        const text = `${to}: ↩ from ${sender}: ${String(msg).slice(0, 1500)}`;
+        const posted = await web.chat.postMessage({ channel: AGENTS_CHANNEL, text });
+        res.writeHead(200);
+        res.end(JSON.stringify({ ok: true, ts: posted.ts }));
+      } catch (e) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: false, error: 'not found' }));
 });
@@ -1099,6 +1354,39 @@ const httpServer = http.createServer((req, res) => {
     console.log(`[slack-bridge] orchestrator spawn branch ENABLED (session=${SPAWN_SESSION}, allowlist=${SPAWN_ALLOWLIST_FILE})`);
   } else {
     console.log('[slack-bridge] orchestrator spawn branch disabled (set SLACK_SPAWN_ENABLED=1 to enable)');
+  }
+
+  if (BUS_ENABLED && AGENTS_CHANNEL) {
+    console.log(`[slack-bridge] inter-agent bus ENABLED (channel=${AGENTS_CHANNEL})`);
+    if (BUS_DEFER) {
+      setInterval(flushBusQueue, BUS_FLUSH_MS);
+      console.log(`[slack-bridge] bus idle-gated delivery ON (deliver on @waiting=2, flush every ${BUS_FLUSH_MS}ms, queue cap ${BUS_QUEUE_MAX}/pane)`);
+    } else {
+      console.log('[slack-bridge] bus idle-gated delivery OFF (SLACK_BUS_DEFER=0) — immediate send-keys');
+    }
+  } else if (BUS_ENABLED) {
+    console.warn('[slack-bridge] SLACK_BUS_ENABLED=1 but SLACK_AGENTS_CHANNEL not set — bus inert');
+  }
+
+  // Presence registry: announce our live agents now, then on a heartbeat, expire
+  // dead peers, and re-announce on any registry change (spawn/reap) so the fleet
+  // map tracks reality within seconds rather than a full heartbeat.
+  if (PRESENCE_ENABLED) {
+    await publishPresence();
+    setInterval(() => { publishPresence().catch(() => {}); }, PRESENCE_HEARTBEAT_MS);
+    setInterval(() => { orch.expirePresence(presenceMap, { now: Date.now(), ttlMs: PRESENCE_TTL_MS }); }, PRESENCE_HEARTBEAT_MS);
+    try {
+      let debounce = null;
+      watch(REGISTRY_DIR, () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => { lastPresencePublish = Date.now(); publishPresence().catch(() => {}); }, 1500);
+      });
+    } catch (e) {
+      console.warn(`[presence] registry watch unavailable (${e.message}) — relying on the ${PRESENCE_HEARTBEAT_MS}ms heartbeat`);
+    }
+    console.log(`[slack-bridge] presence registry ENABLED (host=${SELF_HOST}, heartbeat=${PRESENCE_HEARTBEAT_MS}ms, ttl=${PRESENCE_TTL_MS}ms)`);
+  } else if (BUS_ENABLED && AGENTS_CHANNEL) {
+    console.log('[slack-bridge] presence registry disabled (set SLACK_PRESENCE_ENABLED=1 to enable)');
   }
 
   await socket.start();

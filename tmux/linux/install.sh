@@ -68,6 +68,15 @@ CHECKPOINT_DIR="\${CHECKPOINT_DIR:-$HOME/vault/Checkpoints}"
 ANTHROPIC_BASE_URL="\${ANTHROPIC_BASE_URL:-http://localhost:4000}"
 CLAUDE_MODEL="\${CLAUDE_MODEL:-claude-opus-4-8}"
 CLAUDE_EFFORT="\${CLAUDE_EFFORT:-high}"
+# Inter-agent Slack bus (A2A): when 1, agent-send.sh routes non-local targets
+# through the bridge (:8788/send). EXPORTED so it reaches agent-send.sh (an
+# agent subprocess). Opt-in: default off; flip to 1 once the bridge bus is
+# enabled (Doppler nexus/prd: SLACK_BUS_ENABLED=1 + SLACK_AGENTS_CHANNEL).
+export SLACK_BUS_ENABLED="\${SLACK_BUS_ENABLED:-0}"
+# Same-host A2A routing: 'local' (fast send-keys, default) or 'channel' (route
+# NAME peers through the bus so they're buffered + delivered when the recipient
+# is idle, never lost into a busy pane). Needs the bus enabled to do anything.
+export SLACK_A2A_SAMEHOST="\${SLACK_A2A_SAMEHOST:-local}"
 EOF
   echo "Created ~/.tmux/env.sh"
 else
@@ -98,6 +107,14 @@ else
   grep -q "CLAUDE_EFFORT" "$ENV_FILE" || {
     echo "CLAUDE_EFFORT=\"\${CLAUDE_EFFORT:-high}\"" >> "$ENV_FILE"
     echo "Added CLAUDE_EFFORT to ~/.tmux/env.sh"
+  }
+  grep -q "SLACK_BUS_ENABLED" "$ENV_FILE" || {
+    echo "export SLACK_BUS_ENABLED=\"\${SLACK_BUS_ENABLED:-0}\"" >> "$ENV_FILE"
+    echo "Added SLACK_BUS_ENABLED to ~/.tmux/env.sh"
+  }
+  grep -q "SLACK_A2A_SAMEHOST" "$ENV_FILE" || {
+    echo "export SLACK_A2A_SAMEHOST=\"\${SLACK_A2A_SAMEHOST:-local}\"" >> "$ENV_FILE"
+    echo "Added SLACK_A2A_SAMEHOST to ~/.tmux/env.sh"
   }
 fi
 

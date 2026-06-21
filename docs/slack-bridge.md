@@ -135,6 +135,116 @@ These can be set via Doppler (`nexus/prd`) alongside the other `SLACK_*` secrets
 in the gitignored `.env`. The Spark resolver and ledger are only invoked when
 `SLACK_SPAWN_ENABLED=1`.
 
+## Inter-agent bus (opt-in)
+
+`agent-send.sh` is **dual-mode**. A **local** target (a pane/slot, or a name in this
+host's registry) is delivered with `tmux send-keys` exactly as before — instant, no
+network. A **non-local** agent name is routed through the bridge so agents on *other
+hosts* can be reached. The bus is **off by default**; disabled, `agent-send.sh`
+behaves exactly as it always has.
+
+Flow:
+
+1. `agent-send.sh <name> <msg>` — if `<name>` is local, `send-keys` and done.
+2. Otherwise (bus enabled) it POSTs `{ to, from, msg }` to the bridge's `POST /send`.
+3. The bridge publishes `to: ↩ from <from>: <msg>` to the dedicated **`#nexus-agents`** channel.
+4. Every host's bridge sees that over Socket Mode; the one whose registry owns `to`
+   delivers it locally (`handleBusMessage`). The others ignore it — no host delivers twice.
+5. The recipient sees `↩ from <sender>: …` and can reply with `sender: <reply>` back through the bus.
+
+`agent-send.sh --via-slack <name> <msg>` forces the bus path even for a local target;
+`--local` forces the fast `send-keys` path.
+
+### Same-host routing (`SLACK_A2A_SAMEHOST`)
+
+By default same-host A2A uses the instant `send-keys` path. Set `SLACK_A2A_SAMEHOST=channel`
+(in the **agent** env) to route same-host **name** targets through `#nexus-agents` too.
+The reason isn't visibility — it's **buffering**: a raw `send-keys` into an agent that's
+mid-task gets lost (or interrupts the run). Routing through the bus lets the bridge
+**hold** the message and deliver it only when the recipient is idle (see below), so an
+agent's running task is never interrupted and the message is never dropped. `%pane` /
+slot targets and bare control digits always stay local (they can't round-trip the
+name-keyed bus, and a lone digit is a permission-menu input).
+
+> Set `SLACK_A2A_SAMEHOST=channel` only in the **agent** env (`~/.tmux/env.sh`), **not**
+> in the bridge's Doppler env — so the bridge's own deliveries (permission digits, bus
+> round-trips) stay local and never loop.
+
+### Idle-gated delivery (`SLACK_BUS_DEFER`, default on)
+
+Every bus delivery is gated on the recipient's `@waiting` window-option (the
+hook-maintained state the arbiter + reaper also read): the bridge injects with
+`send-keys` only when the agent is **idle at the prompt** (`@waiting=2`). When it's
+**working** (`0`/unset) or at a **permission prompt** (`1`), the message is held in a
+per-pane queue and flushed when the agent next goes idle — one message per idle window,
+so each inter-agent message gets its own turn. `#nexus-agents` is the durable record
+(replay/audit); the queue makes delivery non-lossy and non-interrupting. Set
+`SLACK_BUS_DEFER=0` to revert to immediate `send-keys`.
+
+### Bus config (env)
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `SLACK_BUS_ENABLED` | `0` (off) | Master switch. On the **bridge** it enables `POST /send` + delivery on `#nexus-agents`. In an **agent's** env it tells `agent-send.sh` to attempt the bus for a non-local name (else it prints "Agent not found", as today). |
+| `SLACK_AGENTS_CHANNEL` | — | Channel id of `#nexus-agents`. Required on the bridge for the bus to be live. |
+| `SLACK_BRIDGE_PORT` | `8788` | Port `agent-send.sh` POSTs `/send` to (shared with `/notify`). |
+| `SLACK_A2A_SAMEHOST` | `local` | **Agent env.** `local` = same-host A2A via instant `send-keys`; `channel` = route same-host NAME targets through the bus so they're buffered + idle-gated. |
+| `SLACK_BUS_DEFER` | `1` (on) | **Bridge.** Idle-gate bus delivery: inject only when the recipient is idle (`@waiting=2`), else queue + flush on idle. `0` = immediate `send-keys`. |
+| `SLACK_BUS_FLUSH_MS` | `4000` | Bridge: how often the queue-flush poll runs. |
+| `SLACK_BUS_QUEUE_MAX` | `50` | Bridge: max held messages per pane; oldest dropped beyond (still in `#nexus-agents`). |
+| `SLACK_PRESENCE_ENABLED` | `0` (off) | **Phase 2.** On the bridge, enables the presence registry (announce live agents on `#nexus-agents`, consume peers, single-owner delivery, `GET /agents`). Requires the bus on. Off → Phase 1 host-local delivery, unchanged. |
+| `SLACK_PRESENCE_HEARTBEAT_MS` | `300000` | How often the bridge re-announces its full agent set (also re-announces on every registry change). |
+| `SLACK_PRESENCE_TTL_MS` | `960000` | A peer host is dropped from the map if no snapshot arrives within this window (crash/offline). |
+| `SLACK_PRESENCE_HOST` | `hostname()` | Override the host label this bridge announces under (the owner-tiebreak key). |
+
+> **Two processes, two envs:** the **bridge** reads these from Doppler (`nexus/prd`);
+> **agents** read `SLACK_BUS_ENABLED` from their shell env (e.g. `~/.tmux/env.sh`).
+> Both must have it set for an end-to-end remote send. `curl :8788/health` reports
+> `"bus": true` once the bridge side is live.
+
+### Enable it (one-time)
+
+1. Create the `#nexus-agents` channel and invite the bot.
+2. In the Slack app's **Event Subscriptions → bot events**, add the `message.<type>`
+   event for that channel's type (`message.channels` public / `message.groups`
+   private) **and** the matching `channels:history` / `groups:history` scope — the
+   event and scope are configured **separately** (see the warning below).
+3. Set `SLACK_BUS_ENABLED=1` + `SLACK_AGENTS_CHANNEL=<Cxxxx>` in Doppler `nexus/prd`,
+   and `SLACK_BUS_ENABLED=1` in `~/.tmux/env.sh` so agents attempt the bus. Restart the bridge.
+4. Verify: `curl :8788/health` shows `"bus":true`; a `--via-slack` send to a local
+   agent round-trips through `#nexus-agents` and is delivered with the `↩ from` tag.
+
+> **Windows parity:** the dual-mode logic lives in `tmux/mac/tmux-scripts/agent-send.sh`
+> (symlinked as `~/.tmux/agent-send.sh` on mac + Linux). The Windows copy
+> (`tmux/windows/tmux-scripts/agent-send.sh`) is not yet updated and remains local-only.
+
+### Phase 2 — presence registry (opt-in, `SLACK_PRESENCE_ENABLED`)
+
+Phase 1 delivery is host-local: a bridge delivers to a name only if it's in that
+host's own registry, so two hosts with the same agent name would both deliver.
+Phase 2 closes that gap **without any shared store** — it rides the same Socket
+Mode fan-out as the bus:
+
+- **Announce:** each bridge posts a full-state snapshot of its *live* local agents
+  (registry ∩ live tmux panes) to `#nexus-agents` as a `::nexus-presence:: {v,host,agents,ts}`
+  control line — on startup, on a heartbeat, and on every registry change (so a
+  spawn/reap propagates in ~2s). The leading `::` keeps the addressed-delivery
+  parser from ever mistaking it for a `name: text` message.
+- **Consume:** peers fold each snapshot into an in-memory `host → {agents, ts}` map;
+  a host that stops heartbeating ages out after `SLACK_PRESENCE_TTL_MS`.
+- **Single owner:** the owner of a name is the **lexically-smallest host** that
+  claims it — every bridge computes the same answer, so exactly one delivers.
+  `handleBusMessage` defers when presence names another owner, even if its own
+  registry also matches (a stale entry or a genuine collision).
+- **Collisions** (a name on >1 host) are logged and surfaced in `GET /agents`.
+- **Reachability:** `curl :8788/agents` → `{ self, hosts, agents:[{name,host,owner,collided}], collisions }`.
+  `/health` also reports `presence` + `host`.
+
+Enable it as the **cross-host** rollout step (mirrors the bus's own enablement):
+set `SLACK_PRESENCE_ENABLED=1` in Doppler `nexus/prd` on **each** host's bridge and
+restart. It's only useful once ≥2 bridges run it; on a single host it's inert noise,
+so it ships **off**. Tracked in `openspec/changes/slack-agent-bus`.
+
 ## Slack app setup (one-time)
 
 Create an app at <https://api.slack.com/apps> → **From an app manifest**, paste
@@ -228,7 +338,10 @@ are unset the bridge exits 0 cleanly and is left alone (no thrash).
 
 ```bash
 # Bridge connected?
-curl -s localhost:8788/health        # {"ok":true,"connected":true,"threads":N}
+curl -s localhost:8788/health        # {"ok":true,"connected":true,"threads":N,"bus":bool,"presence":bool,"host":"…"}
+
+# Fleet reachability (when presence is enabled)
+curl -s localhost:8788/agents        # {"self","hosts",agents:[{name,host,owner,collided}],collisions:[…]}
 
 # Inbound — in #nexus, post:  svc-chatbot: say hi
 #   → the agent's prompt receives "say hi"; the bot reacts ✅

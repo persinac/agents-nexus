@@ -238,3 +238,112 @@ export function resolvedCard(message, note) {
   kept.push({ type: 'context', elements: [{ type: 'mrkdwn', text: note }] });
   return kept;
 }
+
+// --------------------------------------------------------------------------
+// Presence registry (Phase 2).
+//
+// Phase 1 delivery is host-local: a bridge delivers a message addressed to a
+// name only if that name is in ITS OWN registry. With unique-by-convention
+// names that works, but two hosts that both registered the same name would BOTH
+// deliver (double delivery), and there is no way to ask "who is reachable across
+// the fleet?". Phase 2 has every bridge ANNOUNCE its live local agent set on the
+// same bus channel (reusing the Socket Mode fan-out — no shared store, no host
+// discovery) and CONSUME peers into an in-memory map: host -> { agents:Set, ts }.
+// From that map we derive a single deterministic owner per name (so exactly one
+// host delivers), detect name collisions, and answer reachability. These pieces
+// are pure; index.js owns the map object, the timers, and all Slack I/O.
+// --------------------------------------------------------------------------
+
+// Marks a bus message as a presence announcement, not an addressed A2A message.
+// It starts with a non-alnum char so the addressed parser (^[A-Za-z0-9]…) never
+// mistakes it for a `name: text` delivery.
+export const PRESENCE_SENTINEL = '::nexus-presence::';
+
+// Format a presence announcement: sentinel + a compact JSON state snapshot.
+// Full-state (not deltas) so a missed message self-heals on the next beat.
+export function formatPresence({ host, agents, ts }) {
+  const payload = { v: 1, host: String(host), agents: Array.from(agents || []), ts: ts || 0 };
+  return `${PRESENCE_SENTINEL} ${JSON.stringify(payload)}`;
+}
+
+// Parse a presence announcement back to { host, agents:string[], ts }, or null
+// if the text is not a well-formed presence message.
+export function parsePresence(text) {
+  if (typeof text !== 'string') return null;
+  const s = text.trim();
+  if (!s.startsWith(PRESENCE_SENTINEL)) return null;
+  try {
+    const obj = JSON.parse(s.slice(PRESENCE_SENTINEL.length).trim());
+    if (!obj || typeof obj.host !== 'string' || !Array.isArray(obj.agents)) return null;
+    return { host: obj.host, agents: obj.agents.map(String), ts: Number(obj.ts) || 0 };
+  } catch { return null; }
+}
+
+// Apply a snapshot to the map (host -> { agents:Set, ts, seen }). Ignores an
+// out-of-order snapshot (older sender ts than the one we hold for that host).
+// An empty agent set still records the host (a host that drained to zero agents
+// is known-empty, not left phantom-owning a stale name). Mutates + returns map.
+export function applyPresence(map, snap, { now = 0 } = {}) {
+  if (!snap || !snap.host) return map;
+  const prev = map.get(snap.host);
+  if (prev && snap.ts && prev.ts && snap.ts < prev.ts) return map;
+  map.set(snap.host, { agents: new Set(snap.agents), ts: snap.ts || now, seen: now || snap.ts || 0 });
+  return map;
+}
+
+// Drop hosts whose last snapshot is older than ttlMs (a host that stopped
+// heartbeating — crashed / offline). Mutates + returns the map.
+export function expirePresence(map, { now, ttlMs }) {
+  for (const [host, rec] of map) {
+    if (now - (rec.seen || rec.ts || 0) > ttlMs) map.delete(host);
+  }
+  return map;
+}
+
+// Hosts that currently claim `name`, sorted deterministically so every bridge
+// computes the same order (case-insensitive match; original host strings kept).
+export function ownersOf(map, name) {
+  const lower = String(name).toLowerCase();
+  const hosts = [];
+  for (const [host, rec] of map) {
+    for (const a of rec.agents) { if (String(a).toLowerCase() === lower) { hosts.push(host); break; } }
+  }
+  return hosts.sort();
+}
+
+// The single deterministic owner of `name` (lexically-smallest claiming host),
+// or null if no host in the map claims it. Every bridge agrees → one delivers.
+export function ownerOf(map, name) {
+  const hosts = ownersOf(map, name);
+  return hosts.length ? hosts[0] : null;
+}
+
+// Names claimed by more than one host — the collisions to surface/disambiguate.
+export function presenceCollisions(map) {
+  const byName = new Map(); // lowerName -> { display, hosts:Set }
+  for (const [host, rec] of map) {
+    for (const a of rec.agents) {
+      const k = String(a).toLowerCase();
+      if (!byName.has(k)) byName.set(k, { display: a, hosts: new Set() });
+      byName.get(k).hosts.add(host);
+    }
+  }
+  const out = [];
+  for (const { display, hosts } of byName.values()) {
+    if (hosts.size > 1) out.push({ name: display, hosts: Array.from(hosts).sort() });
+  }
+  return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+// Reachability projection: every (name, host) pair in the map, annotated with the
+// resolved single `owner` and a `collided` flag. Sorted by name then host.
+export function reachability(map) {
+  const collided = new Set(presenceCollisions(map).map((c) => c.name.toLowerCase()));
+  const rows = [];
+  for (const [host, rec] of map) {
+    for (const a of rec.agents) {
+      rows.push({ name: a, host, owner: ownerOf(map, a), collided: collided.has(String(a).toLowerCase()) });
+    }
+  }
+  return rows.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : (x.host < y.host ? -1 : x.host > y.host ? 1 : 0)));
+}
