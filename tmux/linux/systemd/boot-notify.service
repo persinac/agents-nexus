@@ -1,0 +1,13 @@
+[Unit]
+Description=Boot notify — post to Slack #nexus that the box rebooted, with last-breadcrumb death-state
+After=crash-breadcrumb.service
+Wants=crash-breadcrumb.service
+
+[Service]
+Type=oneshot
+Environment=HOME=__HOME__
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__HOME__/.tmux/boot-notify.sh
+
+[Install]
+WantedBy=default.target

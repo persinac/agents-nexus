@@ -31,6 +31,17 @@ for script in "$MAC_DIR"/tmux-scripts/*.sh "$MAC_DIR"/tmux-scripts/*.py; do
   fi
 done
 
+# Linux-only scripts (no mac counterpart) — e.g. crash-breadcrumb / boot-notify,
+# which read Linux sysfs + journalctl. The loop above only iterates mac scripts,
+# so these need an explicit pass.
+for script in "$SCRIPT_DIR"/tmux-scripts/*.sh "$SCRIPT_DIR"/tmux-scripts/*.py; do
+  [ -f "$script" ] || continue
+  name=$(basename "$script")
+  [ -f "$MAC_DIR/tmux-scripts/$name" ] && continue   # already linked via the override path above
+  chmod +x "$script"
+  ln -sf "$script" "$HOME/.tmux/$name"
+done
+
 # Auto-approve classifier venv — the permission-prompt gate (notify-classify.py)
 # runs under this venv. hook-notification.sh skips the gate entirely when the venv
 # is absent, so without this the read-only auto-approve silently never fires.
@@ -152,6 +163,12 @@ for unit in "$SCRIPT_DIR"/systemd/*.service "$SCRIPT_DIR"/systemd/*.timer; do
   fi
 done
 systemctl --user daemon-reload
+
+# Crash-breadcrumb is a long-running logger (the unit loop only *enables* services);
+# start it now so telemetry begins without waiting for a reboot. boot-notify is a
+# boot-time oneshot — enabled above, it fires on the next boot (guarded against
+# mid-session runs by an uptime check), so it is intentionally not started here.
+systemctl --user restart crash-breadcrumb.service 2>/dev/null || true
 
 # Slack bridge — install deps + start the long-running service now (the loop
 # above only enables .service units; timers it starts). If SLACK_* tokens are

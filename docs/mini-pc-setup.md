@@ -19,6 +19,7 @@ over Tailscale.
 | 8. tmux Layer | :white_check_mark: Done — Linux install script, hooks, bashrc functions, systemd user units |
 | 9. API Key Rotation | :white_check_mark: Ready — infrastructure in place (`usekey`/`whichkey`/`keys`), activate when needed |
 | 10. Client Machine Setup | :white_check_mark: Done — SSH config, MCP servers (spark SSE + agent-memory over SSH) in `~/.claude.json` |
+| 11. Stability (idle reboots) | :white_check_mark: Mitigated — `processor.max_cstate=1` + `crash-breadcrumb`/`boot-notify` services; BIOS C-state toggle + UPS pending |
 
 **Pre-work completed:** Repo discovery pipeline built (`scripts/`), manifest
 generated with rule-based + AI tags (`repos-manifest.yaml`), reference repos
@@ -642,6 +643,48 @@ work               # (inside SSH session) attach to agents tmux session
 
 Open `http://100.75.154.84:8421` in local browser for the pixel dashboard.
 Open `http://100.75.154.84:3000` for Langfuse (or `/langfuse` via Caddy).
+
+---
+
+## Phase 11 — Stability: Spontaneous Reboots (AMD deep-idle)
+
+**Symptom:** the box hard-reboots on its own with no logs — `journalctl -b -1`
+ends mid-activity, with no OOM / MCE / thermal / panic. From an SSH client this
+looks like a "network error" (PuTTY etc.), because the TCP session dies *with*
+the box — it's not the network, it's the box vanishing underneath you.
+
+**Diagnosis:** `sar` (sysstat) shows the box was ~95% **idle** before every crash,
+and it runs cool (`k10temp` Tctl ~45 °C). Idle + instant + logless on a Ryzen APU
+is the classic **deep-idle C-state hang**. An unprotected wall-power dip (no UPS)
+is a weaker second suspect with the same logless signature.
+
+**Kernel fix (one-time, manual — `install.sh` does not touch boot params):**
+
+```bash
+# disable the deep C-states (live, until reboot)
+echo 1 | sudo tee /sys/devices/system/cpu/cpu*/cpuidle/state{2,3}/disable
+# persist across boots
+sudo sed -i 's#^GRUB_CMDLINE_LINUX_DEFAULT=.*#GRUB_CMDLINE_LINUX_DEFAULT="processor.max_cstate=1"#' /etc/default/grub
+sudo update-grub
+```
+
+**Observability (installed + enabled by `tmux/linux/install.sh`):**
+
+| Unit | What |
+|------|------|
+| `crash-breadcrumb.service` | fsync's temp/power/load to `~/.tmux/crash-breadcrumb.log` every 20s — the last line is the box's state at the moment it died (the crash itself logs nothing). |
+| `boot-notify.service` | On boot, posts to Slack `#nexus` (bridge-independent, via the Doppler bot token): previous uptime, downtime, clean vs unclean, and the last breadcrumb. Guarded by an uptime check so it only fires near a real boot. |
+
+**Firmware / hardware (manual):**
+
+- BIOS → **Power Supply Idle Control = Typical Current Idle** and **Global
+  C-State Control = Disabled** (usually under *Advanced → AMD CBS*) — the
+  firmware-grade version of the kernel param above.
+- Check for a BIOS newer than the installed AMI build.
+- A **UPS** is the definitive test/fix for the wall-power suspect.
+
+> If it goes a week without rebooting, the C-state fix was the cure. If it pings
+> again, the breadcrumb line in the Slack notice says power vs. thermal at a glance.
 
 ---
 
