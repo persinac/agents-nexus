@@ -20,7 +20,7 @@
 - [x] 3.4 Add `--via-slack` to force the bus path for a local target (publishes to the channel; the owning host delivers — no direct send-keys, so no double delivery)
 - [x] 3.5 Preserve current behavior when the bus is disabled: a non-local target produces the existing "Agent not found" failure, with no network call (verified)
 - [ ] 3.6 Keep the Windows `agent-send.sh` variant in parity (dual-mode) — DEFERRED: gap documented in `docs/slack-bridge.md` (Windows copy remains local-only for now)
-- [x] 3.7 Same-host channel mode: `SLACK_A2A_SAMEHOST=channel` routes same-host NAME targets through the bus (so they're buffered + idle-gated, not blasted into a busy pane); `%pane`/slot + bare control digits stay local; added `--local` to force the fast path. Flag lives in the AGENT env only (not the bridge's) so the bridge's own deliveries stay local. Verified `%pane` carve-out makes no channel post.
+- [x] 3.7 Same-host channel mode: `SLACK_A2A_SAMEHOST=channel` routes same-host messages through the bus (buffered + idle-gated, not blasted into a busy pane); added `--local` to force the fast path. Flag lives in the AGENT env only. **Revised after a field report (intent: ALL comms through Slack):** a `slot`/`%pane` target is now reverse-resolved to its registry NAME so it round-trips the name-keyed bus too — only a bare control digit (permission-menu input) and an unregistered window stay local. The bridge forces `SLACK_A2A_SAMEHOST=local` on its own delivery calls so a final hop can never re-route/loop. Verified end-to-end: name/slot/%pane → 1 channel post + idle-gated (held while `@waiting≠2`, flushed on idle), no loop on flush; digit + unregistered window stay local.
 
 ## 4. Permissions, config & rollout (Phase 1)
 

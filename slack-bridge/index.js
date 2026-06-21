@@ -326,9 +326,15 @@ function cleanSlackText(text) {
 // Delivery: re-resolve the agent name to a current slot, then send-keys via
 // the existing CLI. Returns { ok, slot, error }.
 // ---------------------------------------------------------------------------
+// The bridge's delivery is always the FINAL hop (channel -> pane), so it must
+// stay local send-keys. Force SLACK_A2A_SAMEHOST=local in the child env so a
+// delivery can never re-route a pane back through the bus and loop, regardless of
+// how the bridge's ambient env happens to be configured.
+const DELIVER_ENV = { ...process.env, SLACK_A2A_SAMEHOST: 'local' };
+
 function deliverToPane(pane, text) {
   try {
-    execFileSync(AGENT_SEND, [pane, text], { encoding: 'utf8', timeout: 5000 });
+    execFileSync(AGENT_SEND, [pane, text], { encoding: 'utf8', timeout: 5000, env: DELIVER_ENV });
     return { ok: true, pane };
   } catch (e) {
     const msg = (e.stdout || '').toString().trim() || e.message;
@@ -345,7 +351,7 @@ function deliverToName(name, text) {
 
 function deliverToSlot(slot, text) {
   try {
-    execFileSync(AGENT_SEND, [String(slot), text], { encoding: 'utf8', timeout: 5000 });
+    execFileSync(AGENT_SEND, [String(slot), text], { encoding: 'utf8', timeout: 5000, env: DELIVER_ENV });
     return { ok: true, slot: String(slot) };
   } catch (e) {
     const msg = (e.stdout || '').toString().trim() || e.message;

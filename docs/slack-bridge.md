@@ -158,17 +158,26 @@ Flow:
 ### Same-host routing (`SLACK_A2A_SAMEHOST`)
 
 By default same-host A2A uses the instant `send-keys` path. Set `SLACK_A2A_SAMEHOST=channel`
-(in the **agent** env) to route same-host **name** targets through `#nexus-agents` too.
+(in the **agent** env) to route same-host messages through `#nexus-agents` instead.
 The reason isn't visibility — it's **buffering**: a raw `send-keys` into an agent that's
 mid-task gets lost (or interrupts the run). Routing through the bus lets the bridge
 **hold** the message and deliver it only when the recipient is idle (see below), so an
-agent's running task is never interrupted and the message is never dropped. `%pane` /
-slot targets and bare control digits always stay local (they can't round-trip the
-name-keyed bus, and a lone digit is a permission-menu input).
+agent's running task is never interrupted and the message is never dropped.
+
+In channel mode, **every form of addressing a registered agent goes through Slack** —
+a NAME routes as-is, and a `slot` / `%pane` target is **reverse-resolved to that agent's
+registry NAME** first (the bus keys on name) so it round-trips too. Only two cases stay
+local: a **bare control digit** (a permission-menu input — idle-gating it would deadlock
+the prompt) and a **window with no registered agent** (there's no name to route by).
+
+> The bus keys on agent **names**, so a slot/%pane is mapped to its name before posting;
+> if you watch `#nexus-agents`, that's why a message you sent to `slot 4` shows up
+> addressed to the agent's name.
 
 > Set `SLACK_A2A_SAMEHOST=channel` only in the **agent** env (`~/.tmux/env.sh`), **not**
-> in the bridge's Doppler env — so the bridge's own deliveries (permission digits, bus
-> round-trips) stay local and never loop.
+> in the bridge's env — and the bridge additionally forces `SLACK_A2A_SAMEHOST=local` on
+> its own delivery calls, so a final-hop send-keys can never re-route back through the
+> bus and loop, regardless of ambient config.
 
 ### Idle-gated delivery (`SLACK_BUS_DEFER`, default on)
 

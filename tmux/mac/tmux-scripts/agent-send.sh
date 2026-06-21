@@ -8,11 +8,13 @@
 #     found" behavior, with no network call.
 #   - A LOCAL target (a %pane, a slot number, or a name in this host's registry):
 #       * default (SLACK_A2A_SAMEHOST=local) -> tmux send-keys, instant, no network.
-#       * SLACK_A2A_SAMEHOST=channel + bus on -> route a NAME target through
-#         #nexus-agents too, so same-host A2A is visible/audited in the channel,
-#         falling back to local send-keys if the bus is unreachable. %pane / slot
-#         targets and bare control digits always stay local (they cannot round-trip
-#         through the name-keyed bus, and a lone digit is a menu input).
+#       * SLACK_A2A_SAMEHOST=channel + bus on -> route through #nexus-agents so the
+#         exchange is buffered + idle-gated + audited. A slot/%pane target is
+#         reverse-resolved to its agent NAME first (the bus keys on name), so ALL
+#         addressing of a registered agent goes through Slack. Falls back to local
+#         send-keys if the bus is unreachable. Two things still stay local: a bare
+#         control digit (idle-gating a permission-menu input would deadlock it) and
+#         a window with no registered agent (no name to route by).
 #   - --via-slack forces the bus path (for a name); --local forces send-keys.
 #
 # Set SLACK_A2A_SAMEHOST in the AGENT shell env (~/.tmux/env.sh) — NOT in the
@@ -86,6 +88,21 @@ deliver_local() {
   echo "Sent to ${TARGET} (${dest}): ${MSG}"
 }
 
+# Reverse-resolve a local DEST (a slot's window or a %pane) to its registry agent
+# NAME, so a slot/%pane-addressed message can round-trip the name-keyed bus too.
+# Prints the NAME, or nothing if the pane has no registered agent (a raw window).
+resolve_pane_name() {
+  local dest="$1" target="$2" pane=""
+  if [[ "$target" =~ ^%[0-9]+$ ]]; then pane="$target"; else pane=$(tmux display-message -t "$dest" -p '#{pane_id}' 2>/dev/null); fi
+  [ -n "$pane" ] || return 0
+  for f in "$REGISTRY_DIR"/*; do
+    [ -f "$f" ] || continue
+    if [ "$(grep '^PANE_ID=' "$f" | cut -d= -f2)" = "$pane" ]; then
+      grep '^NAME=' "$f" | cut -d= -f2; return 0
+    fi
+  done
+}
+
 # --via-slack forces the bus regardless of locality (the owning host delivers).
 if [ "$VIA_SLACK" = "1" ]; then
   route_via_bus "$TARGET"; exit $?
@@ -127,13 +144,19 @@ fi
 
 # Local target.
 if [ -n "$DEST" ]; then
-  # Channel mode: route a NAME target through the bus for visibility, with a
-  # fallback to local delivery if the bus is unreachable. %pane / slot targets and
-  # bare control digits stay local (they can't round-trip the name-keyed bus).
-  if [ "$BUS_ENABLED" = "1" ] && [ "$SAMEHOST_MODE" = "channel" ] \
-     && [ "$TARGET_IS_NAME" = "1" ] && ! [[ "$MSG" =~ ^[0-9]$ ]]; then
-    route_via_bus "$TARGET" && exit 0
-    echo "bus: unreachable — delivering locally instead"
+  # Channel mode: route through the bus so the exchange is buffered + audited in
+  # #nexus-agents. A NAME target routes as-is; a SLOT/%pane target is reverse-
+  # resolved to its agent NAME so it round-trips too (the bus keys on name) — so
+  # ALL addressing of a registered agent goes through Slack. Two things stay local:
+  # a bare control digit (idle-gating a permission-menu input would deadlock the
+  # prompt), and a window with no registered agent (no name to route by).
+  if [ "$BUS_ENABLED" = "1" ] && [ "$SAMEHOST_MODE" = "channel" ] && ! [[ "$MSG" =~ ^[0-9]$ ]]; then
+    route_name="$TARGET"
+    [ "$TARGET_IS_NAME" = "1" ] || route_name="$(resolve_pane_name "$DEST" "$TARGET")"
+    if [ -n "$route_name" ]; then
+      route_via_bus "$route_name" && exit 0
+      echo "bus: unreachable — delivering locally instead"
+    fi
   fi
   deliver_local "$DEST"; exit 0
 fi
