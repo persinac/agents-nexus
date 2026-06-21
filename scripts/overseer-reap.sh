@@ -12,8 +12,12 @@
 # Idempotent and fail-open.
 #
 # Safety:
+#   - NEVER reaps a window tagged `@keep 1` — even under REAP_ALL=1. Pin your
+#       active working set so an AFK reap can't sweep it (scripts/agent-keep.sh,
+#       or: tmux set-option -w @keep 1). The always-honored sibling of the
+#       @orchestrator tag below, which REAP_ALL drops.
 #   - NEVER reaps a window tagged `@orchestrator 1` (mark your main session:
-#       tmux set-option -w @orchestrator 1).
+#       tmux set-option -w @orchestrator 1) — UNLESS REAP_ALL=1.
 #   - NEVER reaps a name/pane listed in $REAP_EXCLUDE (csv) or
 #       ~/.tmux/overseer-exclude (one name or %pane per line).
 #   - Skips actively-working agents (@waiting=0) and dead panes.
@@ -37,6 +41,7 @@ EXCLUDE_FILE="$HOME/.tmux/overseer-exclude"
 LOG="$HOME/.tmux/overseer-reap.log"
 APM_LOG="$HOME/.tmux/apm.log"
 CHECKPOINT="$NEXUS_DIR/scripts/checkpoint-transcript.sh"
+LEDGER="$NEXUS_DIR/scripts/agent-ledger.py"        # durable agent ledger (best-effort)
 
 command -v tmux >/dev/null 2>&1 || exit 0
 [ -d "$REGISTRY_DIR" ] || exit 0
@@ -96,8 +101,12 @@ for f in "$REGISTRY_DIR"/*; do
   # Dead pane? Leave it — agent-deregister cleans the registry on pane-died.
   tmux display-message -t "$PANE_ID" -p '#{pane_id}' >/dev/null 2>&1 || continue
 
-  # Hard exclusions: orchestrator tag (unless REAP_ALL), attached-and-viewed
-  # window, or an explicitly excluded name/pane.
+  # Hard exclusions: @keep pin (ALWAYS), orchestrator tag (unless REAP_ALL),
+  # attached-and-viewed window, or an explicitly excluded name/pane.
+  # @keep is the always-honored sibling of @orchestrator: REAP_ALL drops the
+  # orchestrator exemption but NEVER the keep pin, so a user-pinned working-set
+  # window survives an unattended REAP_ALL sweep (the AFK-reap problem).
+  if [ "$(tmux show-options -wqv -t "$PANE_ID" @keep 2>/dev/null)" = "1" ]; then continue; fi
   if [ "$REAP_ALL" != "1" ] && [ "$(tmux show-options -wqv -t "$PANE_ID" @orchestrator 2>/dev/null)" = "1" ]; then continue; fi
   if excluded "$NAME" || excluded "$PANE_ID"; then continue; fi
   PANE_WINDOW="$(tmux display-message -t "$PANE_ID" -p '#{window_id}' 2>/dev/null)"
@@ -131,6 +140,15 @@ for f in "$REGISTRY_DIR"/*; do
   if [ -n "$WINDOW" ] && tmux kill-window -t "$WINDOW" 2>/dev/null; then
     log "reaped name=$NAME window=$WINDOW idle=${idle}s"
     printf '%s reap %s\n' "$now" "$PANE_ID" >> "$APM_LOG" 2>/dev/null || true
+    # Mark the agent dormant in the durable ledger (best-effort, fail-open). This
+    # is a no-op for agents the orchestrator never spawned — the ledger only
+    # records a reap when a matching live entry exists. Keeps the reaper
+    # Slack-independent: it writes a file, never touches the bridge.
+    if [ -x "$LEDGER" ] && command -v python3 >/dev/null 2>&1; then
+      python3 "$LEDGER" reap --name "$NAME" --repo "$NAME" \
+        --checkpoint "reap:$NAME" --transcript "${TRANSCRIPT:-}" >/dev/null 2>&1 || \
+        log "ledger reap-mark failed name=$NAME (non-fatal)"
+    fi
     reaped=$(( reaped + 1 ))
   else
     log "kill-window failed name=$NAME pane=$PANE_ID"

@@ -52,6 +52,77 @@ It connects over **Socket Mode**, so there is **no public URL / tunnel** to set 
 Only the configured `#nexus` channel and DMs to the bot are acted on; messages in
 any other channel are ignored.
 
+## Orchestrator: spawn the right agent (opt-in)
+
+When routing finds **no** running agent for a message (step 3 falls through), the
+bridge can offer to spin one up instead of just showing the usage hint. This is
+**off by default** — set `SLACK_SPAWN_ENABLED=1` to enable it.
+
+Flow:
+
+1. **Resolve the repo.** `scripts/spark-resolve.py` asks the live Spark MCP
+   service (`localhost:8343`) which repo the message is about.
+2. **Allowlist + path.** The resolved repo must be a key in the spawnable-repo
+   allowlist (`~/.tmux/spawnable-repos.json` by default) — a JSON object mapping
+   repo name → absolute local checkout path. This is both the safety gate and the
+   name→path resolver (Spark indexes many repos that aren't cloned here). A repo
+   not on the list is never offered.
+3. **Confirm.** The bridge posts a Block Kit *"Spin up an agent in `repo`? [🚀 / No]"*
+   card. **Nothing spawns without an explicit click** — a No, or a 5-minute
+   timeout, cancels and releases the lock.
+4. **Spawn, seeded.** On approval it runs `tmux new-window … open-claude.sh` with
+   `SEED_PROMPT` set to the originating message, so the new agent starts on the
+   task immediately (no send-keys race). The spawned agent registers normally and
+   is reapable.
+
+**Guardrails** (all evaluated before any window is created):
+
+- **Spawnable-repo allowlist** — only listed repos are eligible.
+- **Per-repo in-flight lock** — at most one spawn (or live agent) per repo; a
+  second request for the same repo is told to address the existing one. The lock
+  is seeded on startup from the durable ledger so it survives a bridge restart.
+- **Global rate-limit** — `SLACK_SPAWN_RATE_MAX` spawns per
+  `SLACK_SPAWN_RATE_WINDOW_MS` window (default 3 per 10 min), re-checked at the
+  moment of approval.
+
+### Resilience: pin + restore (survive an AFK reap)
+
+A PuTTY/network drop does **not** kill your agents — the tmux server is
+systemd-persistent. What sweeps them while you're away is the overseer reaper
+(`REAP_ALL=1` every 15 min). Two mechanisms make that recoverable:
+
+- **Pin** the active working set so the reaper skips it even under `REAP_ALL=1`:
+  `scripts/agent-keep.sh <name> on` (or the Slack command `keep <name> on`), which
+  sets the `@keep` window option. `agent-keep.sh list` shows what's pinned.
+- **Restore** a reaped agent from the durable ledger (`scripts/agent-ledger.py`,
+  default `~/.tmux/agent-ledger.jsonl`). The reaper checkpoints before killing and
+  records the agent as `dormant`; restore re-spawns it in its repo (seeded from
+  its checkpoint via `open-claude.sh`'s by-slug rehydration). Trigger it with the
+  Slack command `restore <repo>` (or bare `restore` to list dormant agents), or
+  via the **reconnect nudge** — when dormant agents exist, the next `#nexus`
+  message surfaces a *"N agents were reaped while you were away — restore?"* card
+  (at most once per hour; never auto-restores).
+
+### Orchestrator config (env)
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `SLACK_SPAWN_ENABLED` | `0` (off) | Master switch for the spawn branch + restore/nudge. Off ⇒ original usage-hint behavior, zero change. |
+| `SLACK_SPAWN_ALLOWLIST_FILE` | `~/.tmux/spawnable-repos.json` | JSON `{ "repo": "/abs/path", … }`. See `slack-bridge/spawnable-repos.example.json`. |
+| `SLACK_SPAWN_SESSION` | `agents` | tmux session to spawn into. |
+| `SLACK_SPAWN_MIN_SCORE` | `0` | Min Spark score to offer a spawn. Permissive by default — the confirm card is the real gate (Spark scores are small/reranked). |
+| `SLACK_SPAWN_RATE_MAX` | `3` | Max spawns per rolling window. |
+| `SLACK_SPAWN_RATE_WINDOW_MS` | `600000` | Rate-limit window (10 min). |
+| `SLACK_SPAWN_CONFIRM_TTL_MS` | `300000` | Confirm-card lifetime before it expires + releases the lock (5 min). |
+| `SLACK_NUDGE_MIN_INTERVAL_MS` | `3600000` | Min gap between reconnect nudges (1 h). |
+| `SLACK_SPARK_PYTHON` | `$AGENTS_NEXUS_DIR/spark/.venv/bin/python` | Interpreter for the Spark resolver (needs the `mcp` SDK). |
+| `SLACK_OPEN_CLAUDE` | `~/.tmux/open-claude.sh` | Launch script used for spawns/restores. |
+| `AGENT_LEDGER` | `~/.tmux/agent-ledger.jsonl` | Durable agent ledger path (shared with the reaper). |
+
+These can be set via Doppler (`nexus/prd`) alongside the other `SLACK_*` secrets, or
+in the gitignored `.env`. The Spark resolver and ledger are only invoked when
+`SLACK_SPAWN_ENABLED=1`.
+
 ## Slack app setup (one-time)
 
 Create an app at <https://api.slack.com/apps> → **From an app manifest**, paste
@@ -85,7 +156,8 @@ settings:
     is_enabled: true             # required for the Approve/Deny buttons (block_actions)
   event_subscriptions:
     bot_events:
-      - message.channels
+      - message.channels         # PUBLIC channel inbound
+      - message.groups           # PRIVATE channel inbound (e.g. #nexus-lan) — REQUIRED for a private control channel
       - message.im
       - app_mention
       - reaction_added           # pairs with reactions:read
@@ -93,10 +165,14 @@ settings:
   org_deploy_enabled: false
 ```
 
-`#nexus` is a **public** channel, so `channels:history` + the `message.channels`
-event carry the inbound traffic — the private-channel scopes (`groups:history` /
-`groups:read` / `message.groups`) are intentionally omitted. Add them only if a
-*private* channel is ever used for this (a reinstall, since scopes/events change).
+**Channel type ↔ event/scope must match.** A bot only receives a channel's
+messages if it subscribes to that channel type's `message.*` event AND holds the
+matching `*:history` scope — being a member is not enough. The default control
+channel here, `#nexus-lan`, is **private**, so it needs `message.groups` +
+`groups:history`. A *public* channel needs `message.channels` + `channels:history`.
+A missing event is silent: Socket Mode simply never delivers those messages and
+the bridge logs nothing. (Adding only a scope without the event is the common
+trap — scopes and events are configured separately.)
 The `reactions:read` / `users:read*` / `files:write` / `chat:write.*` scopes are
 future-proofing (approve-by-reaction, @-tagging the human, file posts) included now
 to avoid a later reinstall — trim them if you want a tighter least-privilege set.

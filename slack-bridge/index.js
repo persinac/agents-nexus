@@ -25,6 +25,7 @@ import {
 import { homedir } from 'os';
 import { SocketModeClient, LogLevel } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
+import * as orch from './orchestrator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -64,6 +65,29 @@ const ROUTE_ENABLED = process.env.SLACK_ROUTE_ENABLED !== '0';
 const ROUTE_MODEL = process.env.SLACK_ROUTE_MODEL || 'claude-haiku-4-5';
 const ROUTE_MIN_CONFIDENCE = parseFloat(process.env.SLACK_ROUTE_MIN_CONFIDENCE || '0.6');
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// --- Orchestrator spawn branch (opt-in; default OFF so this is inert until set) ---
+// When a message matches no running agent, optionally resolve the repo (Spark),
+// confirm via Block Kit, and spawn a seeded tmux agent — bounded by an allowlist,
+// a per-repo in-flight lock, and a global rate-limit. Also enables restore of
+// dormant (reaped) agents from the durable ledger. With the flag off, the
+// routing fall-through keeps its original usage-hint behavior (zero change).
+const SPAWN_ENABLED = process.env.SLACK_SPAWN_ENABLED === '1';
+const AGENTS_NEXUS_DIR = process.env.AGENTS_NEXUS_DIR || join(HOME, 'repos', 'agents-nexus');
+const SPAWN_SESSION = process.env.SLACK_SPAWN_SESSION || 'agents';
+const SPAWN_ALLOWLIST_FILE = process.env.SLACK_SPAWN_ALLOWLIST_FILE || join(HOME, '.tmux', 'spawnable-repos.json');
+const SPAWN_MIN_SCORE = parseFloat(process.env.SLACK_SPAWN_MIN_SCORE || '0'); // (legacy Spark resolver) permissive: the confirm card is the gate
+const SPAWN_MIN_CONFIDENCE = parseFloat(process.env.SLACK_SPAWN_MIN_CONFIDENCE || '0.5'); // repo classifier floor
+const SPAWN_RATE_MAX = parseInt(process.env.SLACK_SPAWN_RATE_MAX || '3', 10);
+const SPAWN_RATE_WINDOW_MS = parseInt(process.env.SLACK_SPAWN_RATE_WINDOW_MS || '600000', 10); // 10 min
+const SPAWN_CONFIRM_TTL_MS = parseInt(process.env.SLACK_SPAWN_CONFIRM_TTL_MS || '300000', 10); // 5 min
+const NUDGE_MIN_INTERVAL_MS = parseInt(process.env.SLACK_NUDGE_MIN_INTERVAL_MS || '3600000', 10); // 1 h
+const OPEN_CLAUDE = process.env.SLACK_OPEN_CLAUDE || join(HOME, '.tmux', 'open-claude.sh');
+const SPARK_PYTHON = process.env.SLACK_SPARK_PYTHON || join(AGENTS_NEXUS_DIR, 'spark', '.venv', 'bin', 'python');
+const SPARK_RESOLVE_SCRIPT = process.env.SLACK_SPARK_RESOLVE || join(AGENTS_NEXUS_DIR, 'scripts', 'spark-resolve.py');
+const LEDGER_PYTHON = process.env.SLACK_LEDGER_PYTHON || 'python3';
+const LEDGER_SCRIPT = process.env.SLACK_LEDGER_SCRIPT || join(AGENTS_NEXUS_DIR, 'scripts', 'agent-ledger.py');
+const LEDGER_FILE = process.env.AGENT_LEDGER || join(HOME, '.tmux', 'agent-ledger.jsonl');
 
 // Boot guard: on an un-provisioned box this is a clean no-op so launchd doesn't thrash.
 if (!BOT_TOKEN || !APP_TOKEN) {
@@ -202,6 +226,45 @@ async function classifyTarget(text, agents) {
     return block ? JSON.parse(block.text) : null;
   } catch (e) {
     console.error(`[slack-bridge] routing classify failed: ${e.message}`);
+    return null;
+  }
+}
+
+// Spawn-branch resolver: pick which SPAWNABLE repo a message concerns, from the
+// allowlist (name + description). This replaces a Spark index lookup — we only
+// ever spawn allowlisted repos, so classifying within that small, described set
+// is both sufficient and far more reliable than embedding a one-line message
+// against a repo summary. Returns { repo, confidence, reason } or null.
+async function classifyRepoForSpawn(text, entries) {
+  const client = await getAnthropic();
+  if (!client || !entries.length) return null;
+  const roster = entries.map((e) => `- ${e.name}${e.desc ? `: ${e.desc}` : ''}`).join('\n');
+  try {
+    const resp = await client.messages.create({
+      model: ROUTE_MODEL,
+      max_tokens: 256,
+      system: 'You decide which repository a Slack message is about, so a coding agent can be spun up there. You are given a list of spawnable repos (name + description) and one message. Pick the single repo the message most concerns by matching the topic to a repo\'s purpose. Set repo to the exact repo name from the list, or "" if none clearly fits. confidence is 0..1.',
+      messages: [{ role: 'user', content: `Spawnable repos:\n${roster}\n\nMessage:\n${text}` }],
+      output_config: {
+        format: {
+          type: 'json_schema',
+          schema: {
+            type: 'object',
+            properties: {
+              repo: { type: 'string' },
+              confidence: { type: 'number' },
+              reason: { type: 'string' },
+            },
+            required: ['repo', 'confidence', 'reason'],
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+    const block = (resp.content || []).find((b) => b.type === 'text');
+    return block ? JSON.parse(block.text) : null;
+  } catch (e) {
+    console.error(`[slack-bridge] spawn classify failed: ${e.message}`);
     return null;
   }
 }
@@ -389,6 +452,301 @@ async function pruneLoop() {
 }
 
 // ---------------------------------------------------------------------------
+// Orchestrator: confirm-gated spawn branch + resilience (restore/nudge).
+// All state is in-memory; guardrails are evaluated before any tmux new-window.
+// Inert unless SPAWN_ENABLED. See orchestrator.js for the pure pieces.
+// ---------------------------------------------------------------------------
+const inFlight = new Set();        // repos with a spawn in progress OR a known live agent (lock)
+let spawnTimestamps = [];          // epoch-ms of recent spawns (global rate-limit ring)
+const pendingSpawns = new Map();   // confirm-card ts -> { repo, path, channel, rootTs, requester, createdAt }
+let lastNudgeAt = 0;
+
+function ledgerCmd(args) {
+  return orch.ledger(args, { python: LEDGER_PYTHON, script: LEDGER_SCRIPT, env: { AGENT_LEDGER: LEDGER_FILE } });
+}
+
+// Seed the lock set from the durable ledger's live entries (reconciled against
+// the live registry) so a repo with a known agent is locked across a restart.
+async function seedLocksOnStartup() {
+  if (!SPAWN_ENABLED) return;
+  try {
+    const state = await orch.ledger(['reconcile', '--registry-dir', REGISTRY_DIR, '--json'],
+      { python: LEDGER_PYTHON, script: LEDGER_SCRIPT, env: { AGENT_LEDGER: LEDGER_FILE } });
+    for (const rec of (Array.isArray(state) ? state : [])) {
+      if (rec && rec.state === 'live' && (rec.repo || rec.name)) inFlight.add(rec.repo || rec.name);
+    }
+    console.log(`[slack-bridge] orchestrator: seeded ${inFlight.size} lock(s) from ledger`);
+  } catch (e) {
+    console.error(`[slack-bridge] orchestrator: lock seed failed: ${e.message}`);
+  }
+}
+
+// Is a spawn for this repo currently disallowed by the lock? (in-flight, or a
+// live agent already serves it).
+function repoLocked(repo, repoPath) {
+  if (inFlight.has(repo)) return true;
+  return orch.repoHasLiveAgent(loadRegistry(), repo, repoPath);
+}
+
+// Explicit spawn intent: a direct request to start an agent ("spin up / start /
+// launch / spawn an agent on X"), as opposed to an ambient message about a repo.
+// When present, the spawn flow runs BEFORE (and instead of) routing-to-a-running-
+// agent, so an explicit ask is never silently swallowed by a live agent.
+const SPAWN_INTENT_RE = /\b((spin|fire|boot)\s*up|spawn|launch|stand\s*up|kick\s*off|start|create|open|set\s*up|get|need|want)\s+(me\s+)?(an?|the|a\s+new|another|some)?\s*(new\s+|fresh\s+)?(claude\s+|coding\s+)?agent\b/i;
+function hasSpawnIntent(text) { return SPAWN_INTENT_RE.test(text); }
+
+function spawnableListMsg(entries) {
+  return entries.length ? entries.map((e) => `\`${e.name}\``).join(', ') : '_none configured_';
+}
+
+// Spawn branch: resolve the repo (classify against the allowlist), gate it, and
+// post a confirm card. `opts.explicit` = the user directly asked to spawn, so on
+// a miss we explain what's spawnable (and return true) instead of falling through
+// to routing / the generic usage hint.
+async function offerSpawn(channel, threadTs, text, requester, opts = {}) {
+  const explicit = !!opts.explicit;
+  const allow = orch.loadAllowlist(SPAWN_ALLOWLIST_FILE);
+  const entries = orch.allowlistEntries(allow);
+  console.log(`[orch-debug] offerSpawn${explicit ? '(explicit)' : ''} allowlist=[${entries.map((e) => e.name).join(',')}]`);
+  if (!entries.length) {
+    if (explicit) { await replyInThread(channel, threadTs, ':warning: no repos are on the spawnable allowlist yet.'); return true; }
+    return false;                                    // nothing spawnable -> usage hint
+  }
+  const verdict = await classifyRepoForSpawn(text, entries);
+  console.log(`[orch-debug] offerSpawn classify -> ${JSON.stringify(verdict)} (floor ${SPAWN_MIN_CONFIDENCE})`);
+  if (!verdict || !verdict.repo || Number(verdict.confidence) < SPAWN_MIN_CONFIDENCE) {
+    if (explicit) {
+      await replyInThread(channel, threadTs,
+        `:information_source: I can spin up an agent, but couldn't match that to a spawnable repo. Spawnable: ${spawnableListMsg(entries)}. Name one — e.g. \`spawn ${entries[0].name}\`.`);
+      return true;
+    }
+    return false;                                    // no confident repo -> caller falls back to usage hint
+  }
+  const match = orch.matchAllowlist(allow, verdict.repo);
+  if (!match) {
+    console.log(`[orch-debug] classifier named non-allowlisted repo ${verdict.repo}`);
+    if (explicit) { await replyInThread(channel, threadTs, `:information_source: \`${verdict.repo}\` isn't on the spawnable allowlist. Spawnable: ${spawnableListMsg(entries)}.`); return true; }
+    return false;
+  }
+  return postSpawnConfirm(channel, threadTs, match, text, requester, verdict.confidence);
+}
+
+// Post the "Spin up an agent in <repo>? [🚀/No]" card for an already-resolved repo
+// (shared by the classifier path and the explicit `spawn <repo>` command). Honors
+// the per-repo lock; acquires it at post time, releases on No/timeout/failure.
+async function postSpawnConfirm(channel, threadTs, match, seed, requester, score) {
+  // Already serving this repo? Offer to address it instead of spawning a twin.
+  if (repoLocked(match.name, match.path)) {
+    console.log(`[orch-debug] ${match.name} locked/running -> address-it reply`);
+    await replyInThread(channel, threadTs,
+      `:information_source: \`${match.name}\` already has an agent (or a spawn in progress) — address it with \`${match.name}: …\`.`);
+    return true;
+  }
+  inFlight.add(match.name);
+  try {
+    console.log(`[orch-debug] posting spawn confirm card for ${match.name}`);
+    const blocks = orch.confirmCard({ repo: match.name, cwd: match.path, score, requester });
+    const posted = await web.chat.postMessage({ channel, thread_ts: threadTs,
+      text: `Spin up an agent in ${match.name}?`, blocks });
+    pendingSpawns.set(posted.ts, {
+      repo: match.name, path: match.path, seed, channel, rootTs: threadTs, requester, createdAt: Date.now(),
+    });
+  } catch (e) {
+    inFlight.delete(match.name);                     // posting failed — don't leak the lock
+    console.error(`[slack-bridge] spawn confirm post failed: ${e.message}`);
+  }
+  return true;
+}
+
+// Poll the registry until an agent for `repo` registers (so the live-agent check
+// can take over the lock), or give up after ~12s.
+async function awaitRegistration(repo, repoPath, tries = 24) {
+  for (let i = 0; i < tries; i += 1) {
+    if (orch.repoHasLiveAgent(loadRegistry(), repo, repoPath)) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+// Execute an approved spawn: rate-limit (re-checked at approval), tmux new-window,
+// ledger, identity reply. Returns a human note for the card. Releases the lock.
+async function performSpawn(pending) {
+  const { repo, path: repoPath, channel, rootTs, requester, restore } = pending;
+  const now = Date.now();
+  const { recent, allowed } = orch.rateState(spawnTimestamps, SPAWN_RATE_MAX, SPAWN_RATE_WINDOW_MS, now);
+  spawnTimestamps = recent;
+  if (!allowed) {
+    inFlight.delete(repo);
+    return `:no_entry: rate-limited — ${SPAWN_RATE_MAX} spawns per ${Math.round(SPAWN_RATE_WINDOW_MS / 60000)} min reached. Try again shortly.`;
+  }
+  const res = await orch.spawnWindow({
+    session: SPAWN_SESSION, name: repo, cwd: repoPath, slug: repo,
+    seed: restore ? '' : pending.seed, restoreCheckpoint: restore ? pending.checkpoint : '',
+    openClaude: OPEN_CLAUDE,
+  });
+  if (!res.ok) {
+    inFlight.delete(repo);
+    return `:warning: spawn failed: ${res.error}`;
+  }
+  spawnTimestamps.push(now);
+  await ledgerCmd([restore ? 'restore' : 'spawn', '--repo', repo, '--name', repo,
+    ...(pending.seed && !restore ? ['--seed', pending.seed] : []),
+    ...(res.pane ? ['--pane', res.pane] : []), ...(res.slot ? ['--slot', res.slot] : [])]);
+  // Hold the lock until the agent registers, then let the live-agent check own it.
+  awaitRegistration(repo, repoPath).then((ok) => {
+    inFlight.delete(repo);
+    if (!ok) console.warn(`[slack-bridge] ${repo} spawned but did not register within timeout`);
+  });
+  const slotNote = res.slot ? ` (slot ${res.slot})` : '';
+  if (requester) {
+    await replyInThread(channel, rootTs, `:rocket: <@${requester}> spun up \`${repo}\`${slotNote} — it's starting now.`);
+  }
+  return restore
+    ? `:leftwards_arrow_with_hook: restored \`${repo}\`${slotNote} from checkpoint`
+    : `:rocket: spawned \`${repo}\`${slotNote}`;
+}
+
+// Yes/No on a spawn confirm card.
+async function handleSpawnAction(action, channel, ts, body) {
+  const pending = pendingSpawns.get(ts);
+  if (!pending) {                                    // card expired or bridge restarted
+    try { await web.chat.update({ channel, ts, text: 'expired',
+      blocks: orch.resolvedCard(body.message, ':hourglass: this offer expired — message again to retry') }); } catch { /* ignore */ }
+    return;
+  }
+  pendingSpawns.delete(ts);
+  if (action.action_id === 'spawn:no') {
+    inFlight.delete(pending.repo);                   // release the lock
+    try { await web.chat.update({ channel, ts, text: 'cancelled',
+      blocks: orch.resolvedCard(body.message, ':x: cancelled — no agent spawned') }); } catch { /* ignore */ }
+    return;
+  }
+  pending.requester = (body.user && body.user.id) || pending.requester;
+  const note = await performSpawn(pending);
+  try { await web.chat.update({ channel, ts, text: 'done', blocks: orch.resolvedCard(body.message, note) }); } catch { /* ignore */ }
+}
+
+// Restore a dormant agent from the ledger, gated by the same guardrails.
+async function doRestore(channel, threadTs, repo, requester) {
+  const entry = await ledgerCmd(['get', '--repo', repo, '--json']);
+  if (!entry || !entry.repo) {
+    await replyInThread(channel, threadTs, `:information_source: no dormant agent recorded for \`${repo}\`.`);
+    return;
+  }
+  if (entry.state === 'live' || repoLocked(repo, null)) {
+    await replyInThread(channel, threadTs, `:information_source: \`${repo}\` is already running — address it with \`${repo}: …\`.`);
+    return;
+  }
+  const match = orch.matchAllowlist(orch.loadAllowlist(SPAWN_ALLOWLIST_FILE), repo);
+  if (!match) {
+    await replyInThread(channel, threadTs, `:warning: \`${repo}\` is no longer on the spawnable-repo allowlist — cannot restore.`);
+    return;
+  }
+  inFlight.add(match.name);
+  const note = await performSpawn({
+    repo: match.name, path: match.path, channel, rootTs: threadTs, requester,
+    restore: true, checkpoint: '',   // open-claude rehydrates by slug (memory recall surfaces the reap note)
+  });
+  await replyInThread(channel, threadTs, note);
+}
+
+async function handleRestoreAction(action, channel, ts, body) {
+  const repo = action.value;
+  const requester = body.user && body.user.id;
+  await doRestore(channel, ts, repo, requester);
+  // Refresh the nudge card so the restored repo's button drops off.
+  const dormant = await ledgerCmd(['list', '--state', 'dormant', '--json']);
+  try {
+    if (Array.isArray(dormant) && dormant.length) {
+      await web.chat.update({ channel, ts, text: 'restore', blocks: orch.nudgeCard(dormant) });
+    } else {
+      await web.chat.update({ channel, ts, text: 'restored',
+        blocks: orch.resolvedCard(body.message, ':white_check_mark: all dormant agents handled') });
+    }
+  } catch { /* ignore */ }
+}
+
+// Reconnect nudge: when dormant agents exist, offer to restore them — at most
+// once per NUDGE_MIN_INTERVAL, triggered by an inbound message. Never auto-restores.
+async function maybeNudge(channel) {
+  if (!SPAWN_ENABLED || !NEXUS_CHANNEL) return;
+  const now = Date.now();
+  if (now - lastNudgeAt < NUDGE_MIN_INTERVAL_MS) return;
+  const dormant = await ledgerCmd(['list', '--state', 'dormant', '--json']);
+  if (!Array.isArray(dormant) || !dormant.length) return;
+  lastNudgeAt = now;
+  try { await web.chat.postMessage({ channel, text: `${dormant.length} dormant agent(s) — restore?`, blocks: orch.nudgeCard(dormant) }); }
+  catch (e) { console.error(`[slack-bridge] nudge failed: ${e.message}`); }
+}
+
+// Expire stale confirm cards so a never-clicked card never holds a repo's lock.
+async function expirePendingSpawns() {
+  const now = Date.now();
+  for (const [ts, p] of [...pendingSpawns]) {
+    if (now - p.createdAt < SPAWN_CONFIRM_TTL_MS) continue;
+    pendingSpawns.delete(ts);
+    inFlight.delete(p.repo);
+    try { await web.chat.update({ channel: p.channel, ts, text: 'expired',
+      blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `:hourglass: spawn offer for \`${p.repo}\` expired` } }] }); } catch { /* ignore */ }
+  }
+}
+
+// Orchestrator slash-style commands typed in #nexus: `restore [repo]`,
+// `keep <name> [on|off]`. Returns true if the message was a handled command.
+async function orchestratorCommand(event, channel, text) {
+  if (!SPAWN_ENABLED) return false;
+  // Strict forms only, so a natural-language message that happens to start with
+  // "restore"/"keep" (e.g. "restore the prod DB please") falls through to the
+  // spawn branch instead of being mis-parsed as a command.
+  const mRestore = text.match(/^restore(?:\s+(\S+))?\s*$/i);
+  if (mRestore) {
+    const repo = mRestore[1];
+    if (repo) { await doRestore(channel, event.ts, repo, event.user); return true; }
+    const dormant = await ledgerCmd(['list', '--state', 'dormant', '--json']);
+    if (Array.isArray(dormant) && dormant.length) {
+      await web.chat.postMessage({ channel, thread_ts: event.ts, text: 'restore which?', blocks: orch.nudgeCard(dormant) });
+    } else {
+      await replyInThread(channel, event.ts, ':information_source: no dormant agents to restore.');
+    }
+    return true;
+  }
+  const mKeep = text.match(/^keep\s+(\S+)(?:\s+(on|off|1|0|yes|no|true|false))?\s*$/i);
+  if (mKeep) {
+    const args = mKeep[2] ? [mKeep[1], mKeep[2]] : [mKeep[1]];
+    const res = deliverViaScript(join(HOME, '.tmux', 'agent-keep.sh'), args);
+    await replyInThread(channel, event.ts, res.ok ? `:pushpin: ${res.out || 'done'}` : `:warning: ${res.error}`);
+    return true;
+  }
+  // `spawn <repo> [seed…]` — explicit, by-name spawn (no classification). The
+  // rest of the line, if any, becomes the seed prompt for the new agent.
+  const mSpawn = text.match(/^spawn\s+(\S+)(?:\s+([\s\S]+))?$/i);
+  if (mSpawn) {
+    const repoArg = mSpawn[1];
+    const seed = (mSpawn[2] || '').trim();
+    const allow = orch.loadAllowlist(SPAWN_ALLOWLIST_FILE);
+    const match = orch.matchAllowlist(allow, repoArg);
+    if (!match) {
+      await replyInThread(channel, event.ts,
+        `:information_source: \`${repoArg}\` isn't on the spawnable allowlist. Spawnable: ${spawnableListMsg(orch.allowlistEntries(allow))}.`);
+      return true;
+    }
+    await postSpawnConfirm(channel, event.ts, match, seed || `Start work in ${match.name}.`, event.user, undefined);
+    return true;
+  }
+  return false;
+}
+
+// Small synchronous helper to run a local script and capture stdout (keep cmd).
+function deliverViaScript(script, args) {
+  try {
+    const out = execFileSync(script, args, { encoding: 'utf8', timeout: 5000 }).trim();
+    return { ok: true, out };
+  } catch (e) {
+    return { ok: false, error: (e.stdout || e.message || '').toString().trim() };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Inbound message handler
 // ---------------------------------------------------------------------------
 const IGNORED_SUBTYPES = new Set([
@@ -442,6 +800,15 @@ socket.on('interactive', async ({ body, ack }) => {
 async function handleInteractive(body) {
   if (!body || body.type !== 'block_actions') return;
   const action = (body.actions || [])[0];
+  if (!action) return;
+  const chan = body.channel && body.channel.id;
+  const mts = body.message && body.message.ts;
+  // Orchestrator buttons (spawn confirm / restore) — routed before the
+  // permission-digit path so their action_ids never collide with 1/2/3.
+  if (SPAWN_ENABLED && typeof action.action_id === 'string') {
+    if (action.action_id.startsWith('spawn:')) { await handleSpawnAction(action, chan, mts, body); return; }
+    if (action.action_id.startsWith('restore:')) { await handleRestoreAction(action, chan, mts, body); return; }
+  }
   const digit = action && action.value;
   if (!['1', '2', '3'].includes(digit)) return;
   const channel = body.channel && body.channel.id;
@@ -500,6 +867,10 @@ async function handleMessage(event) {
 
   const channel = event.channel;
   const isReply = event.thread_ts && event.thread_ts !== event.ts;
+  console.log(`[orch-debug] inbound ${inNexus ? 'nexus' : 'dm'} ${isReply ? 'reply' : 'top'} from ${event.user}: "${String(event.text).slice(0, 70)}"`);
+
+  // Reconnect nudge: opportunistic, self-throttled (>=1h), never auto-restores.
+  if (inNexus) maybeNudge(channel).catch(() => {});
 
   // 1. Reply inside a request thread -> answer that request. The reply may land on
   //    the request card directly (legacy top-level) or on the agent's anchor thread
@@ -562,15 +933,34 @@ async function handleMessage(event) {
     return;
   }
 
+  // 2b. Orchestrator commands (`restore [repo]`, `keep <name>`, `spawn <repo>`) —
+  //     checked before the classifier so they aren't mis-routed to a running agent.
+  if (await orchestratorCommand(event, channel, cleaned)) return;
+
+  // 2c. Explicit spawn intent ("spin up an agent on X") -> go straight to the
+  //     spawn flow, BEFORE routing. An explicit ask must win over route-to-a-
+  //     running-agent; offerSpawn(explicit) always answers, so we never fall
+  //     through to a misdirected route or the generic hint.
+  if (SPAWN_ENABLED && hasSpawnIntent(cleaned)) {
+    console.log(`[orch-debug] explicit spawn intent -> bypassing routing for "${cleaned.slice(0, 60)}"`);
+    try {
+      if (await offerSpawn(channel, event.ts, cleaned, event.user, { explicit: true })) return;
+    } catch (e) {
+      console.error(`[slack-bridge] explicit offerSpawn error: ${e.message}`);
+    }
+  }
+
   // 3. Unaddressed / untracked -> try to classify a target, else a usage hint.
   if (ROUTE_ENABLED) {
     const agents = loadRegistry();
     if (agents.length) {
       const verdict = await classifyTarget(cleaned, agents);
+      console.log(`[orch-debug] route "${cleaned.slice(0, 60)}" -> classifyTarget ${JSON.stringify(verdict)} (floor ${ROUTE_MIN_CONFIDENCE})`);
       if (verdict && verdict.agent) {
         const match = agents.find((a) => a.name.toLowerCase() === String(verdict.agent).toLowerCase());
         if (match && Number(verdict.confidence) >= ROUTE_MIN_CONFIDENCE) {
           const res = match.pane ? deliverToPane(match.pane, cleaned) : deliverToSlot(match.slot, cleaned);
+          console.log(`[orch-debug] routed to ${match.name} delivery=${JSON.stringify(res)}`);
           if (res.ok) {
             flashPane(match.pane, answerLabel(cleaned));
             await react(channel, event.ts, 'white_check_mark');
@@ -578,12 +968,24 @@ async function handleMessage(event) {
               `:robot_face: routed to \`${match.name}\` (auto · ${Math.round(Number(verdict.confidence) * 100)}%). Use \`name: …\` to override.`);
             return;
           }
-          // delivery failed — fall through to the usage hint below
+          // delivery failed — fall through to the spawn branch / usage hint below
         }
       }
     }
   }
 
+  // 3b. No running agent matched. If enabled, offer to spawn the right one
+  //     (resolve repo -> confirm -> spawn). offerSpawn returns false when the
+  //     repo can't be resolved, so we fall back to the usage hint.
+  if (SPAWN_ENABLED) {
+    try {
+      if (await offerSpawn(channel, event.ts, cleaned, event.user)) return;
+    } catch (e) {
+      console.error(`[slack-bridge] offerSpawn error: ${e.message}\n${e.stack}`);
+    }
+  }
+
+  console.log(`[orch-debug] no match -> usage hint for "${cleaned.slice(0, 60)}"`);
   await replyInThread(channel, event.ts,
     `:information_source: Address an agent with \`name: your message\` (or reply in a thread I started). Active: ${liveAgentList()}`);
 }
@@ -686,6 +1088,16 @@ const httpServer = http.createServer((req, res) => {
   if (NEXUS_CHANNEL) {
     setInterval(pruneLoop, PRUNE_INTERVAL_MS);
     console.log(`[slack-bridge] stale-card prune sweep every ${PRUNE_INTERVAL_MS}ms`);
+  }
+
+  // Orchestrator: seed per-repo locks from the ledger and sweep expired confirm
+  // cards so a never-clicked offer never holds a repo's lock forever.
+  if (SPAWN_ENABLED) {
+    await seedLocksOnStartup();
+    setInterval(() => { expirePendingSpawns().catch(() => {}); }, 60000);
+    console.log(`[slack-bridge] orchestrator spawn branch ENABLED (session=${SPAWN_SESSION}, allowlist=${SPAWN_ALLOWLIST_FILE})`);
+  } else {
+    console.log('[slack-bridge] orchestrator spawn branch disabled (set SLACK_SPAWN_ENABLED=1 to enable)');
   }
 
   await socket.start();

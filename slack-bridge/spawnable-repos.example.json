@@ -1,0 +1,5 @@
+{
+  "__comment__": "Spawnable-repo allowlist for the Slack orchestrator. Copy to ~/.tmux/spawnable-repos.json (or set SLACK_SPAWN_ALLOWLIST_FILE) and edit. Keys are repo names as Spark returns them; values are ABSOLUTE local checkout paths the agent is spawned in (`tmux new-window -c <path>`). Only repos listed here can be auto-spawned. Remove this __comment__ key in your real file or leave it — it is ignored (never a valid repo name).",
+  "store-front": "/home/persinac/repos/flashback-fleet/store-front",
+  "wallet-api": "/home/persinac/repos/flashback-fleet/wallet-api"
+}
