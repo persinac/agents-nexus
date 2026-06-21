@@ -5,20 +5,14 @@
     <key>Label</key>
     <string>com.agents-nexus.slack-bridge</string>
 
-    <!-- Secrets come from Doppler (nexus/prd), not repo-root .env. `doppler run`
-         injects SLACK_* into the process env; index.js's .env loader stays as a
-         harmless fallback. Pinned to -p/-c so it ignores the dir's inherited scope.
-         Needs the Doppler CLI authed for this user (~/.doppler, found via HOME). -->
+    <!-- Vanilla launch (macOS / work box does not use Doppler): secrets + bus
+         config come from repo-root .env, loaded by index.js itself
+         (resolve(__dirname,'..','.env') — fills gaps, never overrides a real env
+         var). Put SLACK_* + SLACK_BUS_ENABLED/SLACK_AGENTS_CHANNEL in <repo>/.env.
+         (Linux runs the bridge from a separate systemd unit that wraps Doppler.) -->
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/env</string>
-        <string>doppler</string>
-        <string>run</string>
-        <string>-p</string>
-        <string>nexus</string>
-        <string>-c</string>
-        <string>prd</string>
-        <string>--</string>
         <string>node</string>
         <string>__AGENTS_NEXUS_DIR__/slack-bridge/index.js</string>
     </array>
