@@ -19,7 +19,7 @@ over Tailscale.
 | 8. tmux Layer | :white_check_mark: Done — Linux install script, hooks, bashrc functions, systemd user units |
 | 9. API Key Rotation | :white_check_mark: Ready — infrastructure in place (`usekey`/`whichkey`/`keys`), activate when needed |
 | 10. Client Machine Setup | :white_check_mark: Done — SSH config, MCP servers (spark SSE + agent-memory over SSH) in `~/.claude.json` |
-| 11. Stability (idle reboots) | :white_check_mark: Mitigated — `processor.max_cstate=1` + `crash-breadcrumb`/`boot-notify` services; BIOS C-state toggle + UPS pending |
+| 11. Stability (idle reboots) | :warning: Stopgap only — C-state fix **falsified** (rebooted 6× with it active 2026-06-22); now on `cpu-boost-off.service` (boost disabled). Root cause = power delivery; **DC-brick swap + BIOS update pending**. See [nexus-reboot-plan.md](./nexus-reboot-plan.md) |
 
 **Pre-work completed:** Repo discovery pipeline built (`scripts/`), manifest
 generated with rule-based + AI tags (`repos-manifest.yaml`), reference repos
@@ -648,6 +648,14 @@ Open `http://100.75.154.84:3000` for Langfuse (or `/langfuse` via Caddy).
 
 ## Phase 11 — Stability: Spontaneous Reboots (AMD deep-idle)
 
+> ⚠️ **Superseded — see [nexus-reboot-plan.md](./nexus-reboot-plan.md).** A 3rd
+> cluster on 2026-06-22 hard-reset **6× with the C-state fix below already active**,
+> falsifying the deep-idle theory. Root cause is now **marginal power delivery under
+> the 7940HS's boost current transients**; the live stopgap is `cpu-boost-off.service`
+> (CPU boost disabled) and the real fix is a DC-brick swap. The C-state cap is kept
+> only as harmless insurance. The tooling below (`crash-breadcrumb`/`boot-notify`)
+> remains valid and current.
+
 **Symptom:** the box hard-reboots on its own with no logs — `journalctl -b -1`
 ends mid-activity, with no OOM / MCE / thermal / panic. From an SSH client this
 looks like a "network error" (PuTTY etc.), because the TCP session dies *with*
@@ -683,8 +691,10 @@ sudo update-grub
 - Check for a BIOS newer than the installed AMI build.
 - A **UPS** is the definitive test/fix for the wall-power suspect.
 
-> If it goes a week without rebooting, the C-state fix was the cure. If it pings
-> again, the breadcrumb line in the Slack notice says power vs. thermal at a glance.
+> Update (2026-06-22): it pinged again *with this fix active* — so the C-state fix
+> was **not** the cure. The breadcrumb line in the Slack notice still tells power vs.
+> thermal at a glance; see [nexus-reboot-plan.md](./nexus-reboot-plan.md) for the
+> current diagnosis and live mitigation (`cpu-boost-off.service`).
 
 ---
 
