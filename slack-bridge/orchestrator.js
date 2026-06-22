@@ -163,7 +163,10 @@ export function buildSpawnCommand({ slug, seed, restoreCheckpoint, openClaude })
 export function spawnWindow({ session, name, cwd, slug, seed, restoreCheckpoint, openClaude, timeoutMs = 8000 }) {
   const command = buildSpawnCommand({ slug: slug || name, seed, restoreCheckpoint, openClaude });
   // -P -F prints the new pane id + window index so we can report/ledger identity.
-  const args = ['new-window', '-dP', '-F', '#{pane_id}\t#{window_index}', '-t', session, '-n', name, '-c', cwd, command];
+  // `${session}:` (trailing colon) targets the session and appends at the next free
+  // index; a bare session name resolves to its ACTIVE window, so new-window would try
+  // to create AT that index and fail "index N in use" when the low slots are taken.
+  const args = ['new-window', '-dP', '-F', '#{pane_id}\t#{window_index}', '-t', `${session}:`, '-n', name, '-c', cwd, command];
   return new Promise((resolve) => {
     execFile('tmux', args, { timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) { resolve({ ok: false, error: (stderr || err.message || 'tmux new-window failed').toString().trim() }); return; }
