@@ -217,8 +217,13 @@ function resolveByName(name) {
   return loadRegistry().find((a) => a.name.toLowerCase() === lower) || null;
 }
 
+// Match by LIVE window index, not the registry SLOT= field — that field is the slot
+// at registration and goes stale when windows are renumbered (it reads 1 for agents
+// actually at 2/3/4/…). Resolve each entry's current slot from its pane (like
+// agent-registry.sh `peers`), falling back to the stored value if tmux is unreachable.
 function resolveBySlot(slot) {
-  return loadRegistry().find((a) => a.slot === String(slot)) || null;
+  const s = String(slot);
+  return loadRegistry().find((a) => (paneSlot(a.pane) || a.slot) === s) || null;
 }
 
 function liveAgentList() {
