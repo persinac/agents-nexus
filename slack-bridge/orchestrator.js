@@ -478,3 +478,13 @@ export function advanceDone(entry, signal, now, { stableMs = 20000, ttlMs = 1800
   if (w !== '2') e.idleSince = null;   // left idle (or never idle) → reset the timer
   return { action: 'keep', entry: e };
 }
+
+// Cap a string to `max` chars, appending a VISIBLE marker when it overflows — so an
+// over-long bus / notify message is never *silently* truncated (the dangerous failure
+// mode: the reader loses the tail without knowing). Returns the input unchanged when
+// it fits. Slack's text field allows ~40k, so `max` is a sanity bound, not a hard limit.
+export function capWithMarker(str, max) {
+  const s = String(str ?? '');
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)} …[truncated ${s.length - max} chars]`;
+}

@@ -55,6 +55,7 @@
 | 30e | 5 | ↳ **Bus → memory ingest** — best-effort `create_note` to mnemon on delivery so inter-agent exchanges become queryable fleet history | backlog |
 | 30f | 5 | ↳ **Flow control** — per-sender rate limit (reuse `rateState`), loop detection (A→B→A / corr-depth), priority lane for acks/replies | backlog |
 | 30g | 6 | ↳ **Broker substrate (optional)** — swap transport to NATS JetStream / Redis Streams *behind the envelope*, Slack kept as the human-observable mirror + cross-firewall fallback. The "throw infra at it" rung, deliberately last | backlog |
+| 30h | 2 | ↳ **Large-message chunking (no truncation)** — no-loss follow-up to the #28 silent-truncation bug (integration-tests hit a ~1500-char cut on an inbound reply). Option A (shipped) caps the bus body at `SLACK_BUS_MAX_CHARS` with a visible `…[truncated N chars]` marker so loss is never silent; Option B = split over-cap messages into `[k/N]` parts, buffer per-sender on the receiving bridge, and reassemble before send-keys so nothing is ever dropped. | backlog |
 
 ## Spark Discovery Enrichment (idea 20)
 

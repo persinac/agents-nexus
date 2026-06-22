@@ -3,7 +3,7 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker } from './orchestrator.js';
 
 const NOW_S = 1_000_000;          // fixed "now" in seconds
 const NOW_MS = NOW_S * 1000;
@@ -131,4 +131,19 @@ test('advanceDone: a permission prompt is not "finished"', () => {
 test('advanceDone: drops a stale entry past its TTL', () => {
   const r = advanceDone({ at: 0, sawWorking: true, idleSince: null }, { waiting: '0', worked: true }, 1_800_001, DONE_OPTS);
   assert.equal(r.action, 'drop');
+});
+
+test('capWithMarker: unchanged within the cap', () => {
+  assert.equal(capWithMarker('hello', 10), 'hello');
+  assert.equal(capWithMarker('exactly-ten', 'exactly-ten'.length), 'exactly-ten'); // boundary
+  assert.equal(capWithMarker('', 5), '');
+  assert.equal(capWithMarker(null, 5), '');        // no marker on empty
+  assert.equal(capWithMarker(undefined, 5), '');
+});
+
+test('capWithMarker: visible marker + dropped count when over', () => {
+  const out = capWithMarker('abcdefghij', 4);      // 10 chars, cap 4 -> drop 6
+  assert.equal(out, 'abcd …[truncated 6 chars]');
+  assert.ok(out.startsWith('abcd'));
+  assert.match(out, /\[truncated 6 chars\]$/);
 });

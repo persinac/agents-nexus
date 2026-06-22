@@ -113,6 +113,11 @@ const LEDGER_FILE = process.env.AGENT_LEDGER || join(HOME, '.tmux', 'agent-ledge
 // delivers it (handleBusMessage). Inert unless both vars are set.
 const BUS_ENABLED = process.env.SLACK_BUS_ENABLED === '1';
 const AGENTS_CHANNEL = process.env.SLACK_AGENTS_CHANNEL || '';
+// Max chars of an A2A message body the bus forwards. Slack's text field allows ~40k,
+// so this is a sanity bound, not a hard ceiling. Over it, capWithMarker appends a
+// visible truncation marker (never silent). Raising it is safe; chunking (IDEAS #30h)
+// removes the limit entirely. Was a silent `.slice(0, 1500)` — the bug integration-tests caught.
+const BUS_MAX_CHARS = parseInt(process.env.SLACK_BUS_MAX_CHARS || '8000', 10);
 
 // --- Presence registry (Phase 2; opt-in on top of the bus; default OFF) ---
 // Each bridge announces its live local agent set on the bus channel and consumes
@@ -1412,8 +1417,8 @@ const httpServer = http.createServer((req, res) => {
         // values are the menu digits. `text` is the notification fallback.
         const isPerm = (kind || '') === 'permission_prompt';
         const detail = summary
-          ? `${category ? `*[${String(category).slice(0, 60)}]*\n` : ''}:robot_face: ${String(summary).slice(0, 1500)}`
-          : (message || 'needs your input').toString().slice(0, 1500);
+          ? `${category ? `*[${String(category).slice(0, 60)}]*\n` : ''}:robot_face: ${orch.capWithMarker(summary, 2500)}`
+          : orch.capWithMarker(message || 'needs your input', 2500);
         const blocks = [
           { type: 'section', text: { type: 'mrkdwn', text: `:hourglass_flowing_sand: *${name}* needs input\n${detail}` } },
         ];
@@ -1469,7 +1474,7 @@ const httpServer = http.createServer((req, res) => {
         const sender = String(from || 'unknown').slice(0, 80);
         // `to: ↩ from <sender>: <msg>` — the leading `to:` is what the receiving
         // bridge's addressed-message parser keys on; the rest is delivered verbatim.
-        const text = `${to}: ↩ from ${sender}: ${String(msg).slice(0, 1500)}`;
+        const text = `${to}: ↩ from ${sender}: ${orch.capWithMarker(msg, BUS_MAX_CHARS)}`;
         const posted = await web.chat.postMessage({ channel: AGENTS_CHANNEL, text });
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true, ts: posted.ts }));
