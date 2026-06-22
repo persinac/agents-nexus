@@ -2,6 +2,45 @@
 
 State of affairs as of 2026-06-19 (originally drafted 2026-04-30). Mac is the daily driver and well-exercised; Linux is the canonical-host plan with substantial scaffolding (PLAN.md, install.sh, systemd units). Most of the original gaps are now closed — see the **2026-06 update** below before trusting the older checklist rows.
 
+## 2026-06-22 — Linux → Mac delta (setting up the work laptop)
+
+`nexus` (Linux) is now the always-on, fully-featured host. This section is the
+**reverse** of the rest of this doc: what landed on Linux that a fresh **Mac** (the
+work laptop) needs to match. Read this first; the older sections are Mac→Linux history.
+
+### Already cross-platform — works on the Mac for free
+Platform-agnostic code, so a Mac only needs the bridge running:
+- **All Slack-bridge features** (`slack-bridge/`, shared Node): `status`/`who`, delivery
+  receipts, the completion ping, the inter-agent bus + presence, the spawn classifier,
+  and the `resolveBySlot` live-slot fix. Nothing to port.
+- **Reaper / `@keep` / ledger** — `scripts/overseer-reap.sh`, `agent-keep.sh`,
+  `agent-ledger.py` are repo-root shared scripts.
+- **`tmux/mac/install.sh`** already loads every `launchd/*.plist` (incl.
+  `com.agents-nexus.slack-bridge.plist`) into `~/Library/LaunchAgents` and seeds the
+  A2A bus env on macOS (`SLACK_BUS_ENABLED` / `SLACK_A2A_SAMEHOST`).
+
+### Gaps to close on the Mac
+
+| # | Item | Linux has | Mac status | Action |
+|---|------|-----------|------------|--------|
+| 1 | **Secrets → bridge** | `slack-bridge.service` runs under `doppler run -p nexus -c prd` | Mac `slack-bridge.plist` runs plain `node` → bridge reads `SLACK_*` from repo-root **`.env`** | Populate `.env` (BOT/APP tokens, `SLACK_NEXUS_CHANNEL`, `SLACK_AGENTS_CHANNEL`), **or** wrap the plist in `doppler run` for parity |
+| 2 | **`open-claude.sh` seed/restore** | `SEED_PROMPT` + `RESTORE_CHECKPOINT` (commit ae3f590) | **missing** (`SEED_PROMPT=0`, `RESTORE_CHECKPOINT=0`) | Port the seed/restore blocks into `tmux/mac/tmux-scripts/open-claude.sh` so the orchestrator's `spawn`/`restore` work |
+| 3 | **`open-claude.sh` source-of-truth** | repo-canonical | Mac runtime `~/.tmux/open-claude.sh` symlinks **out-of-tree** to `claude-agents-tmux` | Adopt Option B (agents-nexus canonical) so the work laptop needs only one repo |
+| 4 | **plist `HOME` templating** | `__HOME__` templated | `slack-bridge.plist` hardcodes `HOME=/Users/alex.persinger@getgarner.com` | OK iff the work-laptop username matches; else template it |
+| 5 | **crash-breadcrumb / boot-notify** | Linux-only (AMD `k10temp`, `journalctl`) | none | **Skip** — nexus-box reliability tooling, not fleet-essential |
+
+### Work-laptop bring-up checklist
+1. Clone `agents-nexus`; install deps (Docker, fnm/Node, `task`, `doppler`, Claude Code) — Mac equivalents of `docs/mini-pc-setup.md` Phase 2.
+2. **Secrets**: create `.env` with the `SLACK_*` tokens (copy from a working host or Doppler). Flip `SLACK_BUS_ENABLED=1` + set `SLACK_AGENTS_CHANNEL` in `~/.tmux/env.sh` to join the bus.
+3. Close gaps #2/#3 (port seed/restore into the Mac `open-claude.sh`; drop the out-of-tree symlink).
+4. `bash tmux/mac/install.sh` — symlinks scripts, writes env.sh, loads all launchd plists (bridge + scheduled jobs).
+5. Verify: `curl localhost:8788/health` (`connected:true`) → then `status` in Slack.
+
+### Work-environment caveats (confirm first)
+- **Corporate proxy** — the work laptop likely routes Claude through the devn/Bifrost relay (`launchd/personal/com.garner.devn-relay.plist`, `ANTHROPIC_BASE_URL`); the home nexus points at a local proxy, so this value differs.
+- **Doppler/Slack access** from the work network, and whether the same Slack workspace/tokens are usable on a work machine.
+- **Which repos** to clone + the spawnable-repos allowlist for that machine.
+
 ## 2026-06 update — what's been closed since the 2026-04-30 draft
 
 - **Shell init** — `tmux/linux/bashrc` now exists and is sourced by `tmux/linux/install.sh` (the `bashrc` mirror the checklist asked for). No longer a gap.
