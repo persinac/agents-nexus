@@ -61,6 +61,16 @@ const PRUNE_INTERVAL_MS = parseInt(process.env.SLACK_PRUNE_INTERVAL_MS || '10000
 // tool before it's flagged "stuck" in the roll-up. Read-only command, always on.
 const STATUS_STUCK_MIN = parseInt(process.env.SLACK_STATUS_STUCK_MIN || '10', 10);
 
+// Completion ping: when an agent you messaged from Slack finishes its turn and
+// settles back at the prompt, post "finished — idle" to that channel so you know
+// it acted on your request — handy in auto-mode, from mobile. Gated to agents you
+// actually messaged (pinging every idle transition would be noise).
+const DONE_PING = process.env.SLACK_DONE_PING !== '0';                              // default ON
+const DONE_STABLE_MS = parseInt(process.env.SLACK_DONE_STABLE_MS || '20000', 10);   // idle must hold this long (debounces auto-mode flicker)
+const DONE_POLL_MS = parseInt(process.env.SLACK_DONE_POLL_MS || '5000', 10);        // how often messaged agents are checked
+const DONE_TTL_MS = parseInt(process.env.SLACK_DONE_TTL_MS || '1800000', 10);       // stop tracking after 30 min
+const messagedPanes = new Map(); // pane -> { name, channel, at, sawWorking, idleSince, lastTool0 }
+
 // Smart routing: when a message names no agent, an LLM (haiku — fast/cheap, same
 // middle-man pattern as notify-classify.py) infers the target from the active
 // agent list. Disabled with SLACK_ROUTE_ENABLED=0 or when no API key is present;
@@ -1038,6 +1048,53 @@ async function doStatus(channel, threadTs, target) {
   }
 }
 
+// --- Completion ping: track Slack-messaged agents, announce when they finish ---
+
+// Record that we just delivered a Slack message to an agent, so doneSweep can tell
+// you when it settles. Newest delivery wins (resets the timer + work baseline).
+function markMessaged(pane, name, channel) {
+  if (!DONE_PING || !pane) return;
+  messagedPanes.set(pane, {
+    name, channel, at: Date.now(), sawWorking: false, idleSince: null,
+    lastTool0: paneOpt(pane, '@last_tool'),   // baseline: any work bumps @last_tool past this
+  });
+}
+
+// Poll each messaged agent, advance its done-state machine (orch.advanceDone), and
+// post the "finished — idle" ping once it settles. Drops dead/expired entries.
+// Reentrancy-guarded so a slow post can't overlap the next tick.
+let doneSweeping = false;
+async function doneSweep() {
+  if (doneSweeping || !messagedPanes.size) return;
+  doneSweeping = true;
+  try {
+    let live = null;
+    try {
+      const out = execFileSync('tmux', ['list-panes', '-a', '-F', '#{pane_id}'], { encoding: 'utf8', timeout: 3000 });
+      live = new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
+    } catch { live = null; }
+    const now = Date.now();
+    for (const [pane, entry] of messagedPanes) {
+      if (live && !live.has(pane)) { messagedPanes.delete(pane); continue; }   // window gone
+      const waiting = paneWaiting(pane);
+      const worked = waiting === '0' || Number(paneOpt(pane, '@last_tool')) > Number(entry.lastTool0 || 0);
+      const { action, entry: next } = orch.advanceDone(entry, { waiting, worked }, now, { stableMs: DONE_STABLE_MS, ttlMs: DONE_TTL_MS });
+      if (action === 'fire') {
+        messagedPanes.delete(pane);
+        try {
+          await web.chat.postMessage({ channel: entry.channel, text: `:white_check_mark: *${entry.name}* finished — now idle at the prompt.` });
+        } catch (e) { console.error(`[slack-bridge] done ping failed: ${e.message}`); }
+      } else if (action === 'drop') {
+        messagedPanes.delete(pane);
+      } else {
+        messagedPanes.set(pane, next);
+      }
+    }
+  } finally {
+    doneSweeping = false;
+  }
+}
+
 // Hold a bus message for a busy recipient. Bounded per pane so a perpetually-busy
 // agent can't grow it without limit (oldest dropped — still in #nexus-agents).
 function enqueueBus(pane, target, body) {
@@ -1189,6 +1246,7 @@ async function handleMessage(event) {
       const res = await resolveRequest(reqTs, channel, deliverText);
       if (res.ok) {
         await react(channel, event.ts, 'white_check_mark');
+        markMessaged(entry.pane, entry.name, channel);   // ping when it finishes the resumed work
       } else if (res.stale) {
         await react(channel, event.ts, 'heavy_check_mark');   // prompt already handled — card removed, nothing injected
       } else {
@@ -1223,6 +1281,13 @@ async function handleMessage(event) {
     if (res.ok) {
       flashPane(agent.pane, answerLabel(text));          // mirror the message onto the agent's terminal
       await react(channel, event.ts, 'white_check_mark');
+      markMessaged(agent.pane, agent.name, channel);     // ping when it finishes
+      // Receipt-with-state: tell you whether it took the message now or queued it.
+      const s = orch.statusLabel(paneWaiting(agent.pane));
+      const note = s.key === 'active' ? "queued — it's mid-task; it'll pick this up at its next turn"
+                 : s.key === 'waiting' ? "note: it's at a permission prompt, so this waits until that's answered"
+                 : 'on it now';
+      await replyInThread(channel, event.ts, `:inbox_tray: \`${agent.name}\` ${s.emoji} ${s.text} · ${note}`);
     } else {
       await react(channel, event.ts, 'x');
       await replyInThread(channel, event.ts, `:warning: ${res.error}`);
@@ -1261,8 +1326,10 @@ async function handleMessage(event) {
           if (res.ok) {
             flashPane(match.pane, answerLabel(cleaned));
             await react(channel, event.ts, 'white_check_mark');
+            markMessaged(match.pane, match.name, channel);   // ping when it finishes
+            const s = orch.statusLabel(paneWaiting(match.pane));
             await replyInThread(channel, event.ts,
-              `:robot_face: routed to \`${match.name}\` (auto · ${Math.round(Number(verdict.confidence) * 100)}%). Use \`name: …\` to override.`);
+              `:robot_face: routed to \`${match.name}\` (auto · ${Math.round(Number(verdict.confidence) * 100)}%) ${s.emoji} ${s.text}. Use \`name: …\` to override.`);
             return;
           }
           // delivery failed — fall through to the spawn branch / usage hint below
@@ -1442,6 +1509,12 @@ const httpServer = http.createServer((req, res) => {
   if (NEXUS_CHANNEL) {
     setInterval(pruneLoop, PRUNE_INTERVAL_MS);
     console.log(`[slack-bridge] stale-card prune sweep every ${PRUNE_INTERVAL_MS}ms`);
+  }
+
+  // Completion ping: announce when a Slack-messaged agent settles back at idle.
+  if (DONE_PING) {
+    setInterval(() => { doneSweep().catch((e) => console.error(`[slack-bridge] done sweep error: ${e.message}`)); }, DONE_POLL_MS);
+    console.log(`[slack-bridge] completion ping ON (poll ${DONE_POLL_MS}ms, stable ${DONE_STABLE_MS}ms; SLACK_DONE_PING=0 to disable)`);
   }
 
   // Orchestrator: seed per-repo locks from the ledger and sweep expired confirm

@@ -75,6 +75,28 @@ wedged — no round-trip to the agent. The same data is exposed as JSON at
 `SLACK_STATUS_STUCK_MIN` (default `10`) sets how many minutes a "working" agent can
 go without running a tool before the roll-up flags it `:warning: stuck`.
 
+### Delivery feedback: receipts + completion ping
+
+So you're not guessing whether a busy agent got your message — especially on mobile,
+with an agent cruising in auto-mode:
+
+- **Receipt with state.** When you address an agent (`name: …`, or via smart
+  routing), the bridge replies with the agent's state at delivery — `on it now`
+  (was idle), `queued — it'll pick this up at its next turn` (was mid-task), or a
+  heads-up that it's at a permission prompt. (The ✅ reaction still appears too.)
+- **Completion ping.** When an agent **you messaged** finishes its turn and settles
+  back at the prompt, the bridge posts *":white_check_mark: `name` finished — now
+  idle"* to the same channel/DM. It's gated to agents you actually messaged (not
+  every idle transition), and it waits for the agent to do work and *then* hold idle
+  for a debounce window, so auto-mode's between-turn flicker doesn't ping early.
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `SLACK_DONE_PING` | `1` (on) | Master switch for the completion ping. `0` disables it (receipts still post). |
+| `SLACK_DONE_STABLE_MS` | `20000` | How long an agent must stay idle before it's called "finished" (debounce). |
+| `SLACK_DONE_POLL_MS` | `5000` | How often messaged agents are polled. |
+| `SLACK_DONE_TTL_MS` | `1800000` | Give up tracking a messaged agent after this long if it never settles (30 min). |
+
 ## Orchestrator: spawn the right agent (opt-in)
 
 When routing finds **no** running agent for a message (step 3 falls through), the

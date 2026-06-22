@@ -446,3 +446,35 @@ export function formatAgentStatus(agent, opts = {}) {
   }
   return lines.join('\n');
 }
+
+// --------------------------------------------------------------------------
+// Completion-ping state machine (pure). After the user messages an agent from
+// Slack, index.js tracks it and calls this each poll to decide when to announce
+// "finished — idle". Kept pure (no tmux/Date) so the tricky timing is testable.
+//
+// `entry` carries { at, sawWorking, idleSince } (plus app fields we pass through).
+// `signal` is the live read: { waiting, worked } — `worked` = the agent has done
+// something since being messaged (observed `@waiting=0`, or `@last_tool` advanced),
+// computed by the caller so a quick task that never lands on a `0` poll still counts.
+//
+// Rules:
+//   - drop once older than ttlMs (give up; never leak an entry).
+//   - mark sawWorking permanently once `worked`.
+//   - fire only after the agent has *worked* AND then stayed idle (`@waiting=2`)
+//     for stableMs — the debounce stops auto-mode's between-turn 0→2→0 flicker
+//     from pinging prematurely.
+//   - permission ('1'), pre-work idle, working ('0'), or unknown → not finished;
+//     leaving idle resets the stability timer.
+export function advanceDone(entry, signal, now, { stableMs = 20000, ttlMs = 1800000 } = {}) {
+  const e = { ...entry };
+  if (now - e.at > ttlMs) return { action: 'drop', entry: e };
+  const w = String(signal?.waiting ?? '').trim();
+  if (signal?.worked) e.sawWorking = true;
+  if (w === '2' && e.sawWorking) {
+    if (e.idleSince == null) e.idleSince = now;
+    if (now - e.idleSince >= stableMs) return { action: 'fire', entry: e };
+    return { action: 'keep', entry: e };
+  }
+  if (w !== '2') e.idleSince = null;   // left idle (or never idle) → reset the timer
+  return { action: 'keep', entry: e };
+}

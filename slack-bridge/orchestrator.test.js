@@ -3,7 +3,7 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone } from './orchestrator.js';
 
 const NOW_S = 1_000_000;          // fixed "now" in seconds
 const NOW_MS = NOW_S * 1000;
@@ -71,4 +71,64 @@ test('formatAgentStatus: single-agent detail with branch + last tool', () => {
 
 test('formatAgentStatus: null agent', () => {
   assert.equal(formatAgentStatus(null), ':warning: no such agent');
+});
+
+const DONE_OPTS = { stableMs: 20_000, ttlMs: 1_800_000 };
+const fresh = () => ({ at: 0, sawWorking: false, idleSince: null });
+
+test('advanceDone: fires after work then a stable idle period', () => {
+  let e = fresh();
+  ({ entry: e } = advanceDone(e, { waiting: '0', worked: true }, 1_000, DONE_OPTS)); // working
+  assert.equal(e.sawWorking, true);
+  let r = advanceDone(e, { waiting: '2', worked: false }, 2_000, DONE_OPTS);          // idle starts
+  assert.equal(r.action, 'keep');
+  assert.equal(r.entry.idleSince, 2_000);
+  r = advanceDone(r.entry, { waiting: '2', worked: false }, 2_000 + 20_000, DONE_OPTS); // idle held
+  assert.equal(r.action, 'fire');
+});
+
+test('advanceDone: auto-mode flicker (0→2→0→2) does not fire prematurely', () => {
+  let e = fresh();
+  ({ entry: e } = advanceDone(e, { waiting: '0', worked: true }, 100, DONE_OPTS));
+  ({ entry: e } = advanceDone(e, { waiting: '2', worked: false }, 200, DONE_OPTS));   // idleSince=200
+  ({ entry: e } = advanceDone(e, { waiting: '0', worked: true }, 300, DONE_OPTS));    // back to work — reset
+  assert.equal(e.idleSince, null);
+  ({ entry: e } = advanceDone(e, { waiting: '2', worked: false }, 400, DONE_OPTS));   // idleSince=400
+  let r = advanceDone(e, { waiting: '2', worked: false }, 400 + 19_999, DONE_OPTS);   // not yet
+  assert.equal(r.action, 'keep');
+  r = advanceDone(r.entry, { waiting: '2', worked: false }, 400 + 20_000, DONE_OPTS); // now
+  assert.equal(r.action, 'fire');
+});
+
+test('advanceDone: messaged while idle waits for work, not the pre-work idle', () => {
+  let e = fresh();
+  // first poll: still idle, no work yet -> must NOT start the timer
+  let r = advanceDone(e, { waiting: '2', worked: false }, 1_000, DONE_OPTS);
+  assert.equal(r.action, 'keep');
+  assert.equal(r.entry.idleSince, null);
+  assert.equal(r.entry.sawWorking, false);
+  // work detected via @last_tool delta even though @waiting reads idle on this poll
+  ({ entry: e } = advanceDone(r.entry, { waiting: '2', worked: true }, 2_000, DONE_OPTS));
+  assert.equal(e.sawWorking, true);
+  assert.equal(e.idleSince, 2_000);
+  r = advanceDone(e, { waiting: '2', worked: false }, 2_000 + 20_000, DONE_OPTS);
+  assert.equal(r.action, 'fire');
+});
+
+test('advanceDone: a permission prompt is not "finished"', () => {
+  let e = fresh();
+  ({ entry: e } = advanceDone(e, { waiting: '0', worked: true }, 100, DONE_OPTS));
+  let r = advanceDone(e, { waiting: '1', worked: false }, 200, DONE_OPTS);            // at permission
+  assert.equal(r.action, 'keep');
+  assert.equal(r.entry.idleSince, null);
+  // answered, runs, then settles idle -> fires
+  ({ entry: e } = advanceDone(r.entry, { waiting: '0', worked: true }, 300, DONE_OPTS));
+  ({ entry: e } = advanceDone(e, { waiting: '2', worked: false }, 400, DONE_OPTS));
+  r = advanceDone(e, { waiting: '2', worked: false }, 400 + 20_000, DONE_OPTS);
+  assert.equal(r.action, 'fire');
+});
+
+test('advanceDone: drops a stale entry past its TTL', () => {
+  const r = advanceDone({ at: 0, sawWorking: true, idleSince: null }, { waiting: '0', worked: true }, 1_800_001, DONE_OPTS);
+  assert.equal(r.action, 'drop');
 });
