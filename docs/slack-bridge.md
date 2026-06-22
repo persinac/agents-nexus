@@ -260,14 +260,19 @@ so each inter-agent message gets its own turn. `#nexus-agents` is the durable re
 | `SLACK_PRESENCE_TTL_MS` | `960000` | A peer host is dropped from the map if no snapshot arrives within this window (crash/offline). |
 | `SLACK_PRESENCE_HOST` | `hostname()` | Override the host label this bridge announces under (the owner-tiebreak key). |
 
-> **Two processes, two envs:** the **bridge** reads these from Doppler (`nexus/prd`);
-> **agents** read `SLACK_BUS_ENABLED` from their shell env (e.g. `~/.tmux/env.sh`).
-> Both must have it set for an end-to-end remote send. `curl :8788/health` reports
-> `"bus": true` once the bridge side is live.
+> **Two processes, two envs:** the **bridge** reads these from its process env — Doppler
+> (`nexus/prd`) on the Linux box, or repo-root `.env` on a vanilla Mac (commit `73637b0`,
+> no Doppler wrap); **agents** read `SLACK_BUS_ENABLED` from their shell env (e.g.
+> `~/.tmux/env.sh`). Both must have it set for an end-to-end remote send. `curl
+> :8788/health` reports `"bus": true` once the bridge side is live.
 
 ### Enable it (one-time)
 
-1. Create the `#nexus-agents` channel and invite the bot.
+1. Create a **dedicated** `#nexus-agents` channel and invite the bot. ⚠️ It **must be a
+   different channel from `#nexus`** (`SLACK_NEXUS_CHANNEL`): the bridge treats every
+   message whose channel is `SLACK_AGENTS_CHANNEL` as bus traffic and `return`s before
+   the human-message path (`handleMessage`), so pointing the bus at the control channel
+   silently swallows cards, routing, and thread replies.
 2. In the Slack app's **Event Subscriptions → bot events**, add the `message.<type>`
    event for that channel's type (`message.channels` public / `message.groups`
    private) **and** the matching `channels:history` / `groups:history` scope — the
@@ -279,14 +284,18 @@ so each inter-agent message gets its own turn. `#nexus-agents` is the durable re
 
 #### Per-host rollout (e.g. a second box / the Mac work machine)
 
-Steps 1–2 are **app- and Doppler-level — done once for the whole fleet** (Doppler
-`nexus/prd` is shared across hosts, so the bridge-side flags already apply
-everywhere). Bringing the bus up on another box is just local plumbing:
+Step 2's Slack-app config (events/scopes) is **app-level — done once for the whole
+fleet**. The bridge-side bus env lives wherever that host's bridge reads its env:
+**Doppler `nexus/prd`** (shared across Doppler hosts) on the Linux box, or repo-root
+**`.env`** on a vanilla Mac (commit `73637b0` — the macOS bridge runs plain `node`, no
+Doppler wrap). Bringing the bus up on another box is just local plumbing:
 
 1. `git pull` (the bridge code + `agent-send.sh` are shared/symlinked; nothing host-specific to port).
-2. Make sure the **Doppler CLI is authed** for that user — the bridge is launched via
-   `doppler run -p nexus -c prd` (systemd unit on Linux, launchd plist on macOS), so
-   without it the service won't start.
+2. Set the bridge-side bus env for that host. **Doppler box:** ensure the Doppler CLI is
+   authed (the unit launches via `doppler run -p nexus -c prd`, systemd on Linux) — the
+   shared `nexus/prd` flags then apply. **Vanilla Mac:** put `SLACK_AGENTS_CHANNEL=<Cxxxx>`
+   (its own dedicated channel) + `SLACK_BUS_ENABLED=1` in repo-root `.env`; `kickstart -k`
+   the bridge to reload.
 3. Run the installer (`bash tmux/linux/install.sh` or `bash tmux/mac/install.sh`) — it
    seeds `SLACK_BUS_ENABLED` + `SLACK_A2A_SAMEHOST` into `~/.tmux/env.sh` (default
    off/local) and reinstalls the service.
