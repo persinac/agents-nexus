@@ -24,17 +24,50 @@ Platform-agnostic code, so a Mac only needs the bridge running:
 | # | Item | Linux has | Mac status | Action |
 |---|------|-----------|------------|--------|
 | 1 | **Secrets → bridge** | `slack-bridge.service` runs under `doppler run -p nexus -c prd` | Mac `slack-bridge.plist` runs plain `node` → bridge reads `SLACK_*` from repo-root **`.env`** | Populate `.env` (BOT/APP tokens, `SLACK_NEXUS_CHANNEL`, `SLACK_AGENTS_CHANNEL`), **or** wrap the plist in `doppler run` for parity |
-| 2 | **`open-claude.sh` seed/restore** | `SEED_PROMPT` + `RESTORE_CHECKPOINT` (commit ae3f590) | **missing** (`SEED_PROMPT=0`, `RESTORE_CHECKPOINT=0`) | Port the seed/restore blocks into `tmux/mac/tmux-scripts/open-claude.sh` so the orchestrator's `spawn`/`restore` work |
-| 3 | **`open-claude.sh` source-of-truth** | repo-canonical | Mac runtime `~/.tmux/open-claude.sh` symlinks **out-of-tree** to `claude-agents-tmux` | Adopt Option B (agents-nexus canonical) so the work laptop needs only one repo |
+| 2 | **`open-claude.sh` seed/restore** | `SEED_PROMPT` + `RESTORE_CHECKPOINT` (commit ae3f590) | ✅ **ported** — both now in `tmux/mac/tmux-scripts/open-claude.sh` | Done. A fresh `bash tmux/mac/install.sh` symlinks the repo copy into `~/.tmux/`, so `spawn`/`restore` work out of the box |
+| 3 | **`open-claude.sh` source-of-truth** | repo-canonical | Mac *runtime* `~/.tmux/open-claude.sh` symlinks **out-of-tree** to `claude-agents-tmux` | Fresh laptop: nothing to do — `install.sh` symlinks the agents-nexus copy. *Existing* Mac only: rerun `install.sh` to replace the out-of-tree symlink |
 | 4 | **plist `HOME` templating** | `__HOME__` templated | `slack-bridge.plist` hardcodes `HOME=/Users/alex.persinger@getgarner.com` | OK iff the work-laptop username matches; else template it |
 | 5 | **crash-breadcrumb / boot-notify** | Linux-only (AMD `k10temp`, `journalctl`) | none | **Skip** — nexus-box reliability tooling, not fleet-essential |
 
 ### Work-laptop bring-up checklist
 1. Clone `agents-nexus`; install deps (Docker, fnm/Node, `task`, `doppler`, Claude Code) — Mac equivalents of `docs/mini-pc-setup.md` Phase 2.
 2. **Secrets**: create `.env` with the `SLACK_*` tokens (copy from a working host or Doppler). Flip `SLACK_BUS_ENABLED=1` + set `SLACK_AGENTS_CHANNEL` in `~/.tmux/env.sh` to join the bus.
-3. Close gaps #2/#3 (port seed/restore into the Mac `open-claude.sh`; drop the out-of-tree symlink).
+3. _(Gaps #2/#3 are already handled for a fresh install — the ported `open-claude.sh` ships in the repo and `install.sh` symlinks it. Nothing to do on a new laptop.)_
 4. `bash tmux/mac/install.sh` — symlinks scripts, writes env.sh, loads all launchd plists (bridge + scheduled jobs).
 5. Verify: `curl localhost:8788/health` (`connected:true`) → then `status` in Slack.
+
+### Copy-paste bring-up
+
+```bash
+# 0. Prereqs (Homebrew): Docker Desktop, fnm + Node, go-task, doppler, gh, Claude Code
+#    — the Mac equivalents of docs/mini-pc-setup.md Phase 2.
+
+# 1. Clone
+git clone https://github.com/persinac/agents-nexus.git ~/repos/agents-nexus
+cd ~/repos/agents-nexus
+
+# 2. Bridge secrets — the Mac bridge reads SLACK_* from repo-root .env (no Doppler wrap)
+cp .env.example .env
+#    set in .env: SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_NEXUS_CHANNEL,
+#                 SLACK_AGENTS_CHANNEL, SLACK_BUS_ENABLED=1
+#    (pull the values from the nexus box:  doppler secrets -p nexus -c prd )
+
+# 3. Install — symlinks scripts (incl. the now seed/restore-capable open-claude.sh),
+#    writes ~/.tmux/env.sh, loads every launchd plist (bridge + scheduled jobs)
+bash tmux/mac/install.sh
+
+# 4. Agent-side bus routing — flip the two seeded defaults in ~/.tmux/env.sh:
+#      export SLACK_BUS_ENABLED=1
+#      export SLACK_A2A_SAMEHOST=channel
+
+# 5. Verify
+curl -s localhost:8788/health | jq         # → {"ok":true,"connected":true,"bus":true,…}
+#    then in Slack:  status  (fleet) ·  name: hi  (receipt) · spawn/restore via the orchestrator
+```
+
+> If your work-laptop username isn't `alex.persinger@getgarner.com`, see gap #4 (the
+> `slack-bridge.plist` hardcodes `HOME`). And confirm the **corporate proxy** / `ANTHROPIC_BASE_URL`
+> per the caveats below before first launch.
 
 ### Work-environment caveats (confirm first)
 - **Corporate proxy** — the work laptop likely routes Claude through the devn/Bifrost relay (`launchd/personal/com.garner.devn-relay.plist`, `ANTHROPIC_BASE_URL`); the home nexus points at a local proxy, so this value differs.

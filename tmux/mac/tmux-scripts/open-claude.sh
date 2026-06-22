@@ -109,6 +109,26 @@ if [ -x "$HOME/.tmux/memory-recall.py" ]; then
   memory_section=$("$MEMORY_PYTHON" "$HOME/.tmux/memory-recall.py" "$project_slug" 2>/dev/null || true)
 fi
 
+# ── Orchestrator seed / restore (Slack-spawned and restored agents) ────────
+# SEED_PROMPT        — a task to begin on immediately (e.g. the Slack message that
+#                      triggered the spawn). Becomes the FIRST section of the opening
+#                      prompt; the usual checkpoint/memory/registry context follows
+#                      for awareness. Delivered as the launch prompt — never via
+#                      send-keys — so there is no terminal-readiness race.
+# RESTORE_CHECKPOINT — path to a specific checkpoint file to resume from (a reaped
+#                      agent's last checkpoint). Injected as restore context when
+#                      readable; logs + falls back to a plain spawn when missing.
+# Both are unset for normal launches, so default behavior is unchanged.
+seed_section="${SEED_PROMPT:-}"
+restore_section=""
+if [ -n "${RESTORE_CHECKPOINT:-}" ]; then
+  if [ -r "$RESTORE_CHECKPOINT" ]; then
+    restore_section="$(cat "$RESTORE_CHECKPOINT")"
+  else
+    echo "open-claude: RESTORE_CHECKPOINT not readable ($RESTORE_CHECKPOINT) — restoring without it" >&2
+  fi
+fi
+
 # ── Build claude args ──────────────────────────────────────────────────────
 claude_args=()
 [ -n "$MY_NAME" ]       && claude_args+=(--name "$MY_NAME")
@@ -116,10 +136,19 @@ claude_args=()
 [ -n "$CLAUDE_EFFORT" ] && claude_args+=(--effort "$CLAUDE_EFFORT")
 
 # ── Launch claude with assembled context ───────────────────────────────────
-if [ -n "$cache_section" ] || [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ]; then
+if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" ] || [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ]; then
   prompt=""
+  # Seed first: it is the actual task this agent was launched to do.
+  if [ -n "$seed_section" ]; then
+    prompt="You have been launched by the Nexus orchestrator to work on the following request (relayed from Slack). Begin working on it; the context below is for situational awareness:"$'\n\n'"${seed_section}"
+  fi
+  if [ -n "$restore_section" ]; then
+    [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
+    prompt="${prompt}You are being restored after a previous session was checkpointed and closed (reaped while idle). Here is your last checkpoint — resume where you left off:"$'\n\n'"${restore_section}"
+  fi
   if [ -n "$cache_section" ]; then
-    prompt="Your previous session was interrupted. Here is the working context from that session — use it to pick up where you left off:"$'\n\n'"${cache_section}"
+    [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
+    prompt="${prompt}Your previous session was interrupted. Here is the working context from that session — use it to pick up where you left off:"$'\n\n'"${cache_section}"
   fi
   if [ -n "$context" ]; then
     [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
