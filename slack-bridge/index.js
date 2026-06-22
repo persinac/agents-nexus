@@ -57,6 +57,10 @@ const THREAD_TTL_MS = 7 * 24 * 60 * 60 * 1000; // prune mappings older than 7 da
 // catches the ones answered locally in the CLI (or whose window closed).
 const PRUNE_INTERVAL_MS = parseInt(process.env.SLACK_PRUNE_INTERVAL_MS || '10000', 10);
 
+// `status` / `who` command: minutes a "working" agent can go without running a
+// tool before it's flagged "stuck" in the roll-up. Read-only command, always on.
+const STATUS_STUCK_MIN = parseInt(process.env.SLACK_STATUS_STUCK_MIN || '10', 10);
+
 // Smart routing: when a message names no agent, an LLM (haiku — fast/cheap, same
 // middle-man pattern as notify-classify.py) infers the target from the active
 // agent list. Disabled with SLACK_ROUTE_ENABLED=0 or when no API key is present;
@@ -952,14 +956,86 @@ function consumePresence(snap) {
   }
 }
 
+// Read a hook-maintained window-option for a pane (@waiting / @wait_since /
+// @last_tool). Empty string on any error / non-agent window.
+function paneOpt(pane, name) {
+  if (!pane) return '';
+  try {
+    return execFileSync('tmux', ['show-options', '-wqv', '-t', pane, name], { encoding: 'utf8', timeout: 3000 }).trim();
+  } catch { return ''; }
+}
+
 // `@waiting` for a pane's window (hook-maintained; same option the arbiter +
 // reaper read): '2' = idle/done at the prompt, '1' = at a permission prompt,
 // '0'/'' = actively working. Empty on any error / non-agent window.
 function paneWaiting(pane) {
+  return paneOpt(pane, '@waiting');
+}
+
+// Live slot (window index) for a pane. The registry SLOT= field is stale (it's the
+// index at registration; windows get renumbered), so resolve it live like
+// agent-registry.sh's `peers` does. '' on error.
+function paneSlot(pane) {
   if (!pane) return '';
   try {
-    return execFileSync('tmux', ['show-options', '-wqv', '-t', pane, '@waiting'], { encoding: 'utf8', timeout: 3000 }).trim();
+    return execFileSync('tmux', ['display-message', '-t', pane, '-p', '#{window_index}'], { encoding: 'utf8', timeout: 3000 }).trim();
   } catch { return ''; }
+}
+
+// Git branch of a checkout, best-effort (single-agent status detail only).
+function gitBranch(cwd) {
+  if (!cwd) return '';
+  try {
+    return execFileSync('git', ['-C', cwd, 'branch', '--show-current'], { encoding: 'utf8', timeout: 3000 }).trim();
+  } catch { return ''; }
+}
+
+// Live-agent status rows for the `status` command: each registry entry whose pane
+// is still alive, joined with its live slot + hook-maintained window state. Local
+// fleet only (presence carries no per-agent state). index.js reads tmux;
+// orchestrator.js formats. Shape: [{name, slot, pane, cwd, waiting, waitSince, lastTool}].
+function gatherFleetStatus() {
+  const liveNames = new Set(localLiveAgents().map((n) => n.toLowerCase()));
+  return loadRegistry()
+    .filter((a) => a.name && liveNames.has(a.name.toLowerCase()))
+    .map((a) => ({
+      name: a.name,
+      slot: paneSlot(a.pane) || a.slot,   // registry SLOT is stale — resolve live
+      pane: a.pane, cwd: a.cwd,
+      waiting: paneOpt(a.pane, '@waiting'),
+      waitSince: paneOpt(a.pane, '@wait_since'),
+      lastTool: paneOpt(a.pane, '@last_tool'),
+    }));
+}
+
+// Compute fleet (or single-agent) status and post it back to the channel/DM the
+// request came from. Bridge-computed from the registry + @waiting, so it always
+// lands in Slack and works even when an agent is busy/wedged. Not gated on SPAWN.
+async function doStatus(channel, threadTs, target) {
+  const opts = { now: Date.now(), stuckMin: STATUS_STUCK_MIN };
+  const t = String(target || '').trim();
+  const fleet = gatherFleetStatus();          // single source: live slot + state
+  let md;
+  if (t && t.toLowerCase() !== 'all') {
+    const low = t.toLowerCase();
+    const agent = fleet.find((a) => a.name.toLowerCase() === low || a.slot === t);
+    if (!agent) {
+      await replyInThread(channel, threadTs, `:warning: no active agent \`${t}\`. Active: ${liveAgentList()}`);
+      return;
+    }
+    md = orch.formatAgentStatus({ ...agent, branch: gitBranch(agent.cwd) }, opts);
+  } else {
+    md = orch.formatFleetStatus(fleet, opts);
+  }
+  try {
+    await web.chat.postMessage({
+      channel, thread_ts: threadTs,
+      text: md.replace(/[*_`]/g, ''),                       // plain fallback for notifications
+      blocks: [{ type: 'section', text: { type: 'mrkdwn', text: md } }],
+    });
+  } catch (e) {
+    console.error(`[slack-bridge] status post failed: ${e.message}`);
+  }
 }
 
 // Hold a bus message for a busy recipient. Bounded per pane so a perpetually-busy
@@ -1123,8 +1199,16 @@ async function handleMessage(event) {
     }
   }
 
-  // 2. Addressed top-level: "name: text" or "slot: text" (after any @bot mention)
   const cleaned = cleanSlackText(event.text);
+
+  // 1b. Status command (read-only; independent of SPAWN_ENABLED). Bridge-computed
+  //     from the registry + @waiting and posted back here (channel or DM), so it
+  //     works even when an agent is busy/wedged. Checked before addressing/routing
+  //     so "status …" / "who" is never delivered to an agent or LLM-routed.
+  const mStatus = cleaned.match(/^(?:status|who)\b\s*(.*)$/i);
+  if (mStatus) { await doStatus(channel, event.ts, mStatus[1]); return; }
+
+  // 2. Addressed top-level: "name: text" or "slot: text" (after any @bot mention)
   const addr = cleaned.match(/^([A-Za-z0-9][\w.-]*)\s*:\s*([\s\S]+)$/);
   if (addr) {
     const target = addr[1];
@@ -1206,7 +1290,7 @@ async function handleMessage(event) {
 // ---------------------------------------------------------------------------
 // Outbound: localhost HTTP for the Notification hook.
 //   POST /notify { name, message, slot?, pane? }  -> post to #nexus, track thread
-//   GET  /health
+//   GET  /health | /agents | /status
 // ---------------------------------------------------------------------------
 const httpServer = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -1231,6 +1315,14 @@ const httpServer = http.createServer((req, res) => {
       agents: orch.reachability(presenceMap),
       collisions: orch.presenceCollisions(presenceMap),
     }));
+    return;
+  }
+
+  // Local fleet status — the data behind the `status` Slack command, exposed for
+  // curl/CLI checks without Slack. Local agents only (presence carries no state).
+  if (req.method === 'GET' && url.pathname === '/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, host: SELF_HOST, agents: gatherFleetStatus() }));
     return;
   }
 

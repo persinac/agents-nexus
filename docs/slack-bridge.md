@@ -52,6 +52,29 @@ It connects over **Socket Mode**, so there is **no public URL / tunnel** to set 
 Only the configured `#nexus` channel and DMs to the bot are acted on; messages in
 any other channel are ignored.
 
+## Commands
+
+Type these as a top-level message in `#nexus` **or a DM to the bot**. The reply is
+posted back to Slack (the channel/DM the request came from) — never to the terminal.
+
+| Command | What it does |
+| --- | --- |
+| `status` · `status all` · `who` | Fleet roll-up — every live agent with its state: :large_green_circle: **working** · :white_circle: **idle** (at the prompt) · :large_yellow_circle: **waiting on you** (permission prompt) — plus time-in-state, repo, and a :warning: *stuck* flag when a "working" agent hasn't run a tool in a while. |
+| `status <name\|slot>` | One agent, with extra detail (git branch, time since last tool). |
+| `restore [repo]` | Restore a reaped/dormant agent from the ledger; bare `restore` lists dormant agents. _(needs `SLACK_SPAWN_ENABLED=1`)_ |
+| `keep <name> [on\|off]` | Pin/unpin an agent so the reaper skips it even under `REAP_ALL=1`. _(needs `SLACK_SPAWN_ENABLED=1`)_ |
+| `spawn <repo> [seed]` | Spawn an agent in an allowlisted repo, optionally seeded with a task. _(needs `SLACK_SPAWN_ENABLED=1`)_ |
+
+`status` / `who` are **read-only and always available** — they do **not** require
+`SLACK_SPAWN_ENABLED`. The bridge computes them itself from the agent registry and
+each window's hook-maintained `@waiting` state (the same signal the arbiter and
+reaper read), so they answer instantly and work even when an agent is busy or
+wedged — no round-trip to the agent. The same data is exposed as JSON at
+`GET /status` on the localhost port for CLI checks.
+
+`SLACK_STATUS_STUCK_MIN` (default `10`) sets how many minutes a "working" agent can
+go without running a tool before the roll-up flags it `:warning: stuck`.
+
 ## Orchestrator: spawn the right agent (opt-in)
 
 When routing finds **no** running agent for a message (step 3 falls through), the

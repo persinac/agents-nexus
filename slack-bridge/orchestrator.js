@@ -347,3 +347,102 @@ export function reachability(map) {
   }
   return rows.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : (x.host < y.host ? -1 : x.host > y.host ? 1 : 0)));
 }
+
+// --------------------------------------------------------------------------
+// `status` command formatters (pure). index.js reads each live agent's
+// registry entry + hook-maintained window options (`@waiting`/`@wait_since`/
+// `@last_tool`) and hands the plain data here to render a roll-up that the
+// bridge posts back to Slack. Data in -> mrkdwn out, so they're unit-testable.
+// --------------------------------------------------------------------------
+
+// Map the hook-maintained `@waiting` value to a user-facing status:
+//   '0'/'' (unset) -> active  (working; a tool is running)   :large_green_circle:
+//   '1'            -> waiting (at a permission prompt; needs you) :large_yellow_circle:
+//   '2'            -> idle    (done, sitting at the prompt)   :white_circle:
+export function statusLabel(waiting) {
+  const w = String(waiting ?? '').trim();
+  if (w === '1') return { key: 'waiting', emoji: ':large_yellow_circle:', text: 'waiting on you' };
+  if (w === '2') return { key: 'idle', emoji: ':white_circle:', text: 'idle' };
+  return { key: 'active', emoji: ':large_green_circle:', text: 'working' };
+}
+
+// Compact human duration: 45 -> "45s", 184 -> "3m", 7600 -> "2h6m".
+export function fmtAgo(secs) {
+  const s = Math.max(0, Math.floor(Number(secs) || 0));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+}
+
+// Short repo label from a cwd: last two path segments
+// ("/home/u/repos/flashback-fleet/infra" -> "flashback-fleet/infra").
+function repoShort(cwd) {
+  if (!cwd) return '';
+  const parts = String(cwd).split('/').filter(Boolean);
+  return parts.slice(-2).join('/') || String(cwd);
+}
+
+// Seconds the agent has been in its current state, from the per-window
+// timestamps (waiting -> @wait_since; active/idle -> @last_tool). null if unknown
+// or inconsistent (missing / in the future).
+function stateAgeSecs(agent, nowMs) {
+  const nowS = Math.floor((nowMs ?? Date.now()) / 1000);
+  const key = statusLabel(agent.waiting).key;
+  const ref = Number(key === 'waiting' ? agent.waitSince : agent.lastTool);
+  if (!Number.isFinite(ref) || ref <= 0 || ref > nowS) return null;
+  return nowS - ref;
+}
+
+// True when an agent looks "working" but hasn't run a tool for > stuckMin minutes.
+function isStuck(agent, nowMs, stuckMin) {
+  if (!stuckMin || statusLabel(agent.waiting).key !== 'active') return null;
+  const nowS = Math.floor((nowMs ?? Date.now()) / 1000);
+  const lt = Number(agent.lastTool);
+  if (!Number.isFinite(lt) || lt <= 0 || lt > nowS) return null;
+  return nowS - lt > stuckMin * 60 ? nowS - lt : null;
+}
+
+// One agent -> a single mrkdwn line for the fleet roll-up.
+function fleetLine(agent, { now, stuckMin } = {}) {
+  const s = statusLabel(agent.waiting);
+  const bits = [`${s.emoji} ${agent.name} (${agent.slot})`, s.text];
+  const age = stateAgeSecs(agent, now);
+  if (age != null) bits.push(fmtAgo(age));
+  const stuck = isStuck(agent, now, stuckMin);
+  if (stuck != null) bits.push(`:warning: stuck ${fmtAgo(stuck)}`);
+  const repo = repoShort(agent.cwd);
+  if (repo) bits.push(repo);
+  return bits.join(' · ');
+}
+
+// The fleet roll-up. agents: [{name, slot, cwd, waiting, waitSince, lastTool}].
+// Returns mrkdwn (a header with state counts, then one line per agent, slot-sorted).
+export function formatFleetStatus(agents, opts = {}) {
+  if (!agents || !agents.length) return '*nexus fleet* · _no active agents_';
+  const counts = { active: 0, idle: 0, waiting: 0 };
+  for (const a of agents) counts[statusLabel(a.waiting).key]++;
+  const n = agents.length;
+  const header = `*nexus fleet* · ${n} agent${n === 1 ? '' : 's'} · `
+    + `:large_green_circle:${counts.active} :white_circle:${counts.idle} :large_yellow_circle:${counts.waiting}`;
+  const lines = agents.slice()
+    .sort((a, b) => (Number(a.slot) || 0) - (Number(b.slot) || 0))
+    .map((a) => fleetLine(a, opts));
+  return [header, ...lines].join('\n');
+}
+
+// Single-agent detail. `agent` may also carry `branch` (git branch of its cwd).
+export function formatAgentStatus(agent, opts = {}) {
+  if (!agent) return ':warning: no such agent';
+  const s = statusLabel(agent.waiting);
+  const age = stateAgeSecs(agent, opts.now);
+  const lines = [`${s.emoji} *${agent.name}* (slot ${agent.slot}) · ${s.text}${age != null ? ` · ${fmtAgo(age)}` : ''}`];
+  const repo = repoShort(agent.cwd);
+  if (repo) lines.push(`repo: ${repo}${agent.branch ? ` @ ${agent.branch}` : ''}`);
+  const nowS = Math.floor((opts.now ?? Date.now()) / 1000);
+  const lt = Number(agent.lastTool);
+  if (Number.isFinite(lt) && lt > 0 && lt <= nowS) {
+    const stuck = isStuck(agent, opts.now, opts.stuckMin);
+    lines.push(`last tool: ${fmtAgo(nowS - lt)} ago${stuck != null ? '  :warning: stuck' : ''}`);
+  }
+  return lines.join('\n');
+}
