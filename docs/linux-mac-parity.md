@@ -74,6 +74,45 @@ curl -s localhost:8788/health | jq         # → {"ok":true,"connected":true,"bu
 - **Doppler/Slack access** from the work network, and whether the same Slack workspace/tokens are usable on a work machine.
 - **Which repos** to clone + the spawnable-repos allowlist for that machine.
 
+### 2026-06-22 (later) — SessionStart A2A hook + nexus reboot plan (Mac actions)
+
+Two more things landed on `nexus` after the bring-up above. What the **Mac** needs:
+
+**1. SessionStart hook — A2A bus `@waiting` fix → DO apply.**
+An agent brought up via `claude --resume` (or a fresh spawn given no seed) lands at an
+idle prompt *without running a turn*, so its Stop hook never fires, `@waiting` stays
+**unset**, and the Slack A2A bus (idle-gated delivery) treats unset as busy and defers
+every message to it forever. Fix: a new `SessionStart` hook
+(`tmux/mac/tmux-scripts/hook-sessionstart.sh`, registered in
+`tmux/mac/claude-settings.json`) that sets `@waiting=2` once the pane has genuinely
+settled idle — only if no other hook set it first (so agents that resume *into work* are
+left to their Stop hook). It is **cross-platform**: the detached watcher uses `setsid` on
+Linux and a subshell-orphan fallback on macOS (which has no `setsid`).
+
+- **Fresh Mac bring-up:** nothing extra — `bash tmux/mac/install.sh` (step 4 above)
+  already symlinks the hook and merges the `SessionStart` entry into `~/.claude/settings.json`.
+- **Existing Mac:** pull and rerun the installer:
+  ```bash
+  cd ~/repos/agents-nexus && git pull && bash tmux/mac/install.sh
+  # verify:
+  readlink ~/.tmux/hook-sessionstart.sh                 # → …/tmux/mac/tmux-scripts/hook-sessionstart.sh
+  grep -n "SessionStart\|hook-sessionstart" ~/.claude/settings.json
+  ```
+- Hooks load at session start, so it affects only agents spawned/restored **after** the
+  merge — restart or respawn agents to pick it up. Manual fallback if one is stuck
+  unreachable on the bus: `tmux set-option -w -t <pane> @waiting 2`.
+
+**2. nexus spontaneous-reboot plan (`docs/nexus-reboot-plan.md`) → DO NOT apply.**
+That entire plan (`cpu-boost-off.service`, `processor.max_cstate=1`, `crash-breadcrumb`,
+`boot-notify`) is **Linux/AMD-specific** to the GEEKOM A7 Max's power delivery. It does
+not apply to a Mac (Apple Silicon, no external DC brick) — skip it.
+
+**3. Agent recovery runbook → cross-platform (good to know).**
+The "restore agents after a crash" runbook inside `docs/nexus-reboot-plan.md` works on the
+Mac too: Claude transcripts persist at `~/.claude/projects/<project-slug>/<uuid>.jsonl`,
+and `claude --resume <uuid>` (run from the project cwd) brings an agent back with its
+full context.
+
 ## 2026-06 update — what's been closed since the 2026-04-30 draft
 
 - **Shell init** — `tmux/linux/bashrc` now exists and is sourced by `tmux/linux/install.sh` (the `bashrc` mirror the checklist asked for). No longer a gap.
