@@ -56,14 +56,12 @@
 
 ## Agent communication
 
-You may be running alongside other Claude Code agents in a shared tmux session. Use these commands to discover and communicate with peers:
+You may be running alongside other Claude Code agents. **Default to the Slack agent bus (`#nexus-agents`) to message another agent: post the message to the bus and the orchestrator delivers it (idle-gated) to the target.** Name the recipient in the message body (e.g. `@flashback-cns: check the logs`).
 
-- `peers` — list all active agents (slot, name, directory)
-- `msg <slot_or_name> <message>` — send a message to a specific agent
-- `broadcast <message>` — send a message to ALL other agents
-- `whoami` — show your own slot, name, and directory
+- `peers` — list all active agents (slot, name, directory) — use for *discovery* before addressing.
+- `whoami` — show your own slot, name, and directory.
 
-Use `peers` before messaging to get current slot numbers. Prefer name-based addressing (`msg flashback-cns "check the logs"`) over slot numbers when possible.
+Direct tmux send (`msg <slot_or_name> <message>` / `broadcast <message>`) is a **fallback only** — use it solely if the bus is unavailable, and say so. Prefer name-based addressing over slot numbers.
 
 ## Do NOT
 
