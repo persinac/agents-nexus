@@ -113,6 +113,37 @@ Mac too: Claude transcripts persist at `~/.claude/projects/<project-slug>/<uuid>
 and `claude --resume <uuid>` (run from the project cwd) brings an agent back with its
 full context.
 
+### 2026-06-23 — deltas the nexus box needs (next deploy)
+
+Mac→Linux direction: what landed in the repo on 2026-06-23 that the box should pick up.
+**All of it rides on the already-pending deploy** — no separate steps:
+
+```bash
+cd ~/repos/agents-nexus && git pull && bash tmux/linux/install.sh
+```
+
+- **Launcher index-collision fix (`523dfff`) → DO apply.** `tmux new-window -t "$session"`
+  (bare session name) resolves to the session's *active* window and fails
+  `create window failed: index N in use` once the low slots are occupied, so the spawn
+  silently no-ops. Fixed to `-t "$session:"` (trailing colon → append at next free index)
+  in `tmux/linux/bashrc` (`overseer()`) and `slack-bridge/orchestrator.js` (`spawnWindow`).
+  After pull: **`source ~/.bashrc`** (or a new shell) so the running `overseer()` updates;
+  **restart the bridge only if `SLACK_SPAWN_ENABLED=1`** on the box (else the orchestrator.js
+  change is dormant, which is fine).
+- **SessionStart `@waiting` hook → auto-wired, nothing manual.** `bash tmux/linux/install.sh`
+  symlinks `hook-sessionstart.sh` (from `tmux/mac/tmux-scripts/`, which Linux falls back to)
+  and merges the `SessionStart` entry from `tmux/mac/claude-settings.json` into the box's
+  `~/.claude/settings.json`. The hook is cross-platform (uses `setsid` on Linux). Verify:
+  `readlink ~/.tmux/hook-sessionstart.sh` + `grep SessionStart ~/.claude/settings.json`.
+- **Docs (`25a94e8`)** come free with the pull.
+
+**NOT automatic — the A2A bus.** What got enabled on 2026-06-23 was **Mac runtime against the
+work Slack workspace**. The box is on **personal** Slack, so the bus there needs its **own**
+dedicated channel + the box's bus env (`SLACK_AGENTS_CHANNEL`, `SLACK_BUS_ENABLED=1`,
+`SLACK_BUS_DEFER=1`). ⚠️ That channel **must differ** from the box's `SLACK_NEXUS_CHANNEL` —
+the bridge treats every message on `SLACK_AGENTS_CHANNEL` as bus traffic and short-circuits
+the human-message path, so reusing the control channel swallows it (see `docs/slack-bridge.md`).
+
 ## 2026-06 update — what's been closed since the 2026-04-30 draft
 
 - **Shell init** — `tmux/linux/bashrc` now exists and is sourced by `tmux/linux/install.sh` (the `bashrc` mirror the checklist asked for). No longer a gap.
