@@ -327,6 +327,29 @@ tasks:
           WHERE day >= current_date - 30
           ORDER BY day DESC, total_cost DESC;"'
 
+  langfuse:commands:
+    desc: "List slash-command usage from Langfuse traces — command x agent(session) x first-used. Claude Code embeds invocations in the turn input as <command-name>/x</command-name>, which the proxy logs. Window: DAYS=7 task langfuse:commands (default 10; bounded by the ClickHouse trace TTL). NOTE: a command lingers in conversation context, so first_used is the invocation moment; last_in_context is just how long it stayed in the window. agent=NULL = proxy traffic with no sess/<name> tag."
+    vars:
+      DAYS: '{{.DAYS | default "10"}}'
+    cmds:
+      # docker exec by container_name (not `compose exec`) so it is independent
+      # of which compose file resolves by default on this host.
+      - |
+        docker exec langfuse-clickhouse clickhouse-client \
+          --user clickhouse --password "${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}" -q "
+            SELECT
+              arrayJoin(extractAll(coalesce(o.input,''), '<command-name>(/?[^<]+)</command-name>')) AS command,
+              t.session_id AS agent,
+              min(o.start_time) AS first_used,
+              max(o.start_time) AS last_in_context
+            FROM observations o ANY LEFT JOIN traces t ON o.trace_id = t.id
+            WHERE o.start_time > now() - INTERVAL {{.DAYS}} DAY
+              AND position(coalesce(o.input,''),'command-name') > 0
+            GROUP BY command, agent
+            ORDER BY first_used DESC
+            FORMAT PrettyCompact
+          "
+
   # =============================================================================
   # GitLab jobs
   # =============================================================================
