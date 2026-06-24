@@ -113,6 +113,25 @@ Mac too: Claude transcripts persist at `~/.claude/projects/<project-slug>/<uuid>
 and `claude --resume <uuid>` (run from the project cwd) brings an agent back with its
 full context.
 
+### 2026-06-24 — Stop-hook Slack surfacing (Mac actions)
+
+The "middle" surfacing: a **Stop-hook classifier** (`stop-classify.py`) posts to Slack
+only the turn-ends that actually need the human — so you see prose questions (not just
+formal permission prompts) without drowning in agent-to-agent bus chatter or progress
+updates. **Cross-platform** — shared `tmux/mac/tmux-scripts/`, reuses the `/notify` card.
+
+- **Apply:** rerun `bash tmux/mac/install.sh` to symlink the new `stop-classify.py`
+  (the `hook-stop.sh` change is already shared).
+- **Requires the classifier venv** (`~/.tmux/.classify-venv`, litellm) — the same one the
+  permission auto-approve gate uses; `install.sh` provisions it. **Inert without it** (no
+  venv → no surfacing, no error).
+- **Knobs (agent env / `~/.tmux/env.sh`):** `SLACK_STOP_SURFACE=0` disables it;
+  `SLACK_STOP_SURFACE_COOLDOWN` (default 90s) is the per-agent anti-flood gate.
+- **Replies route back like permission cards:** reply in the card's thread and the bridge
+  `send-keys` it verbatim to the now-idle agent (non-permission `kind` → no digit mapping).
+- Live immediately on edit — `hook-stop.sh` is re-executed per turn-end, so no agent
+  restart is needed (unlike the SessionStart hook).
+
 ### 2026-06-23 — deltas the nexus box needs (next deploy)
 
 Mac→Linux direction: what landed in the repo on 2026-06-23 that the box should pick up.
