@@ -86,21 +86,48 @@ fi
 # ── Agent communication tools ─────────────────────────────────────────────
 REGISTRY_SCRIPT="$HOME/.tmux/agent-registry.sh"
 SEND_SCRIPT="$HOME/.tmux/agent-send.sh"
+# Is the Slack agent bus live? Probe the local bridge's health (cheap, <1s) so we
+# document the bus as the DEFAULT transport only when it can actually deliver.
+# `--via-slack` force-routes through the bridge regardless of the agent's
+# SLACK_BUS_ENABLED, so the bridge's own bus state — not an env var — is the
+# right signal. No bridge / bus off -> fall back to the tmux-only guidance.
+bus_on=0
+if command -v curl >/dev/null 2>&1; then
+  case "$(curl -s --max-time 1 "http://127.0.0.1:${SLACK_BRIDGE_PORT:-8788}/health" 2>/dev/null)" in
+    *'"bus":true'*) bus_on=1 ;;
+  esac
+fi
 registry_section=""
 if [ -x "$REGISTRY_SCRIPT" ]; then
   peers_output=$("$REGISTRY_SCRIPT" peers --exclude "$MY_PANE_ID" 2>/dev/null || true)
-  registry_section="## Agent Communication
-You are part of a multi-agent system. ALWAYS pass --exclude ${MY_PANE_ID} to avoid listing yourself.
+  if [ "$bus_on" = "1" ]; then
+    comms_body="**To message another agent, DEFAULT to the Slack agent bus (\`#nexus-agents\`).** Address the recipient by NAME — post once and the orchestrator delivers it idle-gated, buffered, and audited (and it reaches agents on other hosts):
+  - \`$SEND_SCRIPT --via-slack <name> <message>\` — post to the bus; delivered to <name> when it next goes idle
+
+Discovery (read-only — find who to address, then message them over the bus):
+  - \`$REGISTRY_SCRIPT peers --exclude ${MY_PANE_ID}\` — list all active agents (slot, name, directory)
+  - \`$REGISTRY_SCRIPT whoami --exclude ${MY_PANE_ID}\` — show your own slot, name, and directory
+
+Fallback — direct tmux send (same-host only; NOT durable or auditable and can be missed). Prefer the bus; only use this for a local/ephemeral ping, and say that you did:
+  - \`$SEND_SCRIPT <slot_or_name> <message>\` — send-keys straight to a same-host agent
+  - \`$REGISTRY_SCRIPT broadcast --exclude ${MY_PANE_ID} <message>\` — send to ALL other agents at once"
+  else
+    comms_body="To message another agent:
   - \`$REGISTRY_SCRIPT peers --exclude ${MY_PANE_ID}\` — list all active agents
   - \`$SEND_SCRIPT <slot_or_name> <message>\` — send a message to a specific agent
   - \`$REGISTRY_SCRIPT broadcast --exclude ${MY_PANE_ID} <message>\` — send to ALL other agents
-  - \`$REGISTRY_SCRIPT whoami --exclude ${MY_PANE_ID}\` — show your own slot, name, and directory
+  - \`$REGISTRY_SCRIPT whoami --exclude ${MY_PANE_ID}\` — show your own slot, name, and directory"
+  fi
+  registry_section="## Agent Communication
+You are part of a multi-agent system (agents may run across multiple hosts). ALWAYS pass --exclude ${MY_PANE_ID} to avoid listing yourself.
+
+${comms_body}
 
 ### Current Peers
 \`\`\`
 ${peers_output}
 \`\`\`
-Re-run peers before messaging to get up-to-date slot numbers."
+Re-run peers before messaging to get up-to-date slot numbers; prefer name-based addressing over slot numbers."
 fi
 
 # ── Query prior knowledge from memory store ────────────────────────────────

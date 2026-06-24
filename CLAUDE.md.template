@@ -56,12 +56,16 @@
 
 ## Agent communication
 
-You may be running alongside other Claude Code agents. **Default to the Slack agent bus (`#nexus-agents`) to message another agent: post the message to the bus and the orchestrator delivers it (idle-gated) to the target.** Name the recipient in the message body (e.g. `@flashback-cns: check the logs`).
+You may be running alongside other Claude Code agents, possibly on other hosts. **Default to the Slack agent bus (`#nexus-agents`) to message another agent.** Address the recipient by NAME; post once and the orchestrator delivers it (idle-gated, buffered, audited), reaching agents on other hosts too:
 
-- `peers` — list all active agents (slot, name, directory) — use for *discovery* before addressing.
-- `whoami` — show your own slot, name, and directory.
+- `~/.tmux/agent-send.sh --via-slack <name> <message>` — post to the bus → delivered to `<name>` when it next goes idle.
 
-Direct tmux send (`msg <slot_or_name> <message>` / `broadcast <message>`) is a **fallback only** — use it solely if the bus is unavailable, and say so. Prefer name-based addressing over slot numbers.
+Discovery (read-only — find who to address, then message them over the bus):
+
+- `~/.tmux/agent-registry.sh peers` — list all active agents (slot, name, directory).
+- `~/.tmux/agent-registry.sh whoami` — show your own slot, name, and directory.
+
+Direct tmux send (`~/.tmux/agent-send.sh <slot_or_name> <message>` / `~/.tmux/agent-registry.sh broadcast <message>`) is a **fallback only** — same-host, not durable or auditable, and can be missed. Use it solely if the bus is unavailable, and say so. Prefer name-based addressing over slot numbers.
 
 ## Do NOT
 
