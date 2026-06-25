@@ -16,6 +16,11 @@
 #       active working set so an AFK reap can't sweep it (scripts/agent-keep.sh,
 #       or: tmux set-option -w @keep 1). The always-honored sibling of the
 #       @orchestrator tag below, which REAP_ALL drops.
+#   - NEVER reaps a window with a non-empty `@cohort` — a named multi-agent
+#       "design cohort" (scripts/agent-cohort.sh hold <design> <agents…>).
+#       Always honored, like @keep, so a coordinated design across several idle
+#       agents isn't swept mid-flight. Release the whole group at once with:
+#       agent-cohort.sh release <design>.
 #   - NEVER reaps a window tagged `@orchestrator 1` (mark your main session:
 #       tmux set-option -w @orchestrator 1) — UNLESS REAP_ALL=1.
 #   - NEVER reaps a name/pane listed in $REAP_EXCLUDE (csv) or
@@ -107,6 +112,18 @@ for f in "$REGISTRY_DIR"/*; do
   # orchestrator exemption but NEVER the keep pin, so a user-pinned working-set
   # window survives an unattended REAP_ALL sweep (the AFK-reap problem).
   if [ "$(tmux show-options -wqv -t "$PANE_ID" @keep 2>/dev/null)" = "1" ]; then continue; fi
+  # @cohort: a named design group (scripts/agent-cohort.sh). Non-empty = protected
+  # like @keep — ALWAYS, even under REAP_ALL=1 — so a multi-agent design isn't
+  # swept mid-flight. Logged (not reaped) once idle past COHORT_WARN_SECS so a
+  # forgotten 'hold' surfaces in the log instead of becoming immortal.
+  COHORT="$(tmux show-options -wqv -t "$PANE_ID" @cohort 2>/dev/null)"
+  if [ -n "$COHORT" ]; then
+    ct="$(tmux show-options -wqv -t "$PANE_ID" @last_tool 2>/dev/null)"; ct="${ct:-$AT}"
+    case "$ct" in ''|*[!0-9]*) ct="$now" ;; esac
+    [ "$(( now - ct ))" -ge "${COHORT_WARN_SECS:-86400}" ] && \
+      log "cohort-held(stale) name=$NAME cohort=$COHORT idle=$(( now - ct ))s — release: scripts/agent-cohort.sh release $COHORT"
+    continue
+  fi
   if [ "$REAP_ALL" != "1" ] && [ "$(tmux show-options -wqv -t "$PANE_ID" @orchestrator 2>/dev/null)" = "1" ]; then continue; fi
   if excluded "$NAME" || excluded "$PANE_ID"; then continue; fi
   PANE_WINDOW="$(tmux display-message -t "$PANE_ID" -p '#{window_id}' 2>/dev/null)"

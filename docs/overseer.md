@@ -48,6 +48,36 @@ dedicated command-post window. It registers as `overseer`, self-tags
 `@orchestrator`, and is therefore exempt from reaping. Drive your fleet from
 here; the agents you spawn are separate, reapable windows.
 
+### Protecting working agents — `@keep` (one) and `@cohort` (a design)
+
+The command-post rules above are about not closing the window you drive from. To stop
+the reaper closing **worker agents** that are legitimately mid-task but idle between
+turns (waiting on the bus, on another agent, or on you):
+
+- **One agent — `@keep`.** Pin a single window so it's never reaped, even under
+  `REAP_ALL=1`:
+  ```
+  scripts/agent-keep.sh <name|slot|%pane>        # pin   (@keep 1)
+  scripts/agent-keep.sh <name|slot|%pane> off    # unpin
+  scripts/agent-keep.sh                          # list pinned
+  ```
+
+- **A whole design — `@cohort`.** When one orchestrator drives a multi-repo design
+  across several agents, tag them as a named cohort and release the whole group in one
+  shot when it ships. Any window with a non-empty `@cohort` is protected like `@keep`
+  (always honored, even under `REAP_ALL=1` — the sweep that otherwise picks off a
+  design whose agents sit idle between bus round-trips):
+  ```
+  scripts/agent-cohort.sh hold <design> <agent…|all>   # protect the working set
+  scripts/agent-cohort.sh list                         # active cohorts + members + held-for
+  scripts/agent-cohort.sh release <design>             # design shipped → normal reaping resumes
+  scripts/agent-cohort.sh release <design> <agent…>    # drop specific members
+  ```
+  `@keep` and `@cohort` are independent, so releasing a design never unpins a
+  manually-kept window. A forgotten cohort surfaces in the reaper log
+  (`cohort-held(stale)`) once idle past `COHORT_WARN_SECS` (default 24h) rather than
+  becoming immortal.
+
 ### Config (env)
 
 | Var | Default | Meaning |
@@ -57,6 +87,7 @@ here; the agents you spawn are separate, reapable windows.
 | `REAP_EXCLUDE` | _(empty)_ | csv of extra names/panes to protect |
 | `REAP_ALL` | `0` | `1` = prune everything idle, command post included (see below) |
 | `TMUX_SESSION` | `agents` | session to scan |
+| `COHORT_WARN_SECS` | `86400` (24h) | a held `@cohort` idle past this is logged (not reaped) as stale |
 
 ### `REAP_ALL` — unattended "leave it for days" boxes
 
