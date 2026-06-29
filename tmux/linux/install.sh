@@ -88,6 +88,9 @@ export SLACK_BUS_ENABLED="\${SLACK_BUS_ENABLED:-0}"
 # NAME peers through the bus so they're buffered + delivered when the recipient
 # is idle, never lost into a busy pane). Needs the bus enabled to do anything.
 export SLACK_A2A_SAMEHOST="\${SLACK_A2A_SAMEHOST:-local}"
+# Route the built-in SendMessage tool's peer messages through the bus (PreToolUse
+# hook-sendmessage-bus.sh). Opt-in, off by default.
+export SENDMESSAGE_BUS_ENABLED="\${SENDMESSAGE_BUS_ENABLED:-0}"
 EOF
   echo "Created ~/.tmux/env.sh"
 else
@@ -126,6 +129,10 @@ else
   grep -q "SLACK_A2A_SAMEHOST" "$ENV_FILE" || {
     echo "export SLACK_A2A_SAMEHOST=\"\${SLACK_A2A_SAMEHOST:-local}\"" >> "$ENV_FILE"
     echo "Added SLACK_A2A_SAMEHOST to ~/.tmux/env.sh"
+  }
+  grep -q "SENDMESSAGE_BUS_ENABLED" "$ENV_FILE" || {
+    echo "export SENDMESSAGE_BUS_ENABLED=\"\${SENDMESSAGE_BUS_ENABLED:-0}\"" >> "$ENV_FILE"
+    echo "Added SENDMESSAGE_BUS_ENABLED to ~/.tmux/env.sh"
   }
 fi
 

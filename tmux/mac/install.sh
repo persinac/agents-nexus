@@ -68,6 +68,9 @@ if [ ! -f "$ENV_FILE" ]; then
   # the bus so they're buffered + delivered when the recipient is idle.
   echo "export SLACK_BUS_ENABLED=\"\${SLACK_BUS_ENABLED:-0}\"" >> "$ENV_FILE"
   echo "export SLACK_A2A_SAMEHOST=\"\${SLACK_A2A_SAMEHOST:-local}\"" >> "$ENV_FILE"
+  # SENDMESSAGE_BUS_ENABLED: route the built-in SendMessage tool's peer messages
+  # through the bus (PreToolUse hook-sendmessage-bus.sh). Opt-in, off by default.
+  echo "export SENDMESSAGE_BUS_ENABLED=\"\${SENDMESSAGE_BUS_ENABLED:-0}\"" >> "$ENV_FILE"
   echo "Created ~/.tmux/env.sh (edit REPO_DIR/NOTES_DIR/AGENTS_NEXUS_DIR if your paths differ)"
 else
   # Add NOTES_DIR if missing
@@ -104,6 +107,10 @@ else
   if ! grep -q "SLACK_A2A_SAMEHOST" "$ENV_FILE"; then
     echo "export SLACK_A2A_SAMEHOST=\"\${SLACK_A2A_SAMEHOST:-local}\"" >> "$ENV_FILE"
     echo "Added SLACK_A2A_SAMEHOST to ~/.tmux/env.sh"
+  fi
+  if ! grep -q "SENDMESSAGE_BUS_ENABLED" "$ENV_FILE"; then
+    echo "export SENDMESSAGE_BUS_ENABLED=\"\${SENDMESSAGE_BUS_ENABLED:-0}\"" >> "$ENV_FILE"
+    echo "Added SENDMESSAGE_BUS_ENABLED to ~/.tmux/env.sh"
   fi
 fi
 

@@ -31,6 +31,15 @@
             "command": "$HOME/.tmux/hook-pretooluse.sh; true"
           }
         ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.tmux/hook-sendmessage-bus.sh"
+          }
+        ]
       }
     ],
     "Notification": [
