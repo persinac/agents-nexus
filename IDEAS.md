@@ -56,6 +56,7 @@
 | 30f | 5 | ↳ **Flow control** — per-sender rate limit (reuse `rateState`), loop detection (A→B→A / corr-depth), priority lane for acks/replies | backlog |
 | 30g | 6 | ↳ **Broker substrate (optional)** — swap transport to NATS JetStream / Redis Streams *behind the envelope*, Slack kept as the human-observable mirror + cross-firewall fallback. The "throw infra at it" rung, deliberately last | backlog |
 | 30h | 2 | ↳ **Large-message chunking (no truncation)** — no-loss follow-up to the #28 silent-truncation bug (integration-tests hit a ~1500-char cut on an inbound reply). Option A (shipped) caps the bus body at `SLACK_BUS_MAX_CHARS` with a visible `…[truncated N chars]` marker so loss is never silent; Option B = split over-cap messages into `[k/N]` parts, buffer per-sender on the receiving bridge, and reassemble before send-keys so nothing is ever dropped. | backlog |
+| 31 | 3 | **Gemini fallback when Claude is down** — when both Anthropic tiers (corp Bifrost + direct `api.anthropic.com`) are unreachable or overloaded, translate Claude Code's requests to Gemini via a new LiteLLM `/v1/messages` service so agents stay alive through an Anthropic outage. `nexus-proxy` remains the front door (Langfuse + session-tagging intact); opt-in behind `GEMINI_FALLBACK_ENABLED`; fires on hard outages only (5xx/529 + connection errors, **not** 429). See below. | backlog |
 
 ## Spark Discovery Enrichment (idea 20)
 
@@ -179,3 +180,55 @@ Reframe: **Slack becomes the agent transport.** `agent-send.sh` is local-tmux-on
 2. Multi-host presence registry so the Linux box joins the mesh.
 
 The status board (A3) + agent-comms feed (B) together make `#nexus` live mission-control for a distributed agent mesh.
+
+## Gemini fallback when Claude is down (idea 31)
+
+### Problem
+
+When the Anthropic API has an outage (or is sustained-overloaded), every agent in the fleet stalls — they all route through `nexus-proxy` to Anthropic, with no alternative provider. Goal: when Claude is genuinely down, transparently fall back to **Gemini** (a key we already have) so agents keep running in a degraded "keep-the-lights-on" mode.
+
+The core constraint: Claude Code emits **Anthropic Messages-API** requests (`/v1/messages` with tool-use blocks, streaming SSE, `cache_control`). Gemini speaks a different API. So this is not a URL swap — it needs an Anthropic ⇄ Gemini **translation layer** in the middle.
+
+### Current state of relevant code
+
+- **`proxy/main.py`** (`nexus-proxy`, port 4000) is a transparent Anthropic pass-through that also logs each `/v1/messages` call to Langfuse. Agents reach it via `ANTHROPIC_BASE_URL=http://localhost:4000/sess/<name>`.
+  - `_request_with_failover()` (lines ~114-127) and `_stream_response()` (~130-167) implement the existing failover: `UPSTREAM = ANTHROPIC_API_BASE` (corp **Bifrost** at `http://host.docker.internal:54777/anthropic`, work-network only) → on `httpx.HTTPError` → `FALLBACK_UPSTREAM = https://api.anthropic.com`.
+  - **Trigger gap:** failover only fires on `httpx.HTTPError` (dropped connection / timeout). A **5xx / 529 *response*** (the usual "Anthropic overloaded" signal) is returned to the agent verbatim — it does **not** trip failover. Any fallback work must fix this first.
+- **`litellm/config.yaml`** exists but is **orphaned** — no compose service, Dockerfile, or script references it. (It's a single `anthropic/*` passthrough entry.) LiteLLM does **not** run anywhere today.
+- The only proxy service in `docker-compose.work.yml` (`proxy:` ~L215) and `docker-compose.yml` (~L146) is `nexus-proxy`. No `litellm` service.
+- Secrets: `nexus-proxy` forwards the Anthropic `Authorization`/`x-api-key` header verbatim; the key lives in `.env` (Mac runs vanilla `.env`, no Doppler). No Gemini/Google/Vertex references anywhere in the repo.
+
+### Design — Topology A: LiteLLM as the last-resort Gemini leg
+
+Keep `nexus-proxy` as the front door (so Langfuse tracing + `sess/<name>` tagging are untouched) and add a **third failover tier** that translates to Gemini via a new LiteLLM service. `nexus-proxy` owns the "is Claude down?" decision; only when **both** Anthropic tiers fail does it translate via LiteLLM → Gemini.
+
+```
+Claude Code → nexus-proxy:4000
+   tier 1: Bifrost (corp)        verbatim Anthropic
+   tier 2: api.anthropic.com     verbatim Anthropic
+   tier 3: LiteLLM → Gemini      Anthropic ⇄ Gemini translation   ← NEW, last resort
+```
+
+Chosen over the alternatives (decisions made 2026-06-23):
+- **vs. hand-rolling Anthropic⇄Gemini in `nexus-proxy`** — rejected; owning a robust translation of tool-use + streaming SSE + `cache_control` is brittle and a lot of code.
+- **vs. claude-code-router** — rejected; a new service that bypasses `nexus-proxy`'s Langfuse tracing unless re-chained.
+- **vs. LiteLLM as the brain** (Anthropic primary + Gemini fallback *inside* LiteLLM via its `fallbacks` config) — rejected for now; bigger rewire, would have to replicate the Bifrost-SSO corp path inside LiteLLM and reconcile double Langfuse logging. Topology A keeps the trigger logic in our own proxy where we can tune it.
+
+### Concrete changes
+
+1. **`proxy/main.py`** (the heart):
+   - **Fix the trigger:** treat **5xx / 529 responses** (`{500, 502, 503, 529}`) from the Anthropic tiers as failures, not just `httpx.HTTPError`. Explicitly **exclude 429** — rate-limits stay on Claude and let its built-in backoff retry (decision: fail over on *hard outages only*, to avoid burning Gemini tokens during routine throttling).
+   - **Add tier 3:** after both Anthropic tiers fail, POST to LiteLLM's `/v1/messages` with `body["model"]` rewritten to the Gemini fallback model and the Anthropic auth header **stripped** (LiteLLM holds the Gemini key, not the forwarded `sk-ant-…`). Streaming: only switch to Gemini if no Anthropic chunks have been yielded yet (read `r.status_code` before iterating bytes → clean cutover, no torn streams). Apply to `/v1/messages` and `/v1/messages/count_tokens`.
+   - Gemini responses return in Anthropic format (LiteLLM's job) → pipe straight to Claude Code and log to Langfuse tagged with the Gemini model so cost is attributed correctly.
+2. **`litellm/config.yaml`** — wire it up for real: one `gemini-fallback` model → `gemini/gemini-2.5-pro` (capability over flash — during an outage you want tool-driven coding to work), `api_key: os.environ/GEMINI_API_KEY`.
+3. **`docker-compose.work.yml` + `docker-compose.yml`** — add a `litellm` service under the `proxy` profile (pin to current stable), mount `litellm/config.yaml`, consume `GEMINI_API_KEY`, internal-only; `nexus-proxy` reaches it at `http://litellm:4000`.
+4. **`.env.example`** (+ live `.env`) — add `GEMINI_API_KEY=`, `GEMINI_FALLBACK_MODEL=gemini-2.5-pro`, `GEMINI_FALLBACK_ENABLED` (opt-in flag; nothing changes until flipped on with a key present).
+5. **Docs** — short `docs/gemini-fallback.md`: the chain, trigger semantics, and a repro test (point both Anthropic tiers at a dead host → confirm a real Gemini answer comes back in Anthropic format and renders in the agent).
+
+### Caveat
+
+Claude Code's harness + tool-calling are tuned for Claude. Gemini-via-translation keeps agents *alive* during an Anthropic outage but expect degraded tool-use reliability and no prompt caching — a keep-the-lights-on cushion, not a transparent equal.
+
+### Alternative worth noting
+
+If the real goal is "agents keep working during an Anthropic outage" (not "use Gemini specifically"), falling back to **Claude on Bedrock or Vertex** avoids translation entirely and keeps model parity — Claude Code natively supports `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX`. More robust than Gemini, contingent on having that cloud access.
