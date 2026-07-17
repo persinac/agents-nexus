@@ -1,0 +1,122 @@
+# Spark — Configuration
+# "This installation's research facilities are most impressive!"
+#
+# Copy this file to config.yaml and fill in your values.
+# config.yaml is gitignored — keep credentials and local paths out of version control.
+
+# Base path to the installations (repos) — override with SPARK_INSTALLATIONS_PATH env var
+installations_path: ~/repos
+
+# The Index — LanceDB vector store — override with SPARK_INDEX_PATH env var
+index_path: ~/repos/guilty-spark/data/the-index
+
+# Embedding model (via LiteLLM)
+# Local: ollama/nomic-embed-text (free, fast, 8192 tokens)
+# API:   voyage/voyage-code-3 (best for code, needs VOYAGE_API_KEY)
+embedding_model: ollama/nomic-embed-text
+embedding_dimensions: 768
+
+# Embedder backend (or set SPARK_EMBEDDER env, which wins):
+#   litellm  — ollama/nomic-embed-text over HTTP, 768-dim (default; needs Ollama)
+#   fastembed — in-process ONNX BAAI/bge-small-en-v1.5, 384-dim, ~10x faster on CPU
+# NOTE: fastembed is 384-dim (bge-small), not 768 — switching embedders requires
+# one full `spark reclaim` (the LanceDB table is dropped + recreated at the new dim).
+# embedder: fastembed
+
+# Teams — maps directory prefixes to human-readable team names.
+# Leave empty ({}) if your repos are all in a flat layout.
+# Example:
+#   teams:
+#     backend: Backend
+#     frontend: Frontend
+#     platform: Platform
+teams: {}
+
+# File patterns to index
+include_patterns:
+  - "*.py"
+  - "*.ts"
+  - "*.js"
+  - "*.tf"
+  - "*.yaml"
+  - "*.yml"
+  - "*.md"
+  - "*.json"
+  - "*.toml"
+  - "*.cfg"
+  - "*.hcl"
+
+# Directories to skip
+exclude_dirs:
+  - .git
+  - .venv
+  - venv
+  - node_modules
+  - __pycache__
+  - .mypy_cache
+  - .pytest_cache
+  - .ruff_cache
+  - .idea
+  - .terraform
+  - dist
+  - build
+  - coverage
+  - data/the-index
+
+# Max file size to index (bytes)
+max_file_size: 32768
+
+# Max files per installation (skip massive monorepos' deep files)
+max_files_per_installation: 100
+
+# GitLab API (optional — enriches summaries for GitLab-hosted repos)
+# Prefer setting GITLAB_URL and GITLAB_TOKEN env vars in .env
+gitlab_url: ""
+gitlab_token: ""
+
+# GitHub API (optional — enriches summaries for GitHub-hosted repos)
+# Prefer setting GITHUB_TOKEN env var in .env
+# Classic PAT or fine-grained token with repo read scope.
+github_token: ""
+# github_url: https://api.github.com  # override for GitHub Enterprise
+
+# Webhook (optional — auto-reindex on GitLab MR merge)
+# Set SPARK_WEBHOOK_SECRET env var, or fill in below
+webhook_secret: ""
+
+# Decision synthesis (optional — auto-generate decision records from merged MRs)
+# Requires GitLab to be configured. Set decisions_enabled: true to activate.
+chat_model: ollama/llama3.2
+decisions_enabled: false
+
+# Hybrid search (optional — combines vector similarity with BM25 full-text search via RRF)
+hybrid_search_enabled: true
+
+# Symbol chunking (optional — extracts AST-level symbols instead of blind sliding windows)
+symbol_chunking_enabled: true
+
+# Summary keyword enrichment (optional — appends a "Keywords:" line to each repo
+# summary built from in-code domain identifiers: UPPER_SNAKE string constants and
+# Enum member values, e.g. SOURCE_POE="poe"). Lets Stage-1 routing find a repo by
+# bare domain term ("which repo ingests POE") that prose summaries miss.
+# Takes effect on the next `spark reclaim` / reindex.
+summary_keywords_enabled: true
+summary_keywords_max: 40
+
+# spark_deep Stage 1 candidate set — how many summaries to discover before
+# searching code within them. Higher = better recall on broad queries, slightly
+# slower Stage 2. (default 8)
+# spark_deep_stage1_k: 8
+
+# Reranking (optional — improves result precision using a cross-encoder model)
+# Downloads ~270MB model from HuggingFace on first use (cached after that).
+reranker_enabled: true
+# reranker_model: BAAI/bge-reranker-base
+# reranker_top_k_multiplier: 3
+
+# Chunking constants (optional — tune for your embedding model's token limits)
+# chunk_size: 900
+# chunk_overlap: 150
+# summary_max_chars: 950
+# mr_chunk_max_chars: 900
+# max_chars_per_chunk: 1000

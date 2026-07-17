@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly permission-allowlist suggestions — Sun 15:00 UTC (09:00 MT)
+
+[Timer]
+OnCalendar=Sun *-*-* 15:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

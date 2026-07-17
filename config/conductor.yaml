@@ -1,0 +1,110 @@
+# Conductor — mission orchestrator config.
+#
+# `profiles` = "the best group of tools/settings/agents" the plan node selects from.
+# Model + effort are governed globally by `policy` (per locked decisions 2026-07-09),
+# so a profile is a capability bundle: tools + mcp + permission + optional skill + verify.
+#
+# Lives in the repo; symlink ~/.tmux/conductor.yaml -> here so edits are live (matches
+# the tmux-scripts symlink pattern). The Conductor reads the stable ~/.tmux path.
+
+policy:
+  model: claude-opus-4-8            # all agents AND the orchestrator
+  orchestrator_effort: max          # Conductor judgment nodes: classify / plan / adjudicate / synthesize
+  worker_effort: high               # workers start here
+  worker_effort_escalated: xhigh    # bump to this after `escalate_after_fails` failed verify rounds
+  escalate_after_fails: 2
+  max_replans: 5                    # verify -> re-dispatch loops before escalating to a human
+  verify_command:                   # ground-truth check (first that EXISTS per repo) — the full lint suite, hard gate
+    - task lint
+    - task lint:all
+    - task lint:python-all
+    - task check
+  reviewer:
+    fleet: true                     # dedicated reviewer fleet runs the verify stage
+    count: 5                        # distribute liberally
+  state:
+    db: true                        # agents.missions/* is the source of truth (resumable + audit + knowledge graph)
+    jira: true                      # mirror to Jira for standup / team surfacing
+
+profiles:
+  backend-build:
+    tools: [Bash, Edit, Write, Read, Grep, Glob]
+    mcp: [agent-memory, spark]
+    permission: standard
+    verify: { mode: code, checks: [tests, exercise, swarm-review] }
+
+  frontend-build:
+    tools: [Bash, Edit, Write, Read, Grep, Glob]
+    mcp: [agent-memory, spark]
+    permission: standard
+    verify: { mode: code, checks: [tests, exercise, swarm-review] }
+
+  techdebt:
+    skill: pull-techdebt            # existing skill = the mission procedure
+    tools: [Bash, Edit, Write, Read, Grep, Glob]
+    mcp: [agent-memory, spark]
+    permission: standard
+    verify: { mode: code, checks: [tests, swarm-review] }
+
+  investigation:
+    skill: incident-postmortem
+    tools: [Read, Grep, Bash]
+    mcp: [agent-memory, spark, snowflake, datadog]
+    permission: read-only
+    verify: { mode: report, checks: [fact-check, sourcing] }
+
+  data-analysis:
+    skill: member-provider-investigation
+    tools: [Read, Bash]
+    mcp: [agent-memory, spark, snowflake]
+    permission: read-only
+    verify: { mode: report, checks: [sourcing, reconcile] }
+
+  reviewer:
+    skill: swarm-review-mr          # the crew; spawned `policy.reviewer.count` wide
+    tools: [Read, Grep, Bash]
+    mcp: [agent-memory, spark]
+    permission: read-only
+    verify: { mode: none }          # this profile IS the verify stage
+
+  one-shot:
+    tools: [Bash, Edit, Write, Read, Grep, Glob]
+    mcp: [agent-memory, spark]
+    permission: standard
+    verify: { mode: code, checks: [tests] }
+
+  # An --sdlc mission stage. `skill:` is DYNAMIC (the scan-resolved leaf, e.g.
+  # sdlc:create-requirements) so it is set per-stage by the sdlc worker, not here.
+  # Verification is the review-X leaf + the plan.md boundary, not the Conductor's own gate.
+  sdlc-stage:
+    tools: [Bash, Edit, Write, Read, Grep, Glob]
+    mcp: [agent-memory, atlassian]
+    permission: standard
+    verify: { mode: none }
+
+# The Conductor can drive the the org sdlc plugin's staged pipeline autonomously
+# (requirements → domain-model? → tech-design → validation → plan), routing off the
+# plugin's deterministic scan.py. Mac-only (the plugin lives on this host).
+sdlc:
+  enabled: true
+  workspace_root: ~/code           # where the context repos (project-context-*) are cloned (or CUSTOM_WORKSPACE_ROOTS)
+  workspace_env: CUSTOM_WORKSPACE_ROOTS   # env var this host's scan.py reads for its workspace root (plugin-specific; omit to let scan.py self-discover from cwd)
+  max_stages: 12                   # scan→leaf→advance loop bound
+  trust_boundary: plan             # autonomous run stops when plan.md is ready-for-review; human drives code
+  plugin: sdlc                     # marketplace namespace for the leaf skills (sdlc:create-requirements …)
+  escalate_to: "#nexus"            # Slack bus channel for forks the Conductor can't answer
+
+# Slice E — where a finished mission surfaces. Live targets are OFF by default
+# (dry-run: the Conductor logs the payload it WOULD send) so nothing hits real
+# systems until you set the target + flip `enabled`. The worktree branch is always
+# committed locally regardless (the building deliverable).
+reporting:
+  # External reporting is OFF by default. Fill in + flip `enabled` to surface missions.
+  jira:
+    enabled: false        # project: <KEY>   epic: <KEY-123>   assignee: "<account-id>"
+  confluence:
+    enabled: false        # space: "<space-key>"   parent: "<page-id>"
+  mr:
+    enabled: false
+  trello:
+    enabled: false        # board_id / on_deck_list / ... / doppler_project / doppler_config

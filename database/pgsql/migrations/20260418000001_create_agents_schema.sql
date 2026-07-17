@@ -1,0 +1,6 @@
+-- migrate:up
+CREATE SCHEMA IF NOT EXISTS agents;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- migrate:down
+DROP SCHEMA IF EXISTS agents CASCADE;

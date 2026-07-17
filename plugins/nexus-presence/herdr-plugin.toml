@@ -1,0 +1,16 @@
+id = "nexus.presence"
+name = "Nexus Presence"
+version = "0.1.0"
+min_herdr_version = "0.7.3"
+description = "Desktop notification the instant a herdr agent goes `blocked` (needs input). Event-driven via pane.agent_status_changed — no keybinding, no daemon, no polling. Uses the desktop channel so it complements (never double-notifies) the substrated/slack-bridge stack; set NEXUS_PRESENCE_NOTIFY_CMD to route the message elsewhere."
+platforms = ["macos", "linux"]
+
+# Pure event-hook plugin: no [[panes]], no [[actions]], no keybinding.
+# herdr fires this natively on every agent status transition; the hook itself
+# filters to the `blocked` edge. `on` uses the SubscriptionEventKind name (dotted);
+# plugins may subscribe to exactly: pane.output_matched | pane.agent_status_changed
+# | pane.scroll_changed. The command receives HERDR_PLUGIN_EVENT_JSON (the
+# {event,data} payload), HERDR_PLUGIN_ROOT, HERDR_PLUGIN_STATE_DIR, HERDR_PANE_ID.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/on-status.sh\""]

@@ -1,0 +1,234 @@
+# ── Agent orchestration ────────────────────────────────────────
+
+work() {
+  local session=${1:-agents}
+  if [ -n "$TMUX" ]; then
+    tmux switch-client -t "$session" 2>/dev/null || (tmux new-session -d -s "$session" && tmux switch-client -t "$session")
+  else
+    tmux new-session -A -s "$session"
+  fi
+}
+
+# overseer — open (or jump to) the dedicated command-post window. It registers
+# as `overseer` and self-tags @orchestrator, so the idle reaper never reaps it.
+# This is the window you drive from; agents you spawn are separate.
+overseer() {
+  local session="${TMUX_AGENT_SESSION:-agents}"
+  tmux has-session -t "$session" 2>/dev/null || tmux new-session -d -s "$session"
+  if ! tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -qx overseer; then
+    # NB: "$session:" (trailing colon) targets the session and appends at the next
+    # free index. A bare "$session" resolves to the session's ACTIVE window and
+    # makes new-window try to create AT that index -> "index N in use" when it's taken.
+    tmux new-window -d -t "$session:" -n overseer -c "$HOME" "env PROJECT_SLUG=overseer $HOME/.tmux/open-claude.sh"
+  fi
+  if [ -n "$TMUX" ]; then
+    tmux switch-client -t "$session" 2>/dev/null
+    tmux select-window -t "${session}:overseer"
+  else
+    tmux attach -t "$session" \; select-window -t "${session}:overseer"
+  fi
+}
+
+# nexus-recover [--respawn|--all] — herdr restart resilience. A herdr server restart
+# kills the in-pane agents and fires no pane-died hook, so rosters go stale and the
+# agents are gone. Bare: reconcile the rosters + print what was lost. --respawn brings
+# the ledger-tracked fleet back from their last checkpoint; --all revives everything.
+# No-op on tmux (the pane-died hook already handles it). See docs/herdr-recover.md.
+nexus-recover() {
+  local d="${AGENTS_NEXUS_DIR:-$HOME/repos/agents-nexus}"
+  "$d/scripts/herdr-recover.sh" "$@"
+}
+
+# wt — manage agent worktrees
+wt() {
+  local REPO_DIR="${REPO_DIR:-$HOME/repos}"
+  local WT_DIR="$REPO_DIR/.worktrees"
+  case "${1:-ls}" in
+    ls)
+      if [ -d "$WT_DIR" ] && [ "$(ls -A "$WT_DIR" 2>/dev/null)" ]; then
+        echo "Active worktrees:"
+        for d in "$WT_DIR"/*/; do
+          [ -d "$d" ] || continue
+          local name=$(basename "$d")
+          local branch="${name##*--}"
+          local repo="${name%%--*}"
+          echo "  $name  (repo: ${repo//_//}, branch: $branch)"
+        done
+      else
+        echo "No worktrees"
+      fi
+      ;;
+    rm)
+      local name="${2:?"Usage: wt rm <name>"}"
+      local wt_path="$WT_DIR/$name"
+      [ -d "$wt_path" ] || { echo "Not found: $name"; return 1; }
+      local repo="${name%%--*}"
+      local repo_path=""
+      for candidate in "${repo//_//}" "$repo"; do
+        [ -d "$REPO_DIR/$candidate/.git" ] || [ -f "$REPO_DIR/$candidate/.git" ] && { repo_path="$REPO_DIR/$candidate"; break; }
+      done
+      [ -z "$repo_path" ] && { echo "Can't find repo for $name"; return 1; }
+      git -C "$repo_path" worktree remove "$wt_path" && echo "Removed $name" \
+        || echo "Failed (uncommitted changes?). Use: git -C $repo_path worktree remove --force $wt_path"
+      ;;
+    clean)
+      local active_paths
+      active_paths=$(tmux list-panes -a -F '#{pane_current_path}' 2>/dev/null)
+      local cleaned=0
+      for d in "$WT_DIR"/*/; do
+        [ -d "$d" ] || continue
+        d="${d%/}"
+        local name=$(basename "$d")
+        if ! echo "$active_paths" | grep -qF "$d"; then
+          local repo="${name%%--*}"
+          for candidate in "${repo//_//}" "$repo"; do
+            if [ -d "$REPO_DIR/$candidate/.git" ] || [ -f "$REPO_DIR/$candidate/.git" ]; then
+              git -C "$REPO_DIR/$candidate" worktree remove "$d" 2>/dev/null && { echo "Cleaned: $name"; ((cleaned++)); }
+              break
+            fi
+          done
+        fi
+      done
+      echo "$cleaned worktree(s) cleaned"
+      ;;
+    *)
+      echo "Usage: wt [ls|rm <name>|clean]"
+      ;;
+  esac
+}
+
+# claude-init — scaffold a CLAUDE.md in the current repo from the template
+claude-init() {
+  local nexus="${AGENTS_NEXUS_DIR:-$HOME/repos/agents-nexus}"
+  local template="$nexus/CLAUDE.md.template"
+  if [ -f "CLAUDE.md" ]; then
+    echo "CLAUDE.md already exists in $(pwd)"
+    return 1
+  fi
+  if [ ! -f "$template" ]; then
+    echo "Template not found at $template"
+    return 1
+  fi
+  cp "$template" CLAUDE.md
+  echo "Created CLAUDE.md in $(pwd) — edit it to match your project"
+}
+
+# agents — list all registered agents
+agents() {
+  local dir="$HOME/.tmux/registry"
+  local session="${TMUX_AGENT_SESSION:-agents}"
+  mkdir -p "$dir"
+
+  local count=0
+  local lines=""
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
+    local pane_id name cwd
+    pane_id=$(grep '^PANE_ID=' "$f" | cut -d= -f2)
+    name=$(grep '^NAME=' "$f" | cut -d= -f2)
+    cwd=$(grep '^CWD=' "$f" | cut -d= -f2)
+    local slot
+    slot=$(tmux display-message -t "$pane_id" -p '#{window_index}' 2>/dev/null)
+    if [ -z "$slot" ]; then
+      rm -f "$f"
+      continue
+    fi
+    lines+=$(printf "%-6s %-24s %s\n" "$slot" "$name" "$cwd")
+    lines+=$'\n'
+    ((count++))
+  done
+
+  if [ "$count" -eq 0 ]; then
+    echo "No agents registered"
+    return 0
+  fi
+
+  printf "%-6s %-24s %s\n" "SLOT" "NAME" "DIRECTORY"
+  printf "%-6s %-24s %s\n" "----" "----" "---------"
+  printf "%s" "$lines" | sort -n
+}
+
+# qa <message> — send the same response to ALL waiting agents
+qa() {
+  local msg="${1:?"Usage: qa <message>"}"
+  shift 2>/dev/null
+  [ -n "$*" ] && msg="$msg $*"
+  local session=${TMUX_AGENT_SESSION:-agents}
+  local sent=0
+  for win in $(tmux list-windows -t "$session" -F "#{window_index}:#{@waiting}" 2>/dev/null); do
+    local idx="${win%%:*}"
+    local waiting="${win##*:}"
+    if [ "$waiting" = "1" ]; then
+      q "$idx" "$msg"
+      ((sent++))
+    fi
+  done
+  echo "Sent to $sent waiting agent(s)"
+}
+
+# v <N> — quick view: float an overlay with status + last output of agent N
+v() {
+  local slot=${1:?"Usage: v <slot>"}
+  echo "$(date +%s) human-v agents:${slot}" >> "$HOME/.tmux/apm.log"
+  tmux display-popup -E -w 100 -h 34 \
+    "$HOME/.tmux/peek-summary.sh ${slot}"
+}
+
+# q <N> <message> — queue a message to agent N without switching to it
+# Single-digit responses (1/2/3) skip Enter — Claude Code approval prompts
+# select immediately on keypress; sending Enter would trigger an extra action.
+q() {
+  local slot=${1:?"Usage: q <slot> <message>"}
+  shift
+  echo "$(date +%s) human-q agents:${slot}" >> "$HOME/.tmux/apm.log"
+  if [[ "$*" =~ ^[0-9]$ ]]; then
+    tmux send-keys -t "agents:${slot}" "$*"
+  else
+    tmux send-keys -t "agents:${slot}" "$*" Enter
+  fi
+}
+
+# ── API key rotation ────────────────────────────────────────────
+
+# usekey <name> — activate a named API key for this tmux session.
+# Keys live in ~/.tmux/keys/<name> (one raw sk-ant-... per file, never committed).
+# New agent windows spawned after this call inherit the key automatically.
+usekey() {
+  local name="${1:?Usage: usekey <name>}"
+  local keyfile="$HOME/.tmux/keys/$name"
+  if [ ! -f "$keyfile" ]; then
+    echo "Key '$name' not found. Add it: echo 'sk-ant-...' > ~/.tmux/keys/$name"
+    return 1
+  fi
+  export ANTHROPIC_API_KEY=$(cat "$keyfile")
+  tmux setenv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
+  tmux setenv ANTHROPIC_KEY_NAME "$name"
+  echo "Active key: $name"
+}
+
+# whichkey — show which key profile is currently active
+whichkey() {
+  local name
+  name=$(tmux show-environment ANTHROPIC_KEY_NAME 2>/dev/null | sed 's/ANTHROPIC_KEY_NAME=//')
+  if [ -n "$name" ]; then
+    echo "Active key: $name (${ANTHROPIC_API_KEY:0:12}...)"
+  else
+    echo "No named key active (using default ANTHROPIC_API_KEY)"
+  fi
+}
+
+# keys — list available key profiles
+keys() {
+  local dir="$HOME/.tmux/keys"
+  mkdir -p "$dir"
+  if [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+    echo "No keys found. Add one: echo 'sk-ant-...' > ~/.tmux/keys/<name>"
+    return
+  fi
+  local active
+  active=$(tmux show-environment ANTHROPIC_KEY_NAME 2>/dev/null | sed 's/ANTHROPIC_KEY_NAME=//')
+  for f in "$dir"/*; do
+    local n=$(basename "$f")
+    [ "$n" = "$active" ] && echo "  * $n (active)" || echo "    $n"
+  done
+}

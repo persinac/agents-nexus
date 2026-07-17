@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.substrated</string>
+
+    <!-- Read-path daemon for the herdr substrate. Caches herdr agent state and
+         serves substrate.sh reads (query/pane-opt) in herdr mode, so hot readers
+         don't spawn a subprocess per read. Uses the raw herdr socket (no herdr CLI). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>node</string>
+        <string>__AGENTS_NEXUS_DIR__/substrated/index.mjs</string>
+    </array>
+
+    <!-- Long-running daemon: start at load, restart if it dies. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.tmux/substrated.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.tmux/substrated.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>AGENTS_NEXUS_DIR</key>
+        <string>__AGENTS_NEXUS_DIR__</string>
+        <!-- PATH must include node's location (launchd's default PATH is stripped). -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- The daemon serves the herdr-mode read cache. herdr is the fleet default
+             now; set explicitly here so the daemon's mode is unambiguous regardless of
+             the shell env launchd inherits. -->
+        <key>NEXUS_SUBSTRATE</key>
+        <string>herdr</string>
+        <key>SUBSTRATED_PORT</key>
+        <string>8422</string>
+    </dict>
+</dict>
+</plist>

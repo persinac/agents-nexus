@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agent-memory": {
+      "type": "stdio",
+      "command": "__AGENTS_NEXUS_DIR__/mnemon/.venv/bin/python3",
+      "args": ["-m", "agent_memory.server.mcp_server"],
+      "env": {
+        "PYTHONPATH": "__AGENTS_NEXUS_DIR__/mnemon"
+      }
+    }
+  }
+}

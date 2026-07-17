@@ -1,0 +1,23 @@
+# Example overlay manifest. Copy this file (and the files/ tree) into a PRIVATE repo,
+# then fill it in. See README.md for the full field reference.
+#
+# Applied by:  scripts/overlay-apply.sh <git-url|path>   (or  ./install.sh --overlay <…>)
+
+# Directory whose tree mirrors paths under the core repo root. Default: "files".
+files_dir = "files"
+
+# Placeholder substitution after copy (__HOME__ → $HOME, __NODE_BIN__ → dir of `node`).
+# Ship host units with placeholders so the overlay is portable across machines.
+[[template]]
+glob = "launchd/*.plist"
+
+# Repoint Conductor at your real reporting config (with live Jira/Confluence/MR/Trello
+# targets) without touching the core's tracked, neutral config/conductor.yaml.
+[[symlink]]
+link   = "~/.tmux/conductor.yaml"
+target = "config/conductor.personal.yaml"
+
+# Extra profile env. An existing key in .env is kept — this only fills gaps.
+[[env]]
+key   = "EXAMPLE_OVERLAY_KEY"
+value = "set-me"

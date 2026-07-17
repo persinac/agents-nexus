@@ -1,0 +1,57 @@
+# nexus.deps.toml — external dependencies for nexus.fleet, consumed by the
+# installer's post-link "check -> guide -> set env" step.
+#
+# SCHEMA (owned by the installer/orchestration side; this is seed content):
+#   [[requires]]  a thing that must (or optionally should) exist for the plugin to work.
+#     type      = bin | mcp | service | venv | file | plugin
+#     id        = short identifier
+#     check     = shell probe; NON-ZERO exit => unsatisfied => show `guide`
+#     optional  = true => degrade (don't block the install); false/omitted => block
+#     guide     = one line on how to satisfy it
+#   [[env]]  an environment variable the plugin reads.
+#     name, required (bool), default, probe (cmd to auto-derive), describe
+#
+# NOTE to schema owner: I added `type = file` (a required path that isn't a PATH
+# binary) and a per-`requires` `guide` beyond the {requires, env, setup_guide}
+# sketch — both earn their keep in the real content below; flag if you'd shape
+# them differently.
+
+[[requires]]
+type = "bin"
+id = "fzf"
+check = "command -v fzf"
+optional = false
+guide = "brew install fzf  (mac) · sudo apt install fzf  (linux)"
+
+[[requires]]
+type = "bin"
+id = "claude"
+check = "command -v claude"
+optional = false
+guide = "Install Claude Code (the picker spawns agents through it via open-claude.sh)."
+
+[[requires]]
+type = "service"
+id = "nexus-substrate"
+check = "test -x \"${NEXUS_TMUX_DIR:-$HOME/.tmux}/launch-claude.sh\""
+optional = false
+guide = "Run the base install (install.sh) — it symlinks the substrate spawn chain (launch-claude.sh/substrate.sh/open-claude.sh/workspace-categories.txt) into ~/.tmux, or set NEXUS_TMUX_DIR to your checkout's tmux dir."
+
+[[requires]]
+type = "mcp"
+id = "agent-memory"
+check = "claude mcp get agent-memory >/dev/null 2>&1"
+optional = true
+guide = "Optional: without the agent-memory MCP, spawned agents still run but context/memory injection degrades to a no-op."
+
+[[env]]
+name = "NEXUS_TMUX_DIR"
+required = false
+default = "$HOME/.tmux"
+describe = "Root of the nexus substrate scripts (the base install symlinks them here)."
+
+[[env]]
+name = "NEXUS_SUBSTRATE"
+required = false
+default = "herdr"
+describe = "Multiplexer backend the spawn chain targets (herdr|tmux). The plugin forces 'herdr'."

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.herdr-recover</string>
+
+    <!-- OPT-IN job: herdr restart resilience. A herdr server restart kills the
+         in-pane agents and fires NO pane-died hook, so the registry/ledger/cache go
+         stale. This RECONCILES those rosters (safe, non-destructive) after a restart.
+
+         Mac default is reconcile-only + report — respawn is on-demand here
+         (`nexus-recover --respawn`) since this box is attended. To auto-respawn on
+         this machine too, add `--respawn` to the script args below (or set
+         HERDR_RECOVER_RESPAWN=1). The unattended Linux box opts in via its systemd unit.
+
+         Lives under launchd/optional/ so `launchd:install:all` does NOT sweep it in —
+         enable deliberately with `task launchd:install:herdr-recover`. The tool no-ops
+         unless NEXUS_SUBSTRATE=herdr, so installing it presumes the herdr cutover.
+
+         zsh -l for a Homebrew PATH (herdr) + nvm sourced so `claude` is present if
+         respawn is enabled (open-claude -> claude) — same PATH discipline as the reaper. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] &amp;&amp; . "$NVM_DIR/nvm.sh"; NEXUS_SUBSTRATE=herdr SUBSTRATED_PORT=8422 AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__ __AGENTS_NEXUS_DIR__/scripts/herdr-recover.sh</string>
+    </array>
+
+    <!-- Reconcile shortly after login/load (catches a restart), then every 10 min. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>600</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-herdr-recover.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-herdr-recover.log</string>
+</dict>
+</plist>

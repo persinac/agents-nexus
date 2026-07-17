@@ -1,0 +1,7 @@
+# Fixed workspace category vocabulary for the nexus fleet.
+# One category per line. Instances are labeled <category>/<slug> (e.g. mission/spark-reclaim).
+# The picker offers these for a "new bucket" but also accepts a freeform typed category.
+# Readers strip blank lines and '#' comments; symlinked to ~/.tmux/workspace-categories.txt.
+interactive
+mission
+swarm

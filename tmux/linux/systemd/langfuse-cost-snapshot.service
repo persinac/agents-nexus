@@ -1,0 +1,11 @@
+[Unit]
+Description=Snapshot Langfuse daily LLM cost/usage into agents.langfuse_cost_daily (preserves cost history past the trace TTL)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 __AGENTS_NEXUS_DIR__/scripts/langfuse-cost-snapshot.py
+Environment=HOME=__HOME__
+Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

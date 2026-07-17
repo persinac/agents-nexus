@@ -1,0 +1,11 @@
+# nexus.observe keybindings — appended to ~/.config/herdr/config.toml by
+# scripts/herdr-plugin-install.sh (herdr manifests can't declare keys).
+[[keys.command]]
+key = "prefix+shift+m"
+type = "plugin_action"
+command = "nexus.observe.memory"
+
+[[keys.command]]
+key = "prefix+shift+a"
+type = "plugin_action"
+command = "nexus.observe.apm"

@@ -1,0 +1,58 @@
+# Environment files — all flavors
+.env
+.env.*
+*.env
+!.env.example
+!.env.*.example
+!*.env.example
+
+# Active-profile pointer written by install.sh
+.nexus-profile
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+dist/
+build/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+.idea/
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
+scripts/clone-urls.txt
+scripts/*.log
+spark/*.log
+scripts/.obs-tag-state.json
+
+repos-manifest.yaml
+
+# Stray credential/sample drops (never commit secrets)
+sample.json
+
+# Private, auth-gated catalog overlays (e.g. a company marketplace). The REAL overlay
+# (plugins/catalog.<org>.toml) is local-only — it may carry private marketplace URLs and
+# internal plugin names, so it must NEVER land in this public repo. Only the example
+# template (catalog.example.toml, or a per-org catalog.<org>.example.toml) is committed.
+# NOTE: the negation uses catalog*.example.toml (no dot before *) so it re-includes BOTH
+# catalog.example.toml AND catalog.<org>.example.toml — a `.*.` glob would miss the former.
+plugins/catalog.*.toml
+!plugins/catalog*.example.toml
+
+# Whole-repo private overlay (scripts/overlay-apply.sh). `overlay/` is the fetched
+# private "plugs" repo; `.overlay-applied` records what it dropped. Both are local-only —
+# an overlay carries org/personal files that must NEVER land in the public core.
+# Files the overlay drops into core paths are excluded per-clone via .git/info/exclude.
+/overlay/
+/.overlay-applied

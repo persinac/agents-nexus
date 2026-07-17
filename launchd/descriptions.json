@@ -1,0 +1,17 @@
+{
+  "com.agents-nexus.agent-memory.flush": "Flushes buffered tmux + agent events to the agent-memory DB",
+  "com.agents-nexus.docker": "Starts the agents-nexus Docker stack at login (proxy, langfuse, mnemon, spark, dashboard)",
+  "com.agents-nexus.gl-reviews": "Writes the GitLab review queue into today's Obsidian daily note",
+  "com.agents-nexus.gl-reviews-prune": "Prunes stale reviewer assignments from open GitLab MRs",
+  "com.agents-nexus.guilty-spark.nightly": "Nightly: incremental Spark re-index (sync) + decision synthesis from recent MRs",
+  "com.agents-nexus.langfuse-cost-snapshot": "Daily: snapshots Langfuse cost/usage into Postgres so spend history survives the 10-day trace TTL",
+  "com.agents-nexus.muninn.sync": "Syncs reMarkable rM1 handwritten pages into the Obsidian vault",
+  "com.agents-nexus.obs-decay": "Weekly review: surfaces stale Obsidian notes for the user to action",
+  "com.agents-nexus.obs-digest": "Digests the previous business day's Obsidian notes and posts to Slack",
+  "com.agents-nexus.obs-tag": "Auto-tags newly-modified Obsidian notes via Claude",
+  "com.agents-nexus.obs-tidy": "Tidies the Obsidian vault (broken links, orphans) and posts a Slack summary",
+  "com.agents-nexus.permission-suggest": "Weekly: proposes safe Claude Code permission-allowlist additions from recent transcripts and pings Slack (propose-only)",
+  "com.agents-nexus.slack-bridge": "Slack Socket Mode bridge — routes #nexus messages and thread replies to the right agent, and posts agent input-requests back to Slack",
+  "com.agents-nexus.example-service-mr-labels": "Auto-applies severity labels, assignees, and reviewers to open example-service MRs",
+  "com.agents-nexus.example-service-rebase": "Auto-rebases the example-service typed-tool-results branch onto origin/main"
+}

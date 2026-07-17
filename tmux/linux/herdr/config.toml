@@ -1,0 +1,56 @@
+# herdr config for the agents-nexus fleet on Linux — the interactive UX-parity layer.
+# Mirror of tmux/mac/herdr/config.toml. __HOME__ is substituted by tmux/linux/install.sh;
+# `herdr server reload-config` applies edits. Recreates the tmux muscle memory:
+#   ctrl+a prefix · ctrl+a <digit> jump-to-agent · ctrl+a N fuzzy picker · ctrl+a shift+b new bucket.
+[keys]
+prefix = "ctrl+a"
+
+# ctrl+a then a digit -> jump straight to that agent (the tmux window-number feel).
+focus_agent = "prefix+1..9"
+switch_tab = ""
+
+# ctrl+a + shift+<arrow> -> MOVE (swap) the focused pane with its neighbour.
+# herdr ships these swap_pane_* actions UNBOUND by default; focus (ctrl+a h/j/k/l,
+# plus the arrow bindings below) is the unshifted verb, shift = grab-and-move.
+swap_pane_left  = "prefix+shift+left"
+swap_pane_right = "prefix+shift+right"
+swap_pane_up    = "prefix+shift+up"
+swap_pane_down  = "prefix+shift+down"
+
+# Plugin keybindings (e.g. nexus-fleet's picker on shift+n / shift+b) are NOT in the
+# base config — scripts/herdr-plugin-install.sh appends them per-machine when you opt
+# into a plugin (herdr manifests can't declare keys). Base config stays plugin-free.
+
+# ctrl+a + <arrow> -> focus the pane in that direction. herdr's native focus_pane_*
+# keep ctrl+a h/j/k/l working; a native action binds only ONE key, so these command
+# shims ADD the arrows without dropping h/l. --current targets the focused pane.
+# __HERDR_BIN__ is the resolved herdr path (install.sh substitutes it) — the systemd
+# server runs with a stripped PATH, so a bare `herdr` would not resolve.
+[[keys.command]]
+key = "prefix+left"
+type = "shell"
+command = "__HERDR_BIN__ pane focus --direction left --current"
+
+[[keys.command]]
+key = "prefix+right"
+type = "shell"
+command = "__HERDR_BIN__ pane focus --direction right --current"
+
+[[keys.command]]
+key = "prefix+up"
+type = "shell"
+command = "__HERDR_BIN__ pane focus --direction up --current"
+
+[[keys.command]]
+key = "prefix+down"
+type = "shell"
+command = "__HERDR_BIN__ pane focus --direction down --current"
+
+[ui]
+show_agent_labels_on_pane_borders = true
+# Sidebar as the always-visible "all agents at a glance" view (the tmux status-bar minimap
+# analog): readable when expanded (toggle ctrl+a b), a narrow always-on rail when collapsed,
+# sorted attention-first so blocked/idle agents surface first.
+sidebar_width = 32
+sidebar_collapsed_mode = "compact"
+agent_panel_sort = "priority"

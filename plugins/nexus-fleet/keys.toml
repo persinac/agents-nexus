@@ -1,0 +1,22 @@
+# nexus.fleet keybindings — NOT part of the plugin manifest.
+# herdr silently ignores a manifest [[keys.command]] (probe-verified 2026-07-16),
+# so a plugin's chords must live in the user's config.toml. scripts/herdr-plugin-install.sh
+# appends this fragment (guarded by a marker so re-runs don't duplicate) when you opt
+# into the plugin, and base install.sh re-appends it while the plugin stays linked.
+# type="plugin_action" dispatches the chord to the plugin's action, which opens the pane.
+[[keys.command]]
+key = "prefix+shift+n"
+type = "plugin_action"
+command = "nexus.fleet.pick"
+
+[[keys.command]]
+key = "prefix+shift+b"
+type = "plugin_action"
+command = "nexus.fleet.bucket"
+
+# ctrl+a shift+g -> general scratch agent (old tmux ctrl+a G). NOTE: displaces herdr's
+# built-in new_worktree on this chord; rebind if you use herdr's native worktree create.
+[[keys.command]]
+key = "prefix+shift+g"
+type = "plugin_action"
+command = "nexus.fleet.scratch"

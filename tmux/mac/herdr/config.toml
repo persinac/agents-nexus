@@ -1,0 +1,60 @@
+# herdr config for the agents-nexus fleet — the interactive UX-parity layer.
+# Recreates the tmux muscle memory when herdr is the multiplexer:
+#   ctrl+a prefix · ctrl+a <digit> jump-to-agent · ctrl+a N fuzzy repo picker.
+# Deployed to ~/.config/herdr/config.toml by install.sh. `herdr server reload-config` applies edits.
+
+[keys]
+prefix = "ctrl+a"
+
+# ctrl+a then a digit -> jump straight to that agent (the tmux window-number feel).
+# Point the numeric row at focus_agent; free it from the default tab-switch.
+focus_agent = "prefix+1..9"
+switch_tab = ""
+
+# ctrl+a + shift+<arrow> -> MOVE (swap) the focused pane with its neighbour.
+# herdr ships these swap_pane_* actions UNBOUND by default, which is why moving
+# panes did nothing. Focus (ctrl+a h/j/k/l, plus the arrow bindings below) is the
+# unshifted verb; shift = grab-and-move, mirroring that muscle memory.
+swap_pane_left  = "prefix+shift+left"
+swap_pane_right = "prefix+shift+right"
+swap_pane_up    = "prefix+shift+up"
+swap_pane_down  = "prefix+shift+down"
+
+# Plugin keybindings (e.g. nexus-fleet's picker on shift+n / shift+b) are NOT in the
+# base config — scripts/herdr-plugin-install.sh appends them per-machine when you opt
+# into a plugin (herdr manifests can't declare keys). Base config stays plugin-free.
+
+# ctrl+a + <arrow> -> focus the pane in that direction. herdr's native
+# focus_pane_* keep ctrl+a h/j/k/l working; a native action binds only ONE key,
+# so these command shims ADD the arrows without dropping h/l. --current targets
+# the focused pane; the absolute herdr path is required because the launchd
+# server runs with a stripped PATH.
+[[keys.command]]
+key = "prefix+left"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane focus --direction left --current"
+
+[[keys.command]]
+key = "prefix+right"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane focus --direction right --current"
+
+[[keys.command]]
+key = "prefix+up"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane focus --direction up --current"
+
+[[keys.command]]
+key = "prefix+down"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane focus --direction down --current"
+
+[ui]
+show_agent_labels_on_pane_borders = true
+# Agent sidebar as the always-visible "all agents at a glance" view (the analog of the
+# tmux status-bar minimap): a readable width when expanded (toggle with ctrl+a b), and a
+# narrow always-on rail — never zero-width — when collapsed. Sorted by attention queue
+# so blocked/idle agents surface first (set to "spaces" to group by workspace instead).
+sidebar_width = 32
+sidebar_collapsed_mode = "compact"
+agent_panel_sort = "priority"

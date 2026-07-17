@@ -1,0 +1,611 @@
+version: '3'
+
+dotenv: ['.env.local', '.env']
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  # =============================================================================
+  # Setup
+  # =============================================================================
+
+  install:
+    desc: Install all dependencies (mnemon, arbiter, dashboard)
+    cmds:
+      - task: mnemon:install
+      - task: arbiter:install
+      - task: dashboard:install
+
+  # =============================================================================
+  # Arbiter (A2A hub + WebSocket bridge)
+  # =============================================================================
+
+  arbiter:start:
+    desc: Start the arbiter server
+    dir: arbiter
+    cmds:
+      - npm start
+
+  arbiter:dev:
+    desc: Start the arbiter server with file watching
+    dir: arbiter
+    cmds:
+      - npm run dev
+
+  arbiter:install:
+    desc: Install arbiter dependencies
+    dir: arbiter
+    cmds:
+      - npm install
+
+  # =============================================================================
+  # Slack bridge (two-way #nexus <-> agent control)
+  # =============================================================================
+  slack:bridge:
+    desc: Start the Slack bridge (Socket Mode listener + /notify endpoint)
+    dir: slack-bridge
+    cmds:
+      - npm start
+
+  slack:bridge:dev:
+    desc: Start the Slack bridge with file watching
+    dir: slack-bridge
+    cmds:
+      - npm run dev
+
+  slack:bridge:install:
+    desc: Install slack-bridge dependencies
+    dir: slack-bridge
+    cmds:
+      - npm install
+
+  # =============================================================================
+  # Dashboard (pixel UI)
+  # =============================================================================
+
+  dashboard:dev:
+    desc: Start the dashboard UI in dev mode
+    dir: dashboard/ui
+    cmds:
+      - npm run dev
+
+  dashboard:build:
+    desc: Build the dashboard UI
+    dir: dashboard/ui
+    cmds:
+      - npm run build
+
+  dashboard:install:
+    desc: Install dashboard dependencies
+    dir: dashboard/ui
+    cmds:
+      - npm install
+
+  # =============================================================================
+  # Mnemon (memory MCP server)
+  # =============================================================================
+
+  mnemon:install:
+    desc: Create venv and install mnemon dependencies
+    dir: mnemon
+    cmds:
+      - uv sync --extra mcp
+
+  mnemon:serve:
+    desc: Start the mnemon MCP server
+    dir: mnemon
+    cmds:
+      - uv run agent-memory-serve
+
+  mnemon:migrate:
+    desc: Run database migrations
+    dir: mnemon
+    cmds:
+      - cmd: |
+          PSQL_URL=$(echo "$DATABASE_URL" | sed 's/[&?]search_path=[^&]*//')
+          PGOPTIONS="-c search_path=agents,public" psql "$PSQL_URL" -f migrations/001_initial_schema.sql
+
+  mnemon:cloud-migrate:
+    desc: Migrate memory_nodes, memory_entities, memory_links from cloud Postgres to local
+    cmds:
+      - cmd: |
+          set -e
+          LOCAL=$(echo "$DATABASE_URL" | sed 's/[&?]search_path=[^&]*//')
+          CLOUD=$(echo "$CLOUD_DATABASE_URL" | sed 's/[&?]search_path=[^&]*//')
+          for table in memory_entities memory_nodes memory_links; do
+            echo "→ migrating agents.$table ..."
+            docker run --rm postgres:15 pg_dump "$CLOUD" \
+              --data-only --table="agents.$table" \
+              --no-owner --no-acl \
+              | PGOPTIONS="-c search_path=agents,public" psql "$LOCAL"
+          done
+          echo "Done."
+
+  mnemon:test:
+    desc: Run mnemon tests
+    dir: mnemon
+    cmds:
+      - uv run pytest {{.CLI_ARGS}}
+
+  mnemon:fmt:
+    desc: Format and lint mnemon
+    dir: mnemon
+    cmds:
+      - uv run ruff format .
+      - uv run ruff check --fix .
+
+  # =============================================================================
+  # Stack lifecycle (arbiter + dashboard + mnemon)
+  # =============================================================================
+
+  kill:
+    desc: Kill arbiter tmux window and mnemon MCP server
+    cmds:
+      - tmux kill-window -t ${TMUX_SESSION:-agents}:arbiter 2>/dev/null || true
+      - pkill -f "agent_memory.server.mcp_server" || true
+
+  up:
+    desc: Start docker stack, arbiter (tmux window), and mnemon in the background
+    cmds:
+      - docker compose up -d
+      - cmd: |
+          tmux new-window -d -t "${TMUX_SESSION:-agents}:" -n arbiter "cd {{.TASKFILE_DIR}} && task arbiter:start" 2>/dev/null \
+            || echo "Warning: could not spawn arbiter tmux window — is the '${TMUX_SESSION:-agents}' session running?"
+          echo "Arbiter started in tmux window 'arbiter' (attach: tmux select-window -t ${TMUX_SESSION:-agents}:arbiter)"
+      - cmd: |
+          nohup bash -c 'cd {{.TASKFILE_DIR}}/mnemon && uv run agent-memory-serve' > /tmp/mnemon.log 2>&1 &
+          echo "Started mnemon. Log: /tmp/mnemon.log"
+
+  restart:
+    desc: Kill and restart all services (arbiter, dashboard, mnemon)
+    cmds:
+      - task: kill
+      - sleep 1
+      - task: up
+
+  logs:
+    desc: Tail mnemon log (arbiter output is in tmux window 'agents:arbiter')
+    cmds:
+      - tail -f /tmp/mnemon.log
+
+  # =============================================================================
+  # Docker Compose (knowledge stack)
+  # =============================================================================
+
+  docker:up:
+    desc: Start the full knowledge stack in the background
+    cmds:
+      - docker compose up -d
+
+  docker:down:
+    desc: Stop all services (data volumes preserved)
+    cmds:
+      - docker compose down
+
+  docker:restart:
+    desc: Restart a single service (e.g. task docker:restart -- spark)
+    cmds:
+      - docker compose restart {{.CLI_ARGS}}
+
+  docker:logs:
+    desc: Tail logs for all services (or pass a service name)
+    cmds:
+      - docker compose logs -f {{.CLI_ARGS}}
+
+  conductor:
+    desc: 'Run a Conductor mission. e.g. task conductor -- "In example-service, complete FC-1234". Flags: --dry-run (no live Jira/MR/Confluence), --resume <mid>.'
+    dir: agent-runner
+    cmds:
+      - .venv/bin/python conductor.py {{.CLI_ARGS}}
+
+  docker:status:
+    desc: Show container health and uptime
+    cmds:
+      - docker compose ps
+
+  docker:init:
+    desc: First-time setup — pull embedding models
+    cmds:
+      - docker compose --profile init run --rm ollama-init
+
+  docker:build:
+    desc: Rebuild all images without cache
+    cmds:
+      - docker compose build --no-cache
+
+  stack:profiles:
+    desc: 'Show or set the active profile''s COMPOSE_PROFILES (e.g. task stack:profiles -- proxy,langfuse)'
+    silent: true
+    cmds:
+      - cmd: |
+          env_file=".env"
+          [ -L "$env_file" ] && env_file="$(readlink "$env_file")"
+          if [ ! -f "$env_file" ]; then echo "No .env profile found — run ./install.sh"; exit 1; fi
+          if [ -z "{{.CLI_ARGS}}" ]; then
+            grep '^COMPOSE_PROFILES=' "$env_file" || echo "COMPOSE_PROFILES not set in $env_file"
+            exit 0
+          fi
+          new="{{.CLI_ARGS}}"
+          tmp="$env_file.tmp.$$"
+          if grep -q '^COMPOSE_PROFILES=' "$env_file"; then
+            awk -v v="$new" \
+              '/^COMPOSE_PROFILES=/{print "COMPOSE_PROFILES=" v; next} /^NEXUS_SERVICES=/{print "NEXUS_SERVICES=" v; next} {print}' \
+              "$env_file" > "$tmp"
+          else
+            { echo "COMPOSE_PROFILES=$new"; echo "NEXUS_SERVICES=$new"; cat "$env_file"; } > "$tmp"
+          fi
+          mv "$tmp" "$env_file"
+          chmod 600 "$env_file"
+          echo "-> COMPOSE_PROFILES=$new  ($env_file)"
+
+  observability:up:
+    desc: Bring up just proxy + langfuse ad-hoc (does not change the saved profile)
+    cmds:
+      - COMPOSE_PROFILES=proxy,langfuse docker compose -f "${NEXUS_COMPOSE_FILE:-docker-compose.yml}" up -d
+
+  # =============================================================================
+  # Spark (semantic repo search)
+  # =============================================================================
+
+  spark:pipeline:
+    desc: Run the full Spark nightly pipeline (reclaim + synthesize)
+    cmds:
+      - bash spark/scripts/spark-pipeline.sh {{.CLI_ARGS}}
+
+  spark:reclaim:
+    desc: Full index rebuild (runs inside the spark container)
+    cmds:
+      - docker compose exec spark uv run spark reclaim {{.CLI_ARGS}}
+
+  spark:activate:
+    desc: Re-index a single repo (e.g. task spark:activate -- my-repo)
+    cmds:
+      - docker compose exec spark uv run spark activate {{.CLI_ARGS}}
+
+  spark:status:
+    desc: Show index stats
+    cmds:
+      - docker compose exec spark uv run spark status
+
+  # =============================================================================
+  # Langfuse (optional observability — task langfuse:up to start)
+  # =============================================================================
+
+  langfuse:up:
+    desc: Start the Langfuse observability stack (data volumes persist across restarts)
+    cmds:
+      - docker compose --profile langfuse up -d
+
+  langfuse:down:
+    desc: Stop Langfuse (data volumes preserved — use down -v to wipe)
+    cmds:
+      - docker compose --profile langfuse down
+
+  langfuse:update:
+    desc: Pull latest Langfuse images and restart
+    cmds:
+      - docker compose --profile langfuse pull langfuse-web langfuse-worker
+      - docker compose --profile langfuse up -d
+
+  langfuse:logs:
+    desc: Tail Langfuse web + worker logs
+    cmds:
+      - docker compose logs -f langfuse-web langfuse-worker
+
+  langfuse:status:
+    desc: Show Langfuse container health
+    cmds:
+      - docker compose ps langfuse-web langfuse-worker langfuse-postgres langfuse-redis langfuse-clickhouse langfuse-minio
+
+  langfuse:retention:
+    desc: "Apply N-day TTL to Langfuse ClickHouse trace tables (default 10). Idempotent. RE-RUN AFTER langfuse:update — a Langfuse upgrade can recreate tables and silently drop the TTL. Override window: RETENTION_DAYS=14 task langfuse:retention"
+    vars:
+      RETENTION_DAYS: '{{.RETENTION_DAYS | default "10"}}'
+    cmds:
+      # docker exec by container_name (not `compose exec`) so it is independent
+      # of which compose file resolves by default on this host.
+      - |
+        docker exec langfuse-clickhouse clickhouse-client \
+          --user clickhouse --password "${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}" --multiquery -q "
+            ALTER TABLE traces       MODIFY TTL toDateTime(timestamp)  + INTERVAL {{.RETENTION_DAYS}} DAY;
+            ALTER TABLE observations MODIFY TTL toDateTime(start_time) + INTERVAL {{.RETENTION_DAYS}} DAY;
+            ALTER TABLE scores       MODIFY TTL toDateTime(timestamp)  + INTERVAL {{.RETENTION_DAYS}} DAY;
+          "
+      - 'echo "[nexus] Langfuse ClickHouse TTL = {{.RETENTION_DAYS}} days (traces, observations, scores). See docs/langfuse-retention.md."'
+
+  langfuse:cost-snapshot:
+    desc: "Snapshot Langfuse daily cost/usage (ClickHouse → Postgres agents.langfuse_cost_daily). Idempotent; run daily by launchd/systemd. Preserves cost history past the trace TTL."
+    cmds:
+      - python3 scripts/langfuse-cost-snapshot.py {{.CLI_ARGS}}
+
+  langfuse:cost:
+    desc: "Print recent daily LLM spend by model from the durable Postgres rollup."
+    cmds:
+      - |
+        docker exec nexus-postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+          SELECT day, model, observations AS obs,
+                 round(total_cost, 2) AS cost_usd,
+                 total_tokens AS tokens
+          FROM agents.langfuse_cost_daily
+          WHERE day >= current_date - 30
+          ORDER BY day DESC, total_cost DESC;"'
+
+  langfuse:commands:
+    desc: "List slash-command usage from Langfuse traces — command x agent(session) x first-used. Claude Code embeds invocations in the turn input as <command-name>/x</command-name>, which the proxy logs. Window: DAYS=7 task langfuse:commands (default 10; bounded by the ClickHouse trace TTL). NOTE: a command lingers in conversation context, so first_used is the invocation moment; last_in_context is just how long it stayed in the window. agent=NULL = proxy traffic with no sess/<name> tag."
+    vars:
+      DAYS: '{{.DAYS | default "10"}}'
+    cmds:
+      # docker exec by container_name (not `compose exec`) so it is independent
+      # of which compose file resolves by default on this host.
+      - |
+        docker exec langfuse-clickhouse clickhouse-client \
+          --user clickhouse --password "${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}" -q "
+            SELECT
+              arrayJoin(extractAll(coalesce(o.input,''), '<command-name>(/?[^<]+)</command-name>')) AS command,
+              t.session_id AS agent,
+              min(o.start_time) AS first_used,
+              max(o.start_time) AS last_in_context
+            FROM observations o ANY LEFT JOIN traces t ON o.trace_id = t.id
+            WHERE o.start_time > now() - INTERVAL {{.DAYS}} DAY
+              AND position(coalesce(o.input,''),'command-name') > 0
+            GROUP BY command, agent
+            ORDER BY first_used DESC
+            FORMAT PrettyCompact
+          "
+
+  # =============================================================================
+  # GitLab jobs
+  # =============================================================================
+
+  gl:reviews:
+    desc: Show open MRs where you're a reviewer, priority-sorted
+    cmds:
+      - uv run scripts/gl-review-queue.py {{.CLI_ARGS}}
+
+  gl:reviews:daily:
+    desc: Show review queue and append to today's Obsidian daily note
+    cmds:
+      - uv run scripts/gl-review-queue.py --daily {{.CLI_ARGS}}
+
+  gl:reviews:prune:
+    desc: Remove yourself as reviewer from MRs older than 6mo (--min-age N to override)
+    cmds:
+      - uv run scripts/gl-review-prune.py {{.CLI_ARGS}}
+
+  gl:reviews:prune:dry:
+    desc: Preview stale MRs that would be pruned without making changes
+    cmds:
+      - uv run scripts/gl-review-prune.py --dry-run {{.CLI_ARGS}}
+
+  # =============================================================================
+  # Nightly pipeline
+  # =============================================================================
+
+  nightly:sync:
+    desc: Sync all repos under $REPO_DIR (stash, fetch, pull default branch)
+    cmds:
+      - bash scripts/repo-sync.sh {{.CLI_ARGS}}
+
+  nightly:vault-commit:
+    desc: Auto-commit and push vault changes
+    cmds:
+      - bash scripts/vault-commit.sh {{.CLI_ARGS}}
+
+  nightly:all:
+    desc: Run the full nightly pipeline (repo sync → vault commit → spark)
+    cmds:
+      - task: nightly:sync
+      - task: nightly:vault-commit
+      - task: spark:pipeline
+
+  # =============================================================================
+  # Obsidian jobs
+  # =============================================================================
+
+  obs:tag:
+    desc: Enhance Obsidian notes with tags via Claude Haiku (incremental by default)
+    cmds:
+      - uv run scripts/obs-tag-enhance.py {{.CLI_ARGS}}
+
+  obs:tag:dry:
+    desc: Preview tag enhancement without writing
+    cmds:
+      - uv run scripts/obs-tag-enhance.py --dry-run {{.CLI_ARGS}}
+
+  obs:decay:
+    desc: Flag stale notes and archive 90d+ old notes
+    cmds:
+      - uv run scripts/obs-decay-monitor.py {{.CLI_ARGS}}
+
+  obs:decay:dry:
+    desc: Preview decay monitor without writing or archiving
+    cmds:
+      - uv run scripts/obs-decay-monitor.py --dry-run {{.CLI_ARGS}}
+
+  # =============================================================================
+  # Autostart (macOS launchd)
+  # =============================================================================
+
+  mac:audit:
+    desc: "Audit the Mac stack — launchd jobs loaded, Slack bridge healthy, classifier venv + routing deps present"
+    cmds:
+      - bash scripts/mac-audit.sh
+
+  launchd:install:
+    desc: Install launchd agent so Docker stack starts at login
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.docker.plist > ~/Library/LaunchAgents/com.agents-nexus.docker.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.docker.plist
+      - echo "Installed - stack will start at next login (or run task docker:up)"
+
+  launchd:uninstall:
+    desc: Remove the launchd autostart agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.docker.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.docker.plist
+
+  launchd:install:permission-suggest:
+    desc: Install launchd agent to propose permission-allowlist additions weekly (Sun 9am)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.permission-suggest.plist > ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist
+      - echo "Installed — permission suggestions run Sundays at 9am (logs at /tmp/agents-nexus-permission-suggest.log)"
+
+  launchd:uninstall:permission-suggest:
+    desc: Remove the permission-suggest launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist
+
+  launchd:install:langfuse-cost-snapshot:
+    desc: Install launchd agent to snapshot Langfuse cost into Postgres daily (4:17am)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.langfuse-cost-snapshot.plist > ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
+      - echo "Installed — cost snapshot runs daily at 4:17am (logs at /tmp/agents-nexus-langfuse-cost-snapshot.log)"
+
+  launchd:uninstall:langfuse-cost-snapshot:
+    desc: Remove the Langfuse cost-snapshot launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
+
+  launchd:install:slack-bridge:
+    desc: Install launchd agent to keep the Slack bridge running (KeepAlive)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.slack-bridge.plist > ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
+      - echo "Installed — slack bridge runs under launchd (logs at /tmp/agents-nexus-slack-bridge.log)"
+
+  launchd:uninstall:slack-bridge:
+    desc: Remove the Slack bridge launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
+
+  launchd:install:overseer-reap:
+    desc: "(opt-in, DESTRUCTIVE) Install launchd timer to close agents idle >4h (checkpoints first, every 15m)"
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/optional/com.agents-nexus.overseer-reap.plist > ~/Library/LaunchAgents/com.agents-nexus.overseer-reap.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.overseer-reap.plist
+      - echo "Installed — reaper runs every 15m. FIRST tag your command post (run overseer, or set-window-option @orchestrator 1). Logs at ~/.tmux/overseer-reap.log"
+
+  launchd:uninstall:overseer-reap:
+    desc: Remove the overseer reaper launchd timer
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.overseer-reap.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.overseer-reap.plist
+
+  overseer:reap:
+    desc: "Run the idle-agent reaper once (closes agents idle >4h, checkpoint first)"
+    cmds:
+      - bash scripts/overseer-reap.sh
+
+  overseer:reap:dry:
+    desc: "Dry-run the reaper — log what WOULD be closed, change nothing (REAP_IDLE_SECS=0 to see all)"
+    cmds:
+      - REAP_DRY_RUN=1 bash scripts/overseer-reap.sh
+      - 'echo "decisions logged to ~/.tmux/overseer-reap.log"'
+
+  launchd:install:herdr-recover:
+    desc: "(opt-in) Install launchd timer to reconcile fleet rosters after a herdr restart (every 10m; herdr-only)"
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/optional/com.agents-nexus.herdr-recover.plist > ~/Library/LaunchAgents/com.agents-nexus.herdr-recover.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.herdr-recover.plist
+      - 'echo "Installed — reconciles every 10m (mac default: reconcile-only). Respawn on demand with nexus-recover --respawn. Logs at ~/.tmux/herdr-recover.log"'
+
+  launchd:uninstall:herdr-recover:
+    desc: Remove the herdr-recover launchd timer
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.herdr-recover.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.herdr-recover.plist
+
+  herdr:recover:
+    desc: "Reconcile fleet rosters after a herdr restart + report what was lost (no respawn)"
+    cmds:
+      - NEXUS_SUBSTRATE=herdr bash scripts/herdr-recover.sh
+
+  herdr:recover:respawn:
+    desc: "Reconcile AND respawn ledger-tracked agents lost to a herdr restart (from their last checkpoint)"
+    cmds:
+      - NEXUS_SUBSTRATE=herdr bash scripts/herdr-recover.sh --respawn
+
+  herdr:recover:dry:
+    desc: "Dry-run herdr-recover — log what WOULD be reconciled/respawned, change nothing"
+    cmds:
+      - NEXUS_SUBSTRATE=herdr bash scripts/herdr-recover.sh --respawn --dry-run
+      - 'echo "decisions logged to ~/.tmux/herdr-recover.log"'
+
+  perm:suggest:
+    desc: Scan recent transcripts and propose safe permission-allowlist additions (propose-only)
+    cmds:
+      - python3 scripts/permission-suggest.py
+
+  perm:suggest:apply:
+    desc: Apply the proposed permission rules from ~/.tmux/permission-suggestions.json to ~/.claude/settings.json
+    cmds:
+      - python3 scripts/permission-suggest.py --apply
+
+  launchd:install:guilty-spark-nightly:
+    desc: Install launchd agent to run the guilty-spark pipeline (reclaim + synthesize) nightly at 2am
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.guilty-spark.nightly.plist > ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist
+      - echo "Installed — guilty-spark nightly runs at 2am (logs at /tmp/agents-nexus-guilty-spark-nightly.log)"
+
+  launchd:uninstall:guilty-spark-nightly:
+    desc: Remove the guilty-spark nightly launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist
+
+  launchd:install:all:
+    desc: Install every com.agents-nexus.* launchd job in launchd/*.plist
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - |
+        for p in launchd/com.agents-nexus.*.plist; do
+          name=$(basename "$p")
+          sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" "$p" > ~/Library/LaunchAgents/"$name"
+          launchctl load ~/Library/LaunchAgents/"$name" 2>/dev/null \
+            || launchctl load -w ~/Library/LaunchAgents/"$name" \
+            || echo "  warn: failed to load $name (may already be loaded)"
+          echo "  installed: $name"
+        done
+
+  launchd:uninstall:all:
+    desc: Uninstall every com.agents-nexus.* launchd job
+    cmds:
+      - |
+        for p in launchd/com.agents-nexus.*.plist; do
+          name=$(basename "$p")
+          launchctl unload ~/Library/LaunchAgents/"$name" 2>/dev/null || true
+          rm -f ~/Library/LaunchAgents/"$name"
+          echo "  removed: $name"
+        done

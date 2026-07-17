@@ -1,0 +1,25 @@
+[Unit]
+Description=herdr restart resilience — reconcile rosters + respawn lost agents (opt-in)
+# OPT-IN: lives under systemd/optional/ so tmux/linux/install.sh does NOT auto-enable
+# it. A herdr server restart kills the in-pane agents and fires no pane-died hook, so
+# rosters go stale and agents are gone; this reconciles + (on this box) respawns them
+# from their last checkpoint. No-op unless NEXUS_SUBSTRATE=herdr — enable only once the
+# box is cut over to herdr. Enable per docs/herdr-recover.md + docs/herdr-linux-setup.md.
+
+[Service]
+Type=oneshot
+WorkingDirectory=__AGENTS_NEXUS_DIR__
+ExecStart=__AGENTS_NEXUS_DIR__/scripts/herdr-recover.sh
+Environment=HOME=__HOME__
+Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+Environment=NEXUS_SUBSTRATE=herdr
+Environment=SUBSTRATED_PORT=8422
+# This box is unattended for days — after a restart, bring the WHOLE fleet back from
+# checkpoints (not just the ledger-tracked orchestrator agents). Mirrors REAP_ALL=1 on
+# the reaper here. Drop a name/%pane into ~/.tmux/overseer-exclude to spare it; the
+# reaper-dormant (intentionally-closed) agents are never revived.
+Environment=HERDR_RECOVER_RESPAWN=1
+Environment=HERDR_RECOVER_ALL=1
+# Respawn goes through open-claude -> claude, so `claude` (fnm default-alias bin) and
+# node MUST be on PATH — same fnm-PATH gotcha as the reaper's checkpoint step.
+Environment=PATH=__HOME__/.local/share/fnm/aliases/default/bin:__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin

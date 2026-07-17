@@ -1,0 +1,25 @@
+# plugins/catalog.<org>.example.toml — TEMPLATE for a private, auth-gated catalog overlay.
+#
+# Copy to plugins/catalog.<org>.toml (GITIGNORED — never committed) or host the filled-in file
+# in your org's PRIVATE repo and fetch it when authed. The installer (scripts/plugin-install-flow.sh)
+# merges these [[plugin]] entries into the multi-select when:
+#   (1) this file is PRESENT — ship it ONLY to org machines, never the public repo (the
+#       .gitignore rule: plugins/catalog.*.toml minus *.example.toml enforces that), AND
+#   (2) the marketplace is already registered — the built-in per-entry gate
+#       (`claude plugin marketplace list | grep -q <marketplace>`). The installer never runs
+#       `marketplace add`, so a private URL is never attempted for an outsider.
+# A non-org user has neither → sees nothing org-specific and no install fires.
+#
+# One-time registration is your org's onboarding step, NOT the installer's:
+#   claude plugin marketplace add <https://your.private.host/org/repo.git>
+#
+# Entries use the same [[plugin]] schema as catalog.toml; the claude-marketplace backend is
+# selected by source = { marketplace = "...", plugin = "..." }. Keep it to [[plugin]] tables
+# only (no extra top-level tables — the installer's line-parser reads plugins).
+
+[[plugin]]
+id          = "<org>.<plugin>"
+name        = "Example Plugin"
+description = "One-line description shown in the multi-select."
+default     = true
+source      = { marketplace = "<your-marketplace-name>", plugin = "<plugin>" }

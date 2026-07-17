@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kubectl get *)",
+      "Bash(kubectl logs *)",
+      "Bash(kubectl describe *)",
+      "Bash(talosctl get *)",
+      "Bash(talosctl services *)",
+      "Bash(ping *)",
+      "Bash(gh search *)",
+      "Bash(tasklist *)",
+      "mcp__excalidraw__read_checkpoint"
+    ]
+  }
+}

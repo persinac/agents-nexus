@@ -1,0 +1,41 @@
+# nexus.deps.toml — external dependencies for nexus.observe.
+# Schema: see plugins/nexus-fleet/nexus.deps.toml (requires{type,id,check,optional,guide} + env{name,required,default,probe,describe}).
+
+[[requires]]
+type = "bin"
+id = "python3"
+check = "command -v python3"
+optional = false
+guide = "python3 runs the memory-health TUI (memory-status.py)."
+
+[[requires]]
+type = "service"
+id = "nexus-substrate"
+check = "test -x \"${NEXUS_TMUX_DIR:-$HOME/.tmux}/memory-status.sh\""
+optional = false
+guide = "Run the base install — it provides memory-status.sh + stats.sh + the env layer (env.defaults.sh/env.sh) under ~/.tmux."
+
+[[requires]]
+type = "service"
+id = "mnemon-db"
+check = "test -n \"${DATABASE_URL:-}\""
+optional = true
+guide = "The memory panel shows live data only when DATABASE_URL points at the mnemon Postgres (agents.* schema). Without it, the panel degrades to a 'DATABASE_URL not set' view — the APM panel still works."
+
+[[env]]
+name = "DATABASE_URL"
+required = false
+probe = "grep -m1 '^DATABASE_URL=' \"${AGENTS_NEXUS_DIR:-$HOME/repos/agents-nexus}/.env\" | cut -d= -f2-"
+describe = "Postgres URL for the mnemon/memory DB. The env layer sets it from the repo .env; the memory panel degrades gracefully if unset/unreachable."
+
+[[env]]
+name = "AGENTS_NEXUS_DIR"
+required = false
+default = "$HOME/repos/agents-nexus"
+describe = "Repo root. The env layer (env.sh) sets it; used to locate the venv + scripts the panels wrap."
+
+[[env]]
+name = "NEXUS_TMUX_DIR"
+required = false
+default = "$HOME/.tmux"
+describe = "Root of the nexus substrate scripts."

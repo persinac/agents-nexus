@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly Spark pipeline at 12:15 UTC (6:15 AM MT)
+
+[Timer]
+OnCalendar=*-*-* 12:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

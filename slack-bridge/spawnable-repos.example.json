@@ -1,0 +1,8 @@
+{
+  "__comment__": "Spawnable-repo allowlist for the Slack orchestrator. Copy to ~/.tmux/spawnable-repos.json (or set SLACK_SPAWN_ALLOWLIST_FILE) and edit. Keys are repo names as Spark returns them. A value is either a bare absolute checkout path, or an object { path, desc }. `desc` is OPTIONAL: it gives the spawn classifier context and otherwise auto-fills from Spark (scripts/spark-summary.py -> ~/.tmux/spark-summaries.json, refreshed nightly); a hand-written desc here always overrides. Only repos listed here can be auto-spawned. The __comment__ key is ignored (never a valid repo name).",
+  "store-front": "$HOME/repos/example-repo/store-front",
+  "wallet-api": {
+    "path": "$HOME/repos/example-repo/wallet-api",
+    "desc": "Optional — a hand-written description overrides the Spark-derived one."
+  }
+}

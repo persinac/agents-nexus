@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.langfuse-cost-snapshot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>__AGENTS_NEXUS_DIR__/scripts/langfuse-cost-snapshot.py</string>
+    </array>
+
+    <!-- Daily 04:17 (off-peak; well inside the 10-day trace TTL window) -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>4</integer>
+        <key>Minute</key><integer>17</integer>
+    </dict>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>AGENTS_NEXUS_DIR</key>
+        <string>__AGENTS_NEXUS_DIR__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:__HOME__/.local/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-langfuse-cost-snapshot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-langfuse-cost-snapshot.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

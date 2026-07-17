@@ -1,0 +1,44 @@
+id = "nexus.fleet"
+name = "Nexus Fleet"
+version = "0.1.0"
+min_herdr_version = "0.7.3"
+description = "agents-nexus fleet UX for herdr: fuzzy repo picker + workspace buckets, spawning through the nexus substrate seam (checkpoint/memory/context injected)."
+platforms = ["macos", "linux"]
+
+[[panes]]
+id = "picker"
+title = "Fleet repo picker"
+placement = "zoomed"
+command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/pick.sh\""]
+
+[[panes]]
+id = "bucket"
+title = "New workspace bucket"
+placement = "zoomed"
+command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/workspace-new.sh\""]
+
+[[actions]]
+id = "pick"
+title = "Fleet repo picker"
+contexts = ["workspace"]
+command = ["/bin/sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin nexus.fleet --entrypoint picker"]
+
+[[actions]]
+id = "bucket"
+title = "New workspace bucket"
+contexts = ["workspace"]
+command = ["/bin/sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin nexus.fleet --entrypoint bucket"]
+
+# General scratch agent — headless (no fzf UI): fires a substrate spawn of a no-repo
+# `general` agent (cwd=$HOME, PROJECT_SLUG=general). No [[panes]] entry; the action
+# runs bin/general.sh directly.
+[[actions]]
+id = "scratch"
+title = "General scratch agent"
+contexts = ["workspace"]
+command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/general.sh\""]
+
+# Keybindings are NOT declared in the manifest — herdr silently ignores a manifest
+# [[keys.command]] (probe-verified 2026-07-16). The prefix+shift+n / shift+b chords
+# live in the user's config.toml (tmux/{mac,linux}/herdr/config.toml) as
+# type="plugin_action" -> nexus.fleet.pick / nexus.fleet.bucket.

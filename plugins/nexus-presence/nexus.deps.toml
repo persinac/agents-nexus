@@ -1,0 +1,34 @@
+# nexus.deps.toml — external dependencies for nexus.presence.
+# Schema: see plugins/nexus-fleet/nexus.deps.toml.
+#
+# The zero-required-deps case: presence is a pure herdr event-hook. Everything below
+# is OPTIONAL — it degrades cleanly (desktop toast -> terminal bell; rich message ->
+# generic message). Good stress test that the installer never blocks on an all-optional
+# plugin.
+
+setup_guide = "No required deps — pure herdr event-hook -> desktop toast on `blocked`. Deliberately uses the desktop channel so it complements (never duplicates) the substrated/slack-bridge Slack path."
+
+[[requires]]
+type = "bin"
+id = "desktop-notifier"
+check = "command -v osascript || command -v notify-send"
+optional = true
+guide = "macOS has osascript built in; Linux desktop: sudo apt install libnotify-bin (notify-send). Without either, presence falls back to a terminal bell."
+
+[[requires]]
+type = "bin"
+id = "python3"
+check = "command -v python3"
+optional = true
+guide = "python3 composes the notification from the event payload; without it, presence still fires a generic 'agent is blocked' message."
+
+[[env]]
+name = "NEXUS_PRESENCE_NOTIFY_CMD"
+required = false
+describe = "Override the notification channel — runs this shell command with the message in $NEXUS_PRESENCE_MSG (e.g. route to the Slack bus on a headless box)."
+
+[[env]]
+name = "NEXUS_PRESENCE_SOUND"
+required = false
+default = "Submarine"
+describe = "macOS notification sound name (osascript path)."

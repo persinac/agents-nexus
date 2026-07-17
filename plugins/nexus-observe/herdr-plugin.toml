@@ -1,0 +1,30 @@
+id = "nexus.observe"
+name = "Nexus Observe"
+version = "0.1.0"
+min_herdr_version = "0.7.3"
+description = "agents-nexus observability panels for herdr: a live memory-system health panel + an APM/fleet-stats panel, opened as split-alongside dashboards."
+platforms = ["macos", "linux"]
+
+[[panes]]
+id = "memory"
+title = "Memory health"
+placement = "split"
+command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/memory-panel.sh\""]
+
+[[panes]]
+id = "apm"
+title = "Fleet APM"
+placement = "split"
+command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/apm-panel.sh\""]
+
+[[actions]]
+id = "memory"
+title = "Memory health panel"
+contexts = ["workspace"]
+command = ["/bin/sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin nexus.observe --entrypoint memory --direction right"]
+
+[[actions]]
+id = "apm"
+title = "Fleet APM panel"
+contexts = ["workspace"]
+command = ["/bin/sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin nexus.observe --entrypoint apm --direction right"]

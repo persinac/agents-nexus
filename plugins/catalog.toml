@@ -1,0 +1,40 @@
+# plugins/catalog.toml — curated catalog the nexus installer offers as a
+# multi-select AFTER the base install. Ordering here = default display order.
+#
+# This is the installer<->plugin SEAM (schema owned by the installer/orchestration
+# side; this is real seed content for the four shipped plugins). Each entry pairs
+# with a plugins/<dir>/nexus.deps.toml describing that plugin's external deps.
+#
+# source (exactly one form):
+#   source = { bundled = "<dir under plugins/>" }  -> scripts/herdr-plugin-install.sh <dir>  (link a bundled plugin)
+#   source = { remote  = "owner/repo/subdir" }     -> herdr plugin install <that>            (herdr's native marketplace primitive)
+#
+# default = true  -> pre-checked in the multi-select (safe / broadly useful).
+
+[[plugin]]
+id = "nexus.fleet"
+name = "Fleet"
+description = "fzf repo/worktree picker, workspace buckets, and a general scratch agent — spawned through the nexus substrate (checkpoint/memory/context injected)."
+default = true
+source = { bundled = "nexus-fleet" }
+
+[[plugin]]
+id = "nexus.presence"
+name = "Presence"
+description = "Desktop toast the instant an agent goes blocked (needs input). Pure event-hook, zero required deps; complements the Slack path rather than duplicating it."
+default = true
+source = { bundled = "nexus-presence" }
+
+[[plugin]]
+id = "nexus.observe"
+name = "Observe"
+description = "Live memory-system health + fleet APM panels (split-alongside). Degrades to a status view when the memory DB is unreachable."
+default = true
+source = { bundled = "nexus-observe" }
+
+[[plugin]]
+id = "nexus.mission"
+name = "Mission"
+description = "Launch autonomous Conductor missions (fan-out --distribute or an external --sdlc pipeline) from a launcher chord. Heavier deps (conductor venv + LLM gateway) — opt-in."
+default = false
+source = { bundled = "nexus-mission" }

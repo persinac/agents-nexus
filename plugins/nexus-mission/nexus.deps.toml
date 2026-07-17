@@ -1,0 +1,69 @@
+# nexus.deps.toml — external dependencies for nexus.mission.
+# Schema: see plugins/nexus-fleet/nexus.deps.toml.
+#
+# Two modes with different dep footprints: --distribute needs the conductor venv +
+# a reachable LLM gateway; --sdlc additionally needs an external SDLC plugin + a
+# workspace of context repos (both optional — the launcher preflights and degrades
+# to distribute).
+
+setup_guide = "--distribute (fan-out) runs with just the conductor venv + a reachable LLM gateway. --sdlc additionally needs an external SDLC plugin (installed via your marketplace) and its context repos (project-context-*) under CUSTOM_WORKSPACE_ROOTS; the launcher preflights that and degrades to distribute if absent."
+
+[[requires]]
+type = "bin"
+id = "fzf"
+check = "command -v fzf"
+optional = false
+guide = "brew install fzf  (mac) · sudo apt install fzf  (linux) — the launcher's mode picker."
+
+[[requires]]
+type = "venv"
+id = "conductor-venv"
+check = "test -x \"${AGENTS_NEXUS_DIR:-$HOME/repos/agents-nexus}/agent-runner/.venv/bin/python\""
+optional = false
+guide = "Create it: cd agent-runner && python3 -m venv .venv && .venv/bin/pip install -e . (or -r requirements.txt)."
+
+[[requires]]
+type = "file"
+id = "conductor.py"
+check = "test -f \"${AGENTS_NEXUS_DIR:-$HOME/repos/agents-nexus}/agent-runner/conductor.py\""
+optional = false
+guide = "Provided by the checkout; run the base install / git pull."
+
+[[requires]]
+type = "service"
+id = "llm-gateway"
+check = "${LLM_GATEWAY_CHECK:-true}"
+optional = true
+guide = "Missions call the model through your LLM gateway/proxy — mission INSTALLS without it but won't RUN until it's reachable (a transient gateway must not block a trial). Set LLM_GATEWAY_CHECK to a health probe and WORK_UPSTREAM_RECONNECT_HINT to a reconnect command (a private overlay supplies these)."
+
+[[requires]]
+type = "plugin"
+id = "sdlc"
+check = "test -d \"$HOME/.claude/skills/sdlc\" || claude plugin details sdlc >/dev/null 2>&1"
+optional = true
+guide = "Only for --sdlc missions: install an SDLC plugin (e.g. `sdlc`) from your marketplace. --distribute works without it."
+
+[[requires]]
+type = "file"
+id = "context-repos"
+check = "IFS=:; ok=1; for r in ${CUSTOM_WORKSPACE_ROOTS:-$HOME/code}; do ls -d \"$r\"/project-context-* >/dev/null 2>&1 && ok=0; done; [ \"$ok\" = 0 ]"
+optional = true
+guide = "Only for --sdlc: clone your context repos (project-context-*) under a dir listed in CUSTOM_WORKSPACE_ROOTS (colon-separated; default ~/code)."
+
+[[env]]
+name = "AGENTS_NEXUS_DIR"
+required = false
+default = "$HOME/repos/agents-nexus"
+describe = "Repo root — locates the conductor venv + conductor.py. The env layer (env.sh) sets it."
+
+[[env]]
+name = "CUSTOM_WORKSPACE_ROOTS"
+required = false
+default = "$HOME/code"
+describe = "Colon-separated dirs scanned for the --sdlc context repos (project-context-*). Also settable as sdlc.workspace_root in conductor.yaml."
+
+[[env]]
+name = "NEXUS_TMUX_DIR"
+required = false
+default = "$HOME/.tmux"
+describe = "Root of the nexus substrate scripts."

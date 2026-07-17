@@ -1,0 +1,18 @@
+id = "nexus.mission"
+name = "Nexus Mission"
+version = "0.1.0"
+min_herdr_version = "0.7.3"
+description = "Launch autonomous Conductor missions from herdr: fan-out (--distribute) or an external SDLC pipeline (--sdlc). A launcher pane picks the mode + goal and kicks the Conductor; --distribute runs detached in its own tiled mission/<slug> bucket."
+platforms = ["macos", "linux"]
+
+[[panes]]
+id = "launcher"
+title = "New mission"
+placement = "zoomed"
+command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/mission.sh\""]
+
+[[actions]]
+id = "new"
+title = "New Conductor mission"
+contexts = ["workspace"]
+command = ["/bin/sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin nexus.mission --entrypoint launcher"]

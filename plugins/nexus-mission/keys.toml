@@ -1,0 +1,7 @@
+# nexus.mission keybinding — appended to ~/.config/herdr/config.toml by the installer.
+# ctrl+a shift+c -> launch a Conductor mission (fzf mode picker → goal → kick). "C" = Conductor.
+# shift+c is a free chord; shift+d stays herdr's built-in close_workspace.
+[[keys.command]]
+key = "prefix+shift+c"
+type = "plugin_action"
+command = "nexus.mission.new"

@@ -1,0 +1,23 @@
+# Example overlay reporting config. In a real overlay this carries your LIVE targets
+# (Jira project/epic/assignee, Confluence space/parent, Trello board, MR target). It is
+# symlinked to ~/.tmux/conductor.yaml by overlay.toml's [[symlink]] step, so Conductor
+# reads THIS instead of the core's neutral config/conductor.yaml.
+#
+# Only the reporting block is shown; copy the profiles/policy blocks from the core's
+# config/conductor.yaml and keep them in sync, or reference them as needed.
+
+reporting:
+  jira:
+    enabled: false        # → true, then set project / epic / assignee (your account id)
+    project: "<KEY>"
+    epic: "<KEY-123>"
+    assignee: "<account-id>"
+  confluence:
+    enabled: false        # → true, then set space / parent
+    space: "<space-key>"
+    parent: "<page-id>"
+  mr:
+    enabled: false
+    target: main
+  trello:
+    enabled: false        # board_id / list names / doppler_project / doppler_config

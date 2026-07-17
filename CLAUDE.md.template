@@ -1,0 +1,79 @@
+# CLAUDE.md
+
+## Project overview
+
+<!-- What does this project do? One or two sentences. -->
+
+## Tech stack
+
+<!-- e.g., Node.js + TypeScript, Python + FastAPI, Go, etc. -->
+
+## Key commands
+
+```bash
+# Install dependencies
+# TODO
+
+# Run dev server
+# TODO
+
+# Run tests
+# TODO
+
+# Run linter / formatter
+# TODO
+
+# Build for production
+# TODO
+```
+
+## Project structure
+
+<!-- Which directories matter and what they contain. -->
+<!-- e.g.,
+- src/          — application source code
+- tests/        — test files
+- deploy/       — infrastructure / deployment configs
+-->
+
+## Conventions
+
+<!-- Coding style, naming conventions, patterns to follow. -->
+<!-- e.g.,
+- Use snake_case for Python, camelCase for TypeScript
+- All API endpoints go in src/routes/
+- Tests mirror src/ structure in tests/
+-->
+
+## Things to know
+
+<!-- Non-obvious project knowledge that saves time. -->
+<!-- e.g.,
+- The auth middleware must be initialized before route registration
+- Environment variables are validated at startup in src/config.ts
+- Database migrations run automatically in dev but manually in prod
+-->
+
+## Agent communication
+
+You may be running alongside other Claude Code agents, possibly on other hosts. **Default to the Slack agent bus (`#nexus-agents`) to message another agent.** Address the recipient by NAME; post once and the orchestrator delivers it (idle-gated, buffered, audited), reaching agents on other hosts too:
+
+- `~/.tmux/agent-send.sh --via-slack <name> <message>` — post to the bus → delivered to `<name>` when it next goes idle.
+- `~/.tmux/agent-send.sh <host>/<name> <message>` — address a specific host's agent when two fleets share the bus (a bare `<name>` matches the local fleet only). Cross-host, so always via the bus.
+- `~/.tmux/agent-send.sh --relay <text>` — post `<text>` to `#nexus-agents` for a **human** to read (share your output instead of pasting it into a DM). No target, no delivery.
+
+Discovery (read-only — find who to address, then message them over the bus):
+
+- `~/.tmux/agent-registry.sh peers` — list all active agents (slot, name, directory).
+- `~/.tmux/agent-registry.sh whoami` — show your own slot, name, and directory.
+
+Direct tmux send (`~/.tmux/agent-send.sh <slot_or_name> <message>` / `~/.tmux/agent-registry.sh broadcast <message>`) is a **fallback only** — same-host, not durable or auditable, and can be missed. Use it solely if the bus is unavailable, and say so. Prefer name-based addressing over slot numbers.
+
+## Do NOT
+
+<!-- Guardrails — things agents should avoid. -->
+<!-- e.g.,
+- Do not modify migration files that have already been applied
+- Do not commit .env or secrets
+- Do not add dependencies without checking the existing lockfile
+-->

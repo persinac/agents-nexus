@@ -1,0 +1,27 @@
+[Unit]
+# substrated — the herdr read-path daemon (analog of the mac
+# com.agents-nexus.substrated.plist). OPTIONAL / opt-in: lives under systemd/optional/ so a
+# plain (tmux-default) Linux install does NOT auto-enable it. Install deliberately on a box
+# you've flipped to herdr — see docs/herdr-linux-setup.md Step 5. It talks to the herdr Unix
+# socket directly (no `herdr` CLI needed), so PATH only needs node.
+Description=substrated — herdr read daemon (agents-nexus substrate seam)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__AGENTS_NEXUS_DIR__/substrated
+ExecStart=__NODE_BIN__ index.mjs
+Restart=on-failure
+RestartSec=3
+Environment=HOME=__HOME__
+Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+# NEXUS_SUBSTRATE=herdr is the daemon's own mode (it only does anything in herdr mode); it does
+# NOT flip the fleet — each agent's substrate is set per-spawn. Matches the mac plist.
+Environment=NEXUS_SUBSTRATE=herdr
+Environment=SUBSTRATED_PORT=8422
+# Push model: subscribes to herdr agent_status events (instant idle-gate) + reconciles the roster
+# on a slow poll (SUBSTRATED_POLL_MS, also the fallback). It self-reconnects the subscription on a
+# herdr blip (SUBSTRATED_RECONNECT_MS, default 1000ms); Restart=on-failure only covers a full crash.
+
+[Install]
+WantedBy=default.target

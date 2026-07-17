@@ -1,0 +1,11 @@
+[Unit]
+Description=Propose Claude Code permission-allowlist additions from recent transcripts (propose-only)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 __AGENTS_NEXUS_DIR__/scripts/permission-suggest.py
+Environment=HOME=__HOME__
+Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600

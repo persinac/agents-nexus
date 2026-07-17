@@ -1,0 +1,12 @@
+[Unit]
+Description=Run herdr-recover shortly after boot, then every 10 minutes (opt-in)
+# OnBootSec brings the fleet back after an OS reboot; OnUnitActiveSec catches a
+# herdr-server-only restart (no reboot) within the interval.
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

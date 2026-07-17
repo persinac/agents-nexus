@@ -1,0 +1,11 @@
+.idea/
+data/the-index/
+logs/*.log
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+.env
+config.yaml
+config.linux.yaml
