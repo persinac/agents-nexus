@@ -88,6 +88,15 @@ fi
 
 check_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# Run a command with elevation only when needed and possible: no-op prefix when already
+# root, `sudo` when it exists, else run bare (a root container has neither `sudo` nor a
+# need for it). Keeps package installs from hard-failing on `sudo: command not found`.
+maybe_sudo() {
+  if [ "$(id -u)" -eq 0 ]; then "$@"
+  elif check_cmd sudo; then sudo "$@"
+  else "$@"; fi
+}
+
 # Expand a leading ~ to $HOME without invoking `eval` on the whole value.
 expand_path() {
   case "$1" in
@@ -242,14 +251,14 @@ install_deps_linux() {
     echo "  Missing: ${missing[*]}"
     if check_cmd apt; then
       echo "  Installing via apt..."
-      { sudo apt update -qq && sudo apt install -y -qq tmux fzf nodejs npm; } \
+      { maybe_sudo apt update -qq && maybe_sudo apt install -y -qq tmux fzf nodejs npm; } \
         || echo "  WARNING: apt install failed — install ${missing[*]} manually, then re-run"
     elif check_cmd dnf; then
       echo "  Installing via dnf..."
-      sudo dnf install -y tmux fzf nodejs npm
+      maybe_sudo dnf install -y tmux fzf nodejs npm
     elif check_cmd pacman; then
       echo "  Installing via pacman..."
-      sudo pacman -S --noconfirm tmux fzf nodejs npm
+      maybe_sudo pacman -S --noconfirm tmux fzf nodejs npm
     else
       echo "  Could not detect package manager. Install manually: ${missing[*]}"
       exit 1

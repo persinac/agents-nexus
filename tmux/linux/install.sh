@@ -141,9 +141,12 @@ fi
 # Enable systemd lingering so the user slice (and tmux, Claude, Docker, etc.)
 # survives SSH disconnects. Without this, systemd tears down user-*.slice when
 # the last login session ends, killing all background processes.
-if [[ "$(loginctl show-user "$USER" --property=Linger 2>/dev/null)" != "Linger=yes" ]]; then
-  if sudo loginctl enable-linger "$USER" 2>/dev/null; then
-    echo "Enabled systemd linger for $USER"
+# $USER is not always exported (containers, some CI, cron) and this script runs under
+# `set -u`, so fall back to `id -un`.
+_user="${USER:-$(id -un)}"
+if [[ "$(loginctl show-user "$_user" --property=Linger 2>/dev/null)" != "Linger=yes" ]]; then
+  if sudo loginctl enable-linger "$_user" 2>/dev/null; then
+    echo "Enabled systemd linger for $_user"
   else
     echo "  WARNING: enable-linger failed (no sudo, or no systemd) — background services won't persist across logout; harmless for a trial"
   fi
