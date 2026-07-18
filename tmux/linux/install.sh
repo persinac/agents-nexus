@@ -154,11 +154,14 @@ fi
 # Install systemd user units
 # Resolve real node binary path (fnm uses per-shell shims that systemd can't see)
 NODE_BIN="$(readlink -f "$(command -v node 2>/dev/null)" 2>/dev/null || echo "/usr/bin/node")"
-# Resolve doppler binary path (slack-bridge.service runs under `doppler run` to
-# pull SLACK_* from nexus/prd). Fall back to /usr/bin/doppler; if the CLI is
-# absent the unit still installs but the bridge boot-guards to a clean no-op.
+# Resolve doppler binary path. slack-bridge.service resolves SLACK_* through the secrets
+# chain (scripts/secrets/secret-run.sh), which self-defaults to env,doppler(nexus/prd); the
+# doppler backend reads this absolute path via Environment=DOPPLER_BIN (systemd's PATH won't
+# find a shimmed CLI). Fall back to /usr/bin/doppler; if doppler is absent the unit still
+# installs and the bridge boot-guards to a clean no-op (or set NEXUS_SECRETS_BACKENDS=env,aws-sm
+# to source SLACK_* from AWS Secrets Manager instead).
 DOPPLER_BIN="$(readlink -f "$(command -v doppler 2>/dev/null)" 2>/dev/null || echo "/usr/bin/doppler")"
-[ -x "$DOPPLER_BIN" ] || echo "  WARNING: doppler CLI not found at $DOPPLER_BIN — slack-bridge will no-op until it's installed + authed"
+[ -x "$DOPPLER_BIN" ] || echo "  WARNING: doppler CLI not found at $DOPPLER_BIN — slack-bridge will no-op until doppler is installed + authed, or set another secrets backend (NEXUS_SECRETS_BACKENDS)"
 
 mkdir -p "$HOME/.config/systemd/user"
 for unit in "$SCRIPT_DIR"/systemd/*.service "$SCRIPT_DIR"/systemd/*.timer; do

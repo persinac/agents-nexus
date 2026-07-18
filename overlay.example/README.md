@@ -81,6 +81,29 @@ registered locally (`claude plugin marketplace list`). So an outsider who someho
 your catalog still triggers no install — nothing org-specific is ever attempted for someone
 who isn't entitled to it. See `plugins/catalog.example.toml` for the entry shape.
 
+## How secrets backends work
+
+The public core ships an ordered secrets-resolver chain (`scripts/secrets/`) with three
+backends: `env` (default), `doppler`, and `aws-sm`. An org adds an **exotic backend** (Vault,
+1Password Connect, an internal secrets API) the same way it adds any file — drop
+`files/scripts/secrets/backend-<name>.sh` in your overlay and it lands beside the core adapters
+(no registration; `secret-get.sh` discovers any `backend-*.sh`). Implement the one-line contract
+in the core's `scripts/secrets/README.md` (`get NAME` → value on stdout, empty + exit 0 on a
+miss, fail-soft when the tool is absent).
+
+Activate and configure it via `[[env]]` blocks in `overlay.toml`:
+- put your backend in the chain: `NEXUS_SECRETS_BACKENDS = "env,vault"`
+- set its **non-secret** coordinates (server address, KV path, prefix)
+
+Keep the real credential (a Vault token, an API key) in `~/.tmux/env.sh` on each box, **never**
+in the overlay — the overlay is a repo, and `[[env]]` only fills gaps in `.env` anyway. This
+directory ships a worked example: `files/scripts/secrets/backend-vault.sh` plus the matching
+`overlay.toml` `[[env]]` blocks.
+
+Note the same auth-gate property as the catalog: a backend for a tool a machine doesn't have
+simply fail-softs (returns empty, chain continues), so a leaked overlay triggers nothing — an
+adapter is inert without both the tool and its credentials present locally.
+
 ## Why the core stays clean
 
 `scripts/export-public.sh` (the tool that produces the public core) is `git archive HEAD` —

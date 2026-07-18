@@ -19,12 +19,18 @@ if [ ! -d "$MIGRATIONS_DIR" ]; then
     exit 1
 fi
 
-# Construct DATABASE_URL from Doppler secrets
-DB_USER="${NX_DB_USER:-$(doppler secrets get NX_DB_USER --plain --project nexus --config prd)}"
-DB_PASSWORD="${NX_DB_PASSWORD:-$(doppler secrets get NX_DB_PASSWORD --plain --project nexus --config prd)}"
-DB_HOST="${NX_DB_HOST:-$(doppler secrets get NX_DB_HOST --plain --project nexus --config prd)}"
-DB_PORT="${NX_DB_PORT:-$(doppler secrets get NX_DB_PORT --plain --project nexus --config prd)}"
-DB_NAME="${NX_DB_NAME:-$(doppler secrets get NX_DB_NAME --plain --project nexus --config prd)}"
+# Construct DATABASE_URL from the secrets chain (env first, else Doppler nexus/prd — the
+# historical scope). secret-get.sh's `env` backend reads $NX_DB_* first, so an exporting box
+# short-circuits before Doppler exactly as the old `${NX_DB_*:-$(doppler …)}` did. This script
+# sources nothing, so it self-defaults the chain to env,doppler regardless of the fleet default.
+SEC="$SCRIPT_DIR/../scripts/secrets/secret-get.sh"
+_dbsec() { bash "$SEC" --project "${DOPPLER_PROJECT:-nexus}" --config "${DOPPLER_CONFIG:-prd}" \
+                       --backends "${NEXUS_SECRETS_BACKENDS:-env,doppler}" "$1"; }
+DB_USER="$(_dbsec NX_DB_USER)"
+DB_PASSWORD="$(_dbsec NX_DB_PASSWORD)"
+DB_HOST="$(_dbsec NX_DB_HOST)"
+DB_PORT="$(_dbsec NX_DB_PORT)"
+DB_NAME="$(_dbsec NX_DB_NAME)"
 
 # URL-encode user and password in case they contain special characters
 urlencode() {

@@ -18,6 +18,12 @@
 set -u
 case "$OSTYPE" in linux*) ;; *) exit 0 ;; esac
 
+# Repo root, for the secrets resolver. This script is symlinked into ~/.tmux, so resolve the
+# real path (GNU readlink -f — Linux-only, and we already exited on non-linux above).
+_self="$(readlink -f "${BASH_SOURCE[0]}")"
+NEXUS_DIR="${AGENTS_NEXUS_DIR:-$(cd "$(dirname "$_self")/../../.." && pwd)}"
+SECRUN="$NEXUS_DIR/scripts/secrets/secret-run.sh"
+
 BREADCRUMB="${CRASH_BREADCRUMB_LOG:-$HOME/.tmux/crash-breadcrumb.log}"
 LOGFILE="$HOME/.tmux/boot-notify.log"
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOGFILE"; }
@@ -77,9 +83,11 @@ MSG="${MSG}
 • last breadcrumb before death:
 \`${last_pre}\`"
 
-# --- Post directly via Slack bot token (Doppler nexus/prd), with brief retries ---
+# --- Post directly via Slack bot token, with brief retries. Secrets come from the resolver
+# chain (secret-run self-defaults env,doppler + the historical nexus/prd scope), replacing the
+# bare `doppler run` so a box on a different secrets backend still works. ---
 post() {
-  doppler run -p nexus -c prd -- bash -c '
+  bash "$SECRUN" --project nexus --config prd SLACK_BOT_TOKEN SLACK_NEXUS_CHANNEL -- bash -c '
     payload=$(jq -n --arg c "$SLACK_NEXUS_CHANNEL" --arg t "$1" "{channel:\$c, text:\$t, unfurl_links:false, unfurl_media:false}")
     curl -fsS -X POST https://slack.com/api/chat.postMessage \
       -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \

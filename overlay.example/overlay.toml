@@ -21,3 +21,20 @@ target = "config/conductor.personal.yaml"
 [[env]]
 key   = "EXAMPLE_OVERLAY_KEY"
 value = "set-me"
+
+# ── Secrets backend example (HashiCorp Vault) ──────────────────────────────────
+# files/scripts/secrets/backend-vault.sh (below) lands beside the core adapters via the
+# path-mirror — secret-get.sh discovers any backend-<name>.sh, no registration needed.
+# Turn it on by putting `vault` in the chain, and give it its non-secret coordinates here.
+# The Vault TOKEN is a real per-box secret — keep it in ~/.tmux/env.sh, NOT committed here.
+[[env]]
+key   = "NEXUS_SECRETS_BACKENDS"
+value = "env,vault"
+
+[[env]]
+key   = "VAULT_ADDR"
+value = "https://vault.internal.example:8200"
+
+[[env]]
+key   = "VAULT_SECRET_PATH"
+value = "secret/agents-nexus"

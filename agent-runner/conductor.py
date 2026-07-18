@@ -705,6 +705,29 @@ _TRELLO_PHASE_DEFAULT = {"on_deck": "on-deck", "in_progress": "in-progress",
                          "done": "done", "failed": "failed"}
 
 
+_SECRET_GET = os.path.join(_REPO_ROOT, "scripts", "secrets", "secret-get.sh")
+
+
+def _secret(name, project=None, config=None, backends=None):
+    """Resolve one secret via the shared chain resolver (scripts/secrets/secret-get.sh).
+    Returns '' on any failure — fail-soft, never aborts a mission (mirrors the old doppler
+    behavior). `backends` overrides the chain for this call; project/config set Doppler scope."""
+    cmd = ["bash", _SECRET_GET]
+    if project:
+        cmd += ["--project", project]
+    if config:
+        cmd += ["--config", config]
+    cmd.append(name)
+    env = dict(os.environ)
+    if backends:
+        env["NEXUS_SECRETS_BACKENDS"] = backends
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    except FileNotFoundError:   # bash / resolver absent → degrade, never abort
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def _trello_creds():
     """Resolve {key, token, board}; env first, else a configured Doppler project/config.
     Cached; {} if unavailable."""
@@ -715,11 +738,13 @@ def _trello_creds():
         _tcfg = REPORTING.get("trello", {})
         dop_project = _tcfg.get("doppler_project"); dop_config = _tcfg.get("doppler_config")
         if not (key and tok) and dop_project and dop_config:
-            def _dop(n):
-                r = subprocess.run(["doppler", "secrets", "get", n, "--project", dop_project,
-                                    "--config", dop_config, "--plain"], capture_output=True, text=True)
-                return r.stdout.strip() if r.returncode == 0 else ""
-            key = key or _dop("TRELLO_API_KEY"); tok = tok or _dop("TRELLO_TOKEN"); board = board or _dop("TRELLO_BOARD_ID")
+            # Resolve through the shared chain. Only opt into doppler when a project/config is
+            # configured (today's explicit gate); otherwise env-only. secret-get fail-softs when
+            # the doppler CLI is absent (a work laptop), so Trello degrades to "no creds".
+            _b = "env,doppler"
+            key = key or _secret("TRELLO_API_KEY", dop_project, dop_config, _b)
+            tok = tok or _secret("TRELLO_TOKEN", dop_project, dop_config, _b)
+            board = board or _secret("TRELLO_BOARD_ID", dop_project, dop_config, _b)
         _TRELLO_CREDS = ({"key": key, "token": tok,
                           "board": board or _tcfg.get("board_id")}
                          if (key and tok) else {})

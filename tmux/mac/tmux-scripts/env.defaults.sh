@@ -54,3 +54,16 @@ fi
 
 # Model default is intentionally NOT set here — unset means claude uses its own
 # current default, which is the right behavior for a fresh install. env.sh pins one.
+
+# ── Secrets backend chain ────────────────────────────────────────────────────
+# Ordered resolver (scripts/secrets/secret-get.sh | secret-run.sh): try each backend
+# left→right, first non-empty wins; every adapter fail-softs. The public default is `env`
+# (a fresh clone with no Doppler resolves purely from the process env / .env). A Doppler
+# or AWS box adds fallbacks here or in env.sh, e.g. NEXUS_SECRETS_BACKENDS=env,doppler.
+# NOTE: the Doppler-historical launchers (dbmate.sh, boot-notify, slack-bridge unit)
+# self-default to env,doppler on their own and don't source this file, so existing boxes
+# keep working with NO change here.
+export NEXUS_SECRETS_BACKENDS="${NEXUS_SECRETS_BACKENDS:-env}"
+export DOPPLER_PROJECT="${DOPPLER_PROJECT:-nexus}"
+export DOPPLER_CONFIG="${DOPPLER_CONFIG:-prd}"
+export AWS_SM_PREFIX="${AWS_SM_PREFIX:-}"
