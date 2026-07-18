@@ -6,7 +6,8 @@ runs from `tmux/linux/`), at parity with the mac. **herdr is the repo DEFAULT no
 runs herdr out of the box. tmux is a deprecated, flag-selectable fallback: set
 `NEXUS_SUBSTRATE=tmux` (unit env or `~/.tmux/env.sh`) only to keep a box on the legacy backend.
 
-**TL;DR (repo-side artifacts are now committed).** On the box: `git pull` then
+**TL;DR (repo-side artifacts are now committed).** On the box (tracking the PUBLIC repo —
+see Prereqs if `origin` still points at the old private one): `git pull` then
 `bash tmux/linux/install.sh` — this links the shared herdr scripts, installs the ported Linux
 `open-claude.sh`, and (if `herdr` is installed) deploys the herdr config + pickers +
 `workspace-categories.txt`. Then only: **Step 1** (install herdr), **Step 5** (install
@@ -23,7 +24,18 @@ already did.
 Linux-specific work is narrow (below).
 
 ## Prereqs
-- agents-nexus checked out on the box (GitHub remote), on the branch with the workspace work.
+- **agents-nexus checked out on the box tracking the PUBLIC repo.** This repo is now the
+  source of truth (`github.com/persinac/agents-nexus`); the herdr work + Linux artifacts all
+  live here. A box set up before the public/private split may still point `origin` at the old
+  private/monorepo — repoint it first:
+  ```bash
+  cd <agents-nexus> && git remote -v          # if origin is NOT github.com/persinac/agents-nexus:
+  git remote set-url origin https://github.com/persinac/agents-nexus.git
+  git fetch origin && git checkout main && git pull
+  ```
+  Org/personal specifics (conductor reporting, private catalog, etc.) come from a private
+  **overlay**, applied separately — `./install.sh --overlay <your-overlay-url>` (see
+  `overlay.example/README.md`), NOT from the core repo.
 - The nexus stack already running under systemd (`slack-bridge.service`, `arbiter.service`,
   the tmux `agents` session) — this doc adds herdr alongside it.
 - Repo-root `.env` present (DATABASE_URL, SLACK_*, tokens) — same as mac.
@@ -43,7 +55,7 @@ herdr server &>/tmp/herdr-server.log &  herdr status server | grep -E 'status|pr
 ## Step 2 — Pull + reinstall (gets the herdr-aware shared scripts)
 
 ```bash
-cd <agents-nexus> && git pull
+cd <agents-nexus> && git pull              # from origin = github.com/persinac/agents-nexus (public)
 bash tmux/linux/install.sh
 # Verify the shared herdr-aware scripts linked into ~/.tmux:
 ls -l ~/.tmux/substrate.sh ~/.tmux/agent-send.sh ~/.tmux/launch-claude.sh
