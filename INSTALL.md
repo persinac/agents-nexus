@@ -2,7 +2,7 @@
 
 Single source of truth for `./install.sh` — every flag, every prompt, every file it touches. The use-case READMEs ([`README_SETUP_PERSONAL.md`](README_SETUP_PERSONAL.md), [`README_SETUP_WORK.md`](README_SETUP_WORK.md)) link here for installer mechanics and keep only the use-case-specific bits (proxy verification curls, corporate gateway quirks, etc.).
 
-Supported platforms: **macOS** and **Linux**. A Windows/MSYS2 path exists in the script but is no longer actively maintained.
+Supported platforms: **macOS** and **Linux** — plus **Windows via WSL2**, which runs the Linux path verbatim (see [Windows (WSL2)](#windows-wsl2)). The native Windows/MSYS2 path in the script is legacy (pre-herdr) and no longer actively maintained.
 
 ## Quick start
 
@@ -186,6 +186,40 @@ If `.env` doesn't exist yet, the stack won't start cleanly — generate a profil
 
 - Requires Homebrew. The installer will exit with a pointer to https://brew.sh if `brew` isn't on `PATH`.
 - macOS ships bash 3.2 at `/bin/bash`; the script is compatible with it. (You don't need a newer bash installed.)
+
+## Windows (WSL2)
+
+Native Windows is **not** a supported fleet host — the `tmux/windows/` tree is the legacy, pre-herdr MSYS2 path (no herdr config, no `substrate.sh`, no `substrated` service). The supported way to run the full fleet on Windows hardware is **WSL2**, where the box is just Linux and the entire [Linux](#linux-notes) path applies verbatim (herdr installs via the same `curl`, `substrated` runs as a `systemctl --user` unit, the picker works).
+
+> **Already have a Linux fleet host?** You may not need any of this. herdr supports remote attach — `herdr --remote <nexus-host>` from Windows Terminal drives the fleet running on that box, and you point Claude Code at the `spark` / `agent-memory` MCP endpoints over the SSH/Cloudflare tunnel. Treat Windows as a thin client and skip the install below.
+
+### Steps
+
+1. **Install WSL2 + a distro** (PowerShell as admin), then reboot and create your Linux user:
+   ```powershell
+   wsl --install -d Ubuntu
+   ```
+2. **Enable systemd** — the fleet's background pieces (`substrated`, `arbiter`, `slack-bridge`, the timers) are `systemctl --user` units, so the distro must run systemd. Add to `/etc/wsl.conf` inside the distro:
+   ```ini
+   [boot]
+   systemd=true
+   ```
+   Then from PowerShell `wsl --shutdown`, reopen the distro, and confirm `systemctl --user` responds.
+3. **Clone into the WSL2 filesystem, _not_ `/mnt/c`.** Put the repo under `~/repos` inside the distro. The Windows drive mount (`/mnt/c/…`) does not preserve Unix exec bits or honor `chmod` reliably — that re-triggers the `secret-run.sh` `203/EXEC` failure and breaks the herdr scripts — and native ext4 is far faster for git/npm/docker.
+4. **Run the Linux install** and follow [Linux notes](#linux-notes):
+   ```bash
+   cd ~/repos/agents-nexus && ./install.sh
+   ```
+
+### WSL2-specific gotchas
+
+- **Keeping the fleet alive.** `tmux/linux/install.sh` runs `loginctl enable-linger` so user services survive with no shell attached — but WSL2 tears the whole VM down when the **last** session closes. For an always-on box, keep one WSL session open, or launch the distro from a Windows Task Scheduler job at logon (`wsl -d Ubuntu -u <user> --exec /bin/true` keeps it booted).
+- **Docker.** Either turn on Docker Desktop's WSL2 integration (the in-distro `docker` CLI then talks to Docker Desktop), or install Docker Engine directly inside the distro (uses the systemd you enabled above). The knowledge stack (`docker compose up`, named volumes) behaves the same either way.
+- **`.env` line endings.** Editing `.env` from a Windows editor (VS Code over `/mnt/c`, Notepad) can introduce CRLF → `$'\r': command not found` on source. Keep it LF: `sed -i 's/\r$//' .env`.
+- **Notifications.** Headless WSL has no `notify-send` target, so `nexus.presence` degrades to a terminal bell — route toasts to the Slack bus via `NEXUS_PRESENCE_NOTIFY_CMD`, same as any headless Linux box.
+- **Attaching + GPU.** Launch the distro in Windows Terminal and run `herdr`; its panes render correctly there. `ollama` embeddings use the GPU only if your WSL2 has CUDA configured, otherwise they run CPU-only.
+
+See [`docs/herdr-linux-setup.md`](docs/herdr-linux-setup.md) for the herdr substrate specifics and the shared gotcha list (all of which apply under WSL2).
 
 ## Common failure modes
 
