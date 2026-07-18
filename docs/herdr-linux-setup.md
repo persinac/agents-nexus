@@ -174,6 +174,54 @@ export SUBSTRATED_PORT=8422
   push is down and the daemon is serving poll-only — check the herdr socket, then restart the unit.
 - `curl -sf 127.0.0.1:8788/health` → bus healthy; post a bus message to the agent by name.
 
+## Gotchas & onboarding tips (from real installs)
+
+Hard-won notes from cutting live boxes over to herdr. Each is a one-line fix once you know it.
+
+1. **Secrets scripts must be executable.** `scripts/secrets/*.sh` are systemd `ExecStart` targets
+   (`secret-run.sh`, invoked by `slack-bridge.service`) and each other's callees. If your checkout
+   has them at mode `100644`, slack-bridge dies with `203/EXEC`. Fixed in the tree now, but a
+   `core.fileMode=false` box or a stale checkout can still bite → `chmod +x scripts/secrets/*.sh`.
+
+2. **Doppler boxes must add doppler to the secrets chain.** `secret-get.sh` defaults
+   `NEXUS_SECRETS_BACKENDS` to `env` ONLY. A box that resolves `SLACK_*` / DB creds from Doppler
+   (i.e. was on `doppler run` before the `secret-run.sh` wrapper) must set
+   `NEXUS_SECRETS_BACKENDS=env,doppler`, or every name resolves empty and slack-bridge boot-guards
+   to a silent no-op. The systemd unit does **not** source `~/.tmux/env.sh` or `.env`, so set it in
+   **both** places: `export NEXUS_SECRETS_BACKENDS=env,doppler` in `~/.tmux/env.sh` (agent/tmux
+   shells) **and** a drop-in `~/.config/systemd/user/slack-bridge.service.d/10-secrets-backend.conf`
+   (`[Service]` / `Environment=NEXUS_SECRETS_BACKENDS=env,doppler`) — a drop-in survives `install.sh`
+   re-templating the unit. Then `daemon-reload` + `reset-failed` + `restart slack-bridge`.
+
+3. **`.env` must be LF, not CRLF.** Windows line endings throw `$'\r': command not found` on
+   bash-source and can leave a trailing `\r` on values (e.g. a broken `DATABASE_URL`). Normalize:
+   `sed -i 's/\r$//' .env`.
+
+4. **`pushConnected:false` with an empty fleet is NORMAL.** substrated subscribes per-pane; with
+   0 agents there is nothing to subscribe to, so `:8422/health` reads `pushConnected:false`. It
+   flips `true` within one `SUBSTRATED_POLL_MS` (default 1s) the moment a pane exists. Only
+   investigate if it stays `false` *while agents are running*.
+
+5. **Match the herdr version across boxes.** `herdr --version` should match your other machines'
+   pin; `herdr status` → `compatible: no` means a protocol mismatch. `herdr channel set stable`
+   + `herdr update`.
+
+6. **Updating an already-live box: reset-in-place, don't blind-pull.** If a box has un-pushed
+   local commits (a diverged `main`), `git pull` won't cleanly land the public HEAD. Instead:
+   `git branch backup/pre-herdr-$(date +%F) HEAD` then `git reset --hard origin/main`. `.env` and
+   `node_modules` are gitignored, so the reset keeps all runtime state and the old commits stay
+   safe on the backup branch.
+
+7. **The docker knowledge stack is orthogonal to the cutover.** herdr swaps only the orchestration
+   layer — the memory / search / langfuse / ollama / dashboard containers keep running throughout,
+   and their named volumes (`<project>_*`, project = repo dir basename) survive a repo rename or a
+   re-clone at the same path. Don't tear them down to migrate.
+
+8. **Before enabling `herdr-recover.timer`, check `~/.tmux/registry/`.** The unit runs with
+   `HERDR_RECOVER_RESPAWN=1 HERDR_RECOVER_ALL=1`; stale registry entries from a prior fleet could
+   be respawned. Dry-run first: `HERDR_RECOVER_DRY_RUN=1 NEXUS_SUBSTRATE=herdr bash
+   scripts/herdr-recover.sh --all`. Keep `overseer-reap` OFF unless you've dry-run it (destructive).
+
 ## Rollback to tmux (instant, per-machine)
 herdr is the default, so rolling *back* to tmux is now the explicit opt-out: set
 `NEXUS_SUBSTRATE=tmux` in `~/.tmux/env.sh` + the units and `systemctl --user restart`. Every
