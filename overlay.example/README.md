@@ -34,6 +34,11 @@ the whole model: `files/scripts/foo.sh` becomes `<core>/scripts/foo.sh`.
 ## `overlay.toml`
 
 ```toml
+# REQUIRED. Unique short name for THIS overlay ([A-Za-z0-9._-]). Overlays COMPOSE — this name
+# keys the overlay's own clone dir, stamp, and exclude block, so multiple overlays coexist and
+# are removed independently (e.g. an "org" overlay + a "personal" overlay on the same box).
+name = "example"
+
 # Directory (relative to this overlay's root) whose tree mirrors core paths. Default: "files".
 files_dir = "files"
 
@@ -65,11 +70,32 @@ value = "https://gateway.internal.example/v1"
 # from your core checkout:
 bash scripts/overlay-apply.sh git@github.com:you/agents-nexus-plugs.git   # fetch + layer in
 bash scripts/overlay-apply.sh ../agents-nexus-plugs --dry-run             # preview, touch nothing
-bash scripts/overlay-apply.sh --status                                    # what's applied
-bash scripts/overlay-apply.sh --remove                                    # un-apply cleanly
+bash scripts/overlay-apply.sh --status                                    # list all applied overlays
+bash scripts/overlay-apply.sh --status personal                          # detail one overlay
+bash scripts/overlay-apply.sh --remove personal                          # un-apply ONE overlay
+bash scripts/overlay-apply.sh --remove --all                             # un-apply every overlay
 ```
 
 Or during setup: `./install.sh --overlay <git-url|path>`.
+
+### Composing multiple overlays
+
+Overlays stack — run the apply once per overlay (each must declare a distinct `name`):
+
+```bash
+bash scripts/overlay-apply.sh git@github.com:acme/agents-nexus-org.git       # name = "org"
+bash scripts/overlay-apply.sh git@github.com:you/agents-nexus-personal.git   # name = "personal"
+```
+
+If two overlays place the **same** core path, **last-applied wins** (a warning names both).
+Removing the winner **restores** the other overlay's version of that path if it still owns it.
+So an `org` overlay can ship a default that your `personal` overlay overrides, and removing
+`personal` cleanly falls back to the org default.
+
+> **Migrating from the single-overlay era:** an overlay applied before composability had no
+> `name`. On the next `overlay-apply.sh` run its state is auto-migrated to the name `legacy`
+> (listable/removable as usual). Add a `name =` to that overlay's `overlay.toml` before you
+> re-apply it.
 
 ## How the catalog overlay works
 
@@ -108,5 +134,6 @@ adapter is inert without both the tool and its credentials present locally.
 
 `scripts/export-public.sh` (the tool that produces the public core) is `git archive HEAD` —
 **tracked files only**. Overlay files live at untracked paths (recorded in
-`.git/info/exclude`), so they are invisible to the export. There is no way for an applied
-overlay to leak back into a public export of the core.
+`.git/info/exclude` under a per-overlay `# >>> agents-nexus overlay:<name> >>>` block), so
+they are invisible to the export. The invariant holds independently for each composed
+overlay — there is no way for any applied overlay to leak back into a public export of the core.

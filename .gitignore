@@ -50,9 +50,10 @@ sample.json
 plugins/catalog.*.toml
 !plugins/catalog*.example.toml
 
-# Whole-repo private overlay (scripts/overlay-apply.sh). `overlay/` is the fetched
-# private "plugs" repo; `.overlay-applied` records what it dropped. Both are local-only —
-# an overlay carries org/personal files that must NEVER land in the public core.
-# Files the overlay drops into core paths are excluded per-clone via .git/info/exclude.
+# Whole-repo private overlays (scripts/overlay-apply.sh). Composable + named: each overlay
+# is fetched into `overlay/<name>/` and records what it dropped in `.overlay-applied.<name>`.
+# All local-only — overlays carry org/personal files that must NEVER land in the public core.
+# Files an overlay drops into core paths are excluded per-clone via .git/info/exclude.
 /overlay/
 /.overlay-applied
+/.overlay-applied.*

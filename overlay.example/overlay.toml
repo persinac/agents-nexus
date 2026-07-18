@@ -3,6 +3,11 @@
 #
 # Applied by:  scripts/overlay-apply.sh <git-url|path>   (or  ./install.sh --overlay <…>)
 
+# REQUIRED. Unique short name for THIS overlay ([A-Za-z0-9._-]). Overlays compose: this name
+# keys its own clone dir (overlay/<name>/), stamp (.overlay-applied.<name>), and .git/info/exclude
+# block — so an `org` overlay and a `personal` overlay coexist and are removed independently.
+name = "example"
+
 # Directory whose tree mirrors paths under the core repo root. Default: "files".
 files_dir = "files"
 

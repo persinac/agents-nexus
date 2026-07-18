@@ -9,7 +9,7 @@
 #   ./install.sh --switch <name>       # repoint .env at an existing profile
 #   ./install.sh --finish-langfuse     # paste Langfuse keys after first run
 #   ./install.sh --finish-slack        # paste Slack bridge tokens after first run
-#   ./install.sh --overlay <url|path>  # snap in a private "plugs" overlay repo
+#   ./install.sh --overlay <url|path>  # snap in a private "plugs" overlay (compose: run per overlay)
 #   ./install.sh --non-interactive     # deps + skills + dashboard only (no prompts)
 #   ./install.sh --no-ui               # skip dashboard npm setup
 #
@@ -1015,8 +1015,9 @@ if [ "$MODE" = "finish-slack" ]; then
 fi
 if [ "$MODE" = "overlay" ]; then
   # Snap in a private "plugs" overlay repo (org/personal files that fill the public
-  # core's seams). The generic engine lives in scripts/overlay-apply.sh; this is just
-  # the installer-facing entry point. See overlay.example/README.md.
+  # core's seams). Overlays COMPOSE: run this once per overlay (each declares its own
+  # `name` in overlay.toml) — e.g. an org overlay AND a personal one, layered independently.
+  # The generic engine lives in scripts/overlay-apply.sh. See overlay.example/README.md.
   OVERLAY_APPLY="$REPO_DIR/scripts/overlay-apply.sh"
   if [ -z "$OVERLAY_SRC" ]; then
     echo "ERROR: --overlay needs a <git-url|local-path>"; exit 1
@@ -1030,6 +1031,8 @@ if [ "$MODE" = "overlay" ]; then
     echo ""
     echo "  Overlay applied. Re-run the plugin step to pick up any catalog overlay:"
     echo "    bash scripts/plugin-install-flow.sh --profile .env"
+    echo "  Add another overlay: ./install.sh --overlay <url>   ·   list: scripts/overlay-apply.sh --status"
+    echo "  Remove one:          scripts/overlay-apply.sh --remove <name>"
   fi
   exit "$rc"
 fi

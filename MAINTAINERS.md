@@ -21,6 +21,10 @@ git clone <this-repo>
 
 Running `install.sh` without `--overlay` gives a generic, standalone setup.
 
+Overlays **compose** — run `--overlay` once per overlay (each declares its own `name` in
+`overlay.toml`), e.g. a shared org overlay plus a personal one. `scripts/overlay-apply.sh
+--status` lists what's applied; `--remove <name>` un-applies one. See `overlay.example/README.md`.
+
 ## Contributing
 
 - Keep commits free of organization identifiers, personal usernames, home paths, and
