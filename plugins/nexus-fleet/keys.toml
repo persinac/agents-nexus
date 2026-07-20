@@ -20,3 +20,9 @@ command = "nexus.fleet.bucket"
 key = "prefix+shift+g"
 type = "plugin_action"
 command = "nexus.fleet.scratch"
+
+# ctrl+a shift+s -> pick two panes (fzf) and swap their positions in the layout.
+[[keys.command]]
+key = "prefix+shift+s"
+type = "plugin_action"
+command = "nexus.fleet.swap"

@@ -11,14 +11,10 @@ prefix = "ctrl+a"
 focus_agent = "prefix+1..9"
 switch_tab = ""
 
-# ctrl+a + shift+<arrow> -> MOVE (swap) the focused pane with its neighbour.
-# herdr ships these swap_pane_* actions UNBOUND by default, which is why moving
-# panes did nothing. Focus (ctrl+a h/j/k/l, plus the arrow bindings below) is the
-# unshifted verb; shift = grab-and-move, mirroring that muscle memory.
-swap_pane_left  = "prefix+shift+left"
-swap_pane_right = "prefix+shift+right"
-swap_pane_up    = "prefix+shift+up"
-swap_pane_down  = "prefix+shift+down"
+# ctrl+a + shift+<arrow OR hjkl> -> SWAP the focused pane toward a neighbour. NOTE: herdr
+# has NO native swap_pane_* key action (verified vs 0.7.4 --default-config), so the old
+# swap_pane_* scalars were silently ignored — that's why moving panes did nothing. It is
+# implemented as [[keys.command]] shims alongside the focus shims below.
 
 # Plugin keybindings (e.g. nexus-fleet's picker on shift+n / shift+b) are NOT in the
 # base config — scripts/herdr-plugin-install.sh appends them per-machine when you opt
@@ -48,6 +44,49 @@ command = "/opt/homebrew/bin/herdr pane focus --direction up --current"
 key = "prefix+down"
 type = "shell"
 command = "/opt/homebrew/bin/herdr pane focus --direction down --current"
+
+# ctrl+a + shift+<arrow OR hjkl> -> SWAP the focused pane with its neighbour in that
+# direction (grab-and-move). Shims because herdr has NO native swap_pane_* action; both
+# arrows and hjkl are wired so it works regardless of terminal shift+arrow support.
+[[keys.command]]
+key = "prefix+shift+left"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane swap --direction left --current"
+
+[[keys.command]]
+key = "prefix+shift+h"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane swap --direction left --current"
+
+[[keys.command]]
+key = "prefix+shift+right"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane swap --direction right --current"
+
+[[keys.command]]
+key = "prefix+shift+l"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane swap --direction right --current"
+
+[[keys.command]]
+key = "prefix+shift+up"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane swap --direction up --current"
+
+[[keys.command]]
+key = "prefix+shift+k"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane swap --direction up --current"
+
+[[keys.command]]
+key = "prefix+shift+down"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane swap --direction down --current"
+
+[[keys.command]]
+key = "prefix+shift+j"
+type = "shell"
+command = "/opt/homebrew/bin/herdr pane swap --direction down --current"
 
 [ui]
 show_agent_labels_on_pane_borders = true
