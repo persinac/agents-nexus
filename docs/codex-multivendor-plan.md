@@ -335,6 +335,16 @@ codex agent behave once spawned). Don't ship Tier 4 before Tier 3 is solid.
 
 ## Tier 5 — Slash-command & skill parity for codex
 
+> **✅ SKILLS SYNC BUILT & VERIFIED 2026-07-20.** `scripts/sync-codex-skills.sh` symlinks the
+> fleet's compatible Claude skills → `~/.codex/skills/<name>` (edits propagate). 8 synced
+> (excalidraw-diagram, routing-report, techdebt-pull, techdebt-queue, trello, trello-read,
+> ui-ux-design, workflow-author); 2 skipped as MCP-core (coordinator = all Google/Slack MCP;
+> checkpoint = agent-memory note). Verified: `codex exec` lists all 8 back. Wired into
+> `tmux/linux/install.sh` (codex-gated, idempotent). Covers ad-hoc codex + future T3 agents;
+> headless conductor workers already inline `SKILL.md` (T2 gap F). **Deferred:** porting
+> `/distribute`, `/opsx:*` → `~/.codex/prompts/*.md` (slash is TUI-only; no interactive codex
+> consumer until T3 — do it then).
+
 **Answers the two questions directly. TL;DR: the fleet's *Claude* slash commands do NOT work
 in codex, but codex has its own equivalent surfaces, and — usefully — codex *skills* use the
 same `SKILL.md` format as Claude skills, so skills port cleanly.**

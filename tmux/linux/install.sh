@@ -358,6 +358,15 @@ else
   echo "  OpenSpec CLI already installed: $(openspec --version 2>/dev/null || echo 'ok')"
 fi
 
+# Codex multi-vendor (Tier 5): mirror the fleet's Claude skills into codex so codex
+# sessions/agents inherit them (idempotent symlinks; no-ops without codex installed).
+if command -v codex >/dev/null 2>&1 && [ -x "$NEXUS_DIR/scripts/sync-codex-skills.sh" ]; then
+  echo "Syncing fleet skills -> codex..."
+  "$NEXUS_DIR/scripts/sync-codex-skills.sh" || echo "  (codex skill sync failed — non-fatal)"
+else
+  echo "  codex not on PATH — skipping codex skill sync"
+fi
+
 # Source bashrc
 MARKER="# agent-orchestration"
 if ! grep -qF "$MARKER" "$HOME/.bashrc" 2>/dev/null; then
