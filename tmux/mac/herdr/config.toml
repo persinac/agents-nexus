@@ -88,6 +88,16 @@ key = "prefix+shift+j"
 type = "shell"
 command = "/opt/homebrew/bin/herdr pane swap --direction down --current"
 
+# ctrl+a + shift+c -> prompt for a goal (in-pane) and run a Conductor mission.
+# Migrated from the old tmux `bind C` when herdr became the default backend
+# (NEXUS_SUBSTRATE=herdr): the shell binding opens a focused pane, the inline bash
+# prompts for the goal where there's a real TTY, then execs conductor-run.sh
+# (left untouched — it already gates LIVE on hostname `nexus`).
+[[keys.command]]
+key = "prefix+shift+c"
+type = "shell"
+command = "/opt/homebrew/bin/herdr agent start conductor --focus -- bash -lc 'read -r -p \"conductor goal: \" g; exec \"$HOME/.tmux/conductor-run.sh\" \"$g\"'"
+
 [ui]
 show_agent_labels_on_pane_borders = true
 # Agent sidebar as the always-visible "all agents at a glance" view (the analog of the
