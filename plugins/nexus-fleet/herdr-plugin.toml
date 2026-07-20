@@ -23,6 +23,12 @@ title = "Swap two panes"
 placement = "zoomed"
 command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/swap-pick.sh\""]
 
+[[panes]]
+id = "worktree"
+title = "Prune worktrees"
+placement = "zoomed"
+command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/worktree-prune.sh\""]
+
 [[actions]]
 id = "pick"
 title = "Fleet repo picker"
@@ -40,6 +46,12 @@ id = "swap"
 title = "Swap two panes"
 contexts = ["workspace"]
 command = ["/bin/sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin nexus.fleet --entrypoint swap"]
+
+[[actions]]
+id = "worktree"
+title = "Prune worktrees"
+contexts = ["workspace"]
+command = ["/bin/sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin nexus.fleet --entrypoint worktree"]
 
 # General scratch agent — headless (no fzf UI): fires a substrate spawn of a no-repo
 # `general` agent (cwd=$HOME, PROJECT_SLUG=general). No [[panes]] entry; the action

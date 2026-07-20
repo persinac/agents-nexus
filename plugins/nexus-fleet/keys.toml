@@ -26,3 +26,10 @@ command = "nexus.fleet.scratch"
 key = "prefix+shift+s"
 type = "plugin_action"
 command = "nexus.fleet.swap"
+
+# ctrl+a shift+w -> fuzzy-prune git worktrees (tmux `ctrl+a W` parity). NOTE: displaces
+# herdr's native rename_workspace on this chord (same pattern as shift+g/new_worktree).
+[[keys.command]]
+key = "prefix+shift+w"
+type = "plugin_action"
+command = "nexus.fleet.worktree"
