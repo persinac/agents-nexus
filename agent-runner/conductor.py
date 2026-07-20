@@ -973,7 +973,19 @@ async def run_and_verify(db, mid: str, goal: str, start_round: int = 0) -> tuple
 
 
 # ── report (slice E: branch / Jira / Confluence / MR — gated, dry-run default) ─
-REPORTING = CFG.get("reporting", {})
+def _expandvars_deep(x):
+    """Resolve ${VAR}/$VAR from the environment in every string leaf so reporting
+    targets can be env-templated — the shared conductor config carries no per-user
+    literals (e.g. jira project/assignee, confluence space come from the box's .env)."""
+    if isinstance(x, str):
+        return os.path.expandvars(x)
+    if isinstance(x, dict):
+        return {k: _expandvars_deep(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_expandvars_deep(v) for v in x]
+    return x
+
+REPORTING = _expandvars_deep(CFG.get("reporting", {}))
 DRY_RUN = os.environ.get("CONDUCTOR_DRY_RUN") == "1"   # --dry-run: log reporting payloads, don't send
 
 
