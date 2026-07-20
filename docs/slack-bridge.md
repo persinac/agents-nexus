@@ -352,6 +352,13 @@ unchanged** — it still POSTs `:8788/send`; the transport is chosen bridge-side
 `SLACK_BUS_ENABLED=1` (the master switch). `curl :8788/health` reports `"transport":"nats"`
 and `"nats":true` once connected.
 
+**Topology (`NEXUS_A2A_MODE`)** — `single-host` (one box, no peers) FORCES the `nats` transport
+and turns the Slack A2A paths **off entirely**: the bridge does not listen to `#nexus-agents`
+for A2A and does not gossip presence on Slack, so NATS + its KV are the *sole* A2A medium — no
+latent dual delivery path, no redundant presence. `/agents` then reads reachability from the KV
+(`"presence":"nats-kv"`). Default `multi-host` keeps the Slack A2A + gossip available (cross-firewall
+fallback / migration). The human notify/reply leg is on Slack regardless of the mode.
+
 **Broker** (single-node pilot; add TLS + subject-scoped creds + a 3-node cluster for the
 company fleet):
 

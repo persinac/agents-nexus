@@ -128,7 +128,19 @@ const BUS_MAX_CHARS = parseInt(process.env.SLACK_BUS_MAX_CHARS || '8000', 10);
 // only the A2A publish (`/send`) and inbound A2A delivery move. The `nats` client is imported
 // dynamically at startup ONLY in nats mode, so a slack-only bridge needs no NATS dependency.
 // The bus is still gated by SLACK_BUS_ENABLED=1 regardless of transport (the master switch).
-const BUS_TRANSPORT = (process.env.NEXUS_BUS_TRANSPORT || 'slack').toLowerCase();
+//
+// Topology split (NEXUS_A2A_MODE): `single-host` (one box, no peers) FORCES the nats transport
+// and turns OFF the Slack A2A paths entirely — the bridge does not listen to #nexus-agents for
+// A2A and does not gossip presence on Slack (NATS + its KV are the sole A2A medium). This removes
+// the latent dual delivery path (Slack channel + NATS) and the redundant Slack presence. Default
+// `multi-host` preserves today's behavior (transport selectable; Slack A2A + gossip available as
+// a cross-firewall fallback / during migration). The HUMAN notify/reply leg is on Slack either way.
+const A2A_MODE = (process.env.NEXUS_A2A_MODE || 'multi-host').toLowerCase();
+const SINGLE_HOST = A2A_MODE === 'single-host';
+const BUS_TRANSPORT = SINGLE_HOST ? 'nats' : (process.env.NEXUS_BUS_TRANSPORT || 'slack').toLowerCase();
+// Whether the Slack #nexus-agents channel carries A2A (inbound delivery + presence gossip).
+// Single-host → OFF (NATS only). Multi-host → on when a channel is configured.
+const SLACK_A2A_ACTIVE = !SINGLE_HOST;
 const NATS_URL = process.env.NATS_URL || 'nats://127.0.0.1:4222';
 const NATS_CREDS = process.env.NATS_CREDS || '';                 // creds file (NKEY/JWT) — the scale path
 const NATS_TOKEN = process.env.NATS_TOKEN || '';
@@ -150,7 +162,8 @@ let natsReady = false;      // true once connected + subscribed
 // solo-host install leaves it off to avoid a pointless heartbeat. Enable it per-machine (the
 // repo `.env`) when a second host joins, for cross-host FQDN election + reachability.
 const SELF_HOST = (process.env.SLACK_PRESENCE_HOST || hostname() || 'unknown').trim();
-const PRESENCE_ENABLED = BUS_ENABLED && !!AGENTS_CHANNEL && process.env.SLACK_PRESENCE_ENABLED === '1';
+// Slack-channel presence gossip. OFF in single-host (NATS KV presence is the sole source there).
+const PRESENCE_ENABLED = SLACK_A2A_ACTIVE && BUS_ENABLED && !!AGENTS_CHANNEL && process.env.SLACK_PRESENCE_ENABLED === '1';
 // FQDN presence (v2): publish per-instance { name, workspace, pane } records instead of a
 // bare-name Set, so two same-named agents on one host are distinct and cross-host addressable
 // by host/workspace/name or host/pane. Consume-side is ALWAYS v1+v2 tolerant; this flag only
@@ -1420,7 +1433,7 @@ async function handleMessage(event) {
   // --- Inter-agent bus: traffic on the dedicated agents channel is bot-posted
   // by some host's /send, so it bypasses the human-message bot/self filters
   // below. It only ever delivers to a LOCAL agent and never re-posts — no loop. ---
-  if (BUS_ENABLED && AGENTS_CHANNEL && event.channel === AGENTS_CHANNEL) {
+  if (SLACK_A2A_ACTIVE && BUS_ENABLED && AGENTS_CHANNEL && event.channel === AGENTS_CHANNEL) {
     // Presence announcements share this channel — route them out of the
     // addressed-delivery path. They only update the in-memory map (consumePresence
     // never delivers and never re-posts), so there is still no loop.
@@ -1634,14 +1647,36 @@ const httpServer = http.createServer((req, res) => {
   if (req.method === 'GET' && url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const busUp = BUS_ENABLED && (BUS_TRANSPORT === 'nats' ? natsReady : !!AGENTS_CHANNEL);
-    res.end(JSON.stringify({ ok: true, connected: socketConnected, threads: threadMap.size, bus: busUp, transport: BUS_TRANSPORT, nats: BUS_TRANSPORT === 'nats' ? natsReady : undefined, presence: PRESENCE_ENABLED, host: SELF_HOST }));
+    res.end(JSON.stringify({ ok: true, connected: socketConnected, threads: threadMap.size, bus: busUp, transport: BUS_TRANSPORT, a2a_mode: A2A_MODE, nats: BUS_TRANSPORT === 'nats' ? natsReady : undefined, presence: PRESENCE_ENABLED, host: SELF_HOST }));
     return;
   }
 
-  // Reachability (Phase 2): the fleet-wide live agent set derived from the
-  // presence map — each agent, its owning host, the resolved single owner, and a
-  // collision flag. Expire dead hosts first so a crashed bridge ages out.
+  // Reachability: the fleet-wide live agent set. Under the NATS transport this is read from
+  // the JetStream KV presence bucket (the sole source in single-host, where Slack gossip is
+  // off); under Slack it's derived from the in-memory gossip presenceMap. Same output shape.
   if (req.method === 'GET' && url.pathname === '/agents') {
+    if (BUS_TRANSPORT === 'nats' && natsReady) {
+      (async () => {
+        try {
+          const snap = await natsTransport.presenceSnapshot();   // [{host,workspace,name,pane,ts}]
+          const idKey = (a) => `${(a.workspace || '').toLowerCase()} ${(a.name || '').toLowerCase()}`;
+          const counts = new Map();
+          for (const a of snap) counts.set(idKey(a), (counts.get(idKey(a)) || 0) + 1);
+          const agents = snap.map((a) => ({
+            name: a.name, workspace: a.workspace || '', pane: a.pane || '', host: a.host || SELF_HOST,
+            owner: a.host || SELF_HOST, collided: (counts.get(idKey(a)) || 0) > 1,
+          })).sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+          const hosts = new Set(snap.map((a) => a.host || SELF_HOST));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, presence: 'nats-kv', self: SELF_HOST, hosts: hosts.size, agents,
+            collisions: agents.filter((a) => a.collided) }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: e.message }));
+        }
+      })();
+      return;
+    }
     orch.expirePresence(presenceMap, { now: Date.now(), ttlMs: PRESENCE_TTL_MS });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({

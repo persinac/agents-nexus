@@ -768,6 +768,16 @@ interactive_setup() {
       echo "# is the master switch; SLACK_AGENTS_CHANNEL is not needed for NATS A2A."
       echo "NEXUS_BUS_TRANSPORT=nats"
       echo "SLACK_BUS_ENABLED=1"
+      # Topology: single-host (this box only) forces NATS and turns OFF the Slack A2A paths
+      # entirely (no #nexus-agents listening, no Slack presence gossip) — NATS is the sole A2A
+      # medium, so there's no dual delivery path and no redundant presence. A local-container
+      # install defaults to single-host; a remote/shared broker implies a multi-host fleet.
+      # Flip to multi-host if OTHER boxes will join this broker.
+      if [ "$sel_nats_local" = "1" ]; then
+        echo "NEXUS_A2A_MODE=single-host"
+      else
+        echo "NEXUS_A2A_MODE=multi-host"
+      fi
       echo "NATS_URL=$nats_url"
       [ -n "$nats_creds" ] && echo "NATS_CREDS=$nats_creds"
       [ -n "$nats_token" ] && echo "NATS_TOKEN=$nats_token"
@@ -776,7 +786,8 @@ interactive_setup() {
       echo "NATS_PRESENCE_KV=nexus_presence"
       if [ "$sel_nats_local" = "1" ]; then
         echo "# Local broker via the 'nats' compose profile. For CROSS-MACHINE, other boxes must"
-        echo "# reach this host (bind + firewall + TLS + creds) and set NATS_URL to its address."
+        echo "# reach this host (bind + firewall + TLS + creds), set NATS_URL to its address, and"
+        echo "# set NEXUS_A2A_MODE=multi-host on every box."
       else
         echo "# Remote/shared broker — ensure TLS + creds/token (above); finish with ./install.sh --finish-nats"
       fi
