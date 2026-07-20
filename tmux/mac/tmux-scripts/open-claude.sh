@@ -77,6 +77,13 @@ MY_NAME="$project_slug"
 MY_WORKSPACE="${NEXUS_WORKSPACE:-}"
 [ -z "$MY_WORKSPACE" ] && MY_WORKSPACE="$("$NEXUS_TMUX_DIR/substrate.sh" workspace-of "$MY_PANE_ID" 2>/dev/null || true)"
 
+# This host's presence/FQDN label. SINGLE source = SLACK_PRESENCE_HOST — the SAME var the bridge's
+# SELF_HOST (index.js) and agent-resolve.sh's nx_self_host() read — falling back to the short
+# hostname. Injected into base context (Agent Communication, below) so an agent can tell whether a
+# bus peer is same-host or remote: FQDN-style peer names are `<host>/…/<name>`, so a peer prefixed
+# "$MY_HOST/" is on THIS box — hand files off by writing into its repo tree (no S3/user-drop detour).
+MY_HOST="${SLACK_PRESENCE_HOST:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)}"
+
 # Lock the window name so tmux doesn't override it with the process name
 "$NEXUS_TMUX_DIR/substrate.sh" rename "$MY_PANE_ID" "$MY_NAME" 2>/dev/null
 
@@ -164,7 +171,7 @@ Fallback — direct tmux send (same-host only; NOT durable or auditable and can 
   - \`$REGISTRY_SCRIPT whoami --exclude ${MY_PANE_ID}\` — show your own slot, name, and directory"
   fi
   registry_section="## Agent Communication
-You are part of a multi-agent system (agents may run across multiple hosts). ALWAYS pass --exclude ${MY_PANE_ID} to avoid listing yourself.
+You are agent **${MY_NAME}** on host **${MY_HOST}**. You are part of a multi-agent system; peers may be on THIS host or remote. Peer names are often FQDN-style \`<host>/…/<name>\`: a peer whose name is prefixed \`${MY_HOST}/\` is on the SAME box as you — hand files to it directly by writing into its repo tree under \`~/repos\` (e.g. \`.../docs/incoming\`), NO S3/user-drop detour; only a cross-host handoff needs a transfer mechanism. (Messaging still goes over the bus either way.) ALWAYS pass --exclude ${MY_PANE_ID} to avoid listing yourself.
 
 ${comms_body}
 

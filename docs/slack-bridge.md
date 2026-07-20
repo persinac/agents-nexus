@@ -391,10 +391,15 @@ Mode fan-out as the bus:
 - **Reachability:** `curl :8788/agents` → `{ self, hosts, agents:[{name,host,owner,collided}], collisions }`.
   `/health` also reports `presence` + `host`.
 
-Enable it as the **cross-host** rollout step (mirrors the bus's own enablement):
-set `SLACK_PRESENCE_ENABLED=1` in Doppler `nexus/prd` on **each** host's bridge and
-restart. It's only useful once ≥2 bridges run it; on a single host it's inert noise,
-so it ships **off**. Tracked in `openspec/changes/slack-agent-bus`.
+Enable it as the **cross-host** rollout step (mirrors the bus's own enablement) by injecting
+`SLACK_PRESENCE_ENABLED=1` (+ `SLACK_PRESENCE_HOST=<label>`) as **process env** on each host's
+bridge and restarting. ⚠️ On a Doppler/Linux box these do **not** flow through Doppler: the bridge
+launches via `secret-run.sh` with an explicit secret allowlist (tokens/channel/`SLACK_BUS_ENABLED`
+only), so a value set only in Doppler never reaches the process. Inject via a **systemd drop-in**
+(`~/.config/systemd/user/slack-bridge.service.d/*.conf` → `Environment=…`); a vanilla Mac reads
+repo-root `.env` directly. Full worked example (two people): [`cross-person-setup.md`](./cross-person-setup.md).
+It's only useful once ≥2 bridges run it; on a single host it's inert noise, so it ships **off**.
+Tracked in `openspec/changes/slack-agent-bus`.
 
 ### Cross-person (two people, one bus)
 
