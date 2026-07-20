@@ -3,7 +3,7 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches } from './orchestrator.js';
 
 // The addressed-bus parser lives in index.js (it needs no orchestrator state), but its
 // shape is a shared contract with formatRelay/parsePresence — a relay or presence line must
@@ -308,4 +308,106 @@ test('workspaceMatches: full-label, slug, empty-filter, and miss', () => {
   assert.equal(workspaceMatches('search', 'search'), true);
   assert.equal(workspaceMatches('search', 'mission'), false);
   assert.equal(workspaceMatches('mission/x', ''), true);                                   // no filter
+});
+
+// --- Presence: instance-identity model (FQDN v2 + v1 back-compat) ----------
+// The bug this fixes: presence stored a per-host SET of bare names, so two same-named
+// agents on one host collapsed and became unaddressable (silent drop). v2 carries
+// {name, workspace, pane} records; two same-named instances stay distinct.
+
+test('toInstance: normalizes v1 strings and v2 records', () => {
+  assert.deepEqual(toInstance('general'), { name: 'general', workspace: '', pane: '' });
+  assert.deepEqual(toInstance({ name: 'general', workspace: 'interactive', pane: 'w3:pK' }),
+    { name: 'general', workspace: 'interactive', pane: 'w3:pK' });
+  assert.deepEqual(toInstance({ name: 'x' }), { name: 'x', workspace: '', pane: '' }); // partial record
+});
+
+test('formatPresence: v1 bare names by default, v2 records when fqdn', () => {
+  const insts = [{ name: 'general', workspace: 'interactive', pane: 'w3:pK' }];
+  const v1 = formatPresence({ host: 'alex', agents: insts, ts: 1 });
+  assert.ok(v1.startsWith(PRESENCE_SENTINEL));
+  assert.deepEqual(JSON.parse(v1.slice(PRESENCE_SENTINEL.length).trim()),
+    { v: 1, host: 'alex', agents: ['general'], ts: 1 });
+  const v2 = formatPresence({ host: 'alex', agents: insts, ts: 1 }, { fqdn: true });
+  assert.deepEqual(JSON.parse(v2.slice(PRESENCE_SENTINEL.length).trim()),
+    { v: 2, host: 'alex', agents: [{ name: 'general', workspace: 'interactive', pane: 'w3:pK' }], ts: 1 });
+});
+
+test('parsePresence: reads v1 and v2, always returns instance records', () => {
+  const v1 = parsePresence('::nexus-presence:: {"v":1,"host":"alex","agents":["general","db"],"ts":5}');
+  assert.equal(v1.v, 1);
+  assert.deepEqual(v1.agents, [{ name: 'general', workspace: '', pane: '' }, { name: 'db', workspace: '', pane: '' }]);
+  const v2 = parsePresence('::nexus-presence:: {"v":2,"host":"alex","agents":[{"name":"general","workspace":"interactive","pane":"w3:pK"}],"ts":5}');
+  assert.equal(v2.v, 2);
+  assert.deepEqual(v2.agents, [{ name: 'general', workspace: 'interactive', pane: 'w3:pK' }]);
+  const round = parsePresence(formatPresence({ host: 'alex', agents: v2.agents, ts: 9 }, { fqdn: true }));
+  assert.deepEqual(round.agents, v2.agents); // format → parse round-trips
+});
+
+test('applyPresence: stores records, collapses exact dups, honors ts ordering', () => {
+  const map = new Map();
+  applyPresence(map, { host: 'alex', agents: [
+    { name: 'general', workspace: 'interactive', pane: 'w3:pK' },
+    { name: 'general', workspace: 'agents-nexus/routing', pane: 'wA:p5' },
+    { name: 'general', workspace: 'interactive', pane: 'w3:pK' }, // exact dup → collapsed
+  ], ts: 2 }, { now: 100 });
+  assert.equal(map.get('alex').agents.length, 2);            // two distinct instances kept
+  applyPresence(map, { host: 'alex', agents: [{ name: 'db', workspace: '', pane: 'w1:p1' }], ts: 1 }, { now: 200 });
+  assert.equal(map.get('alex').agents.length, 2);            // older ts ignored
+  applyPresence(map, { host: 'alex', agents: [{ name: 'db', workspace: '', pane: 'w1:p1' }], ts: 3 }, { now: 300 });
+  assert.equal(map.get('alex').agents.length, 1);            // newer full-state snapshot replaces
+});
+
+test('presenceCollisions: intra-host + cross-host identity; NOT different-workspace', () => {
+  const map = new Map();
+  // two 'general' on ONE host in DIFFERENT workspaces → distinct, NOT a collision
+  applyPresence(map, { host: 'alex', agents: [
+    { name: 'general', workspace: 'interactive', pane: 'w3:pK' },
+    { name: 'general', workspace: 'routing', pane: 'wA:p5' },
+  ], ts: 1 });
+  assert.equal(presenceCollisions(map).length, 0);
+  // a SECOND interactive/general on alex → intra-host identity collision
+  applyPresence(map, { host: 'alex', agents: [
+    { name: 'general', workspace: 'interactive', pane: 'w3:pK' },
+    { name: 'general', workspace: 'interactive', pane: 'w9:pZ' },
+    { name: 'general', workspace: 'routing', pane: 'wA:p5' },
+  ], ts: 2 });
+  const cols = presenceCollisions(map);
+  assert.equal(cols.length, 1);
+  assert.equal(cols[0].name, 'general');
+  assert.equal(cols[0].workspace, 'interactive');
+  assert.equal(cols[0].count, 2);
+});
+
+test('presenceCollisions: v1 (no workspace) still flags cross-host same name (back-compat)', () => {
+  const map = new Map();
+  applyPresence(map, { host: 'alex', agents: ['general'], ts: 1 });
+  applyPresence(map, { host: 'buddy', agents: ['general'], ts: 1 });
+  const cols = presenceCollisions(map);
+  assert.equal(cols.length, 1);
+  assert.equal(cols[0].name, 'general');
+  assert.deepEqual(cols[0].hosts, ['alex', 'buddy']);
+});
+
+test('reachability: one row per instance; two same-named on one host = two rows', () => {
+  const map = new Map();
+  applyPresence(map, { host: 'alex', agents: [
+    { name: 'general', workspace: 'interactive', pane: 'w3:pK' },
+    { name: 'general', workspace: 'routing', pane: 'wA:p5' },
+  ], ts: 1 });
+  const rows = reachability(map);
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((r) => r.name === 'general' && r.host === 'alex'));
+  assert.deepEqual(rows.map((r) => r.workspace).sort(), ['interactive', 'routing']);
+  assert.ok(rows.every((r) => r.pane));               // each carries its pane
+  assert.ok(rows.every((r) => r.collided === false)); // different workspaces → not collided
+});
+
+test('ownersOf / ownerOf: name-level ownership on records, lexically-smallest host', () => {
+  const map = new Map();
+  applyPresence(map, { host: 'nexus', agents: [{ name: 'general', workspace: 'x', pane: 'w1:p1' }], ts: 1 });
+  applyPresence(map, { host: 'buddy', agents: [{ name: 'general', workspace: 'y', pane: 'w1:p1' }], ts: 1 });
+  assert.deepEqual(ownersOf(map, 'general'), ['buddy', 'nexus']);
+  assert.equal(ownerOf(map, 'general'), 'buddy');
+  assert.equal(ownerOf(map, 'nope'), null);
 });

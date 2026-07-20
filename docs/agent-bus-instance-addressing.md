@@ -232,6 +232,11 @@ the sender is told to re-send with a handle.
 - **No cross-host instance addressing.** Pane handles are host-local. Reaching a
   specific *remote* instance still uses `host/name`, and remains a collision only if a
   remote host also runs duplicate names — out of scope here.
+  > **Update (2026-07-20): now in scope.** `openspec/changes/presence-instance-identity`
+  > reopens this: presence carries per-instance `{name, workspace, pane}` records (v2), so a
+  > specific remote instance is addressable by `host/workspace/name` or `host/pane`, and an
+  > ambiguous bare name is a *logged* drop, not a silent one. The same-host pane-handle path
+  > and the "no forced-unique names" decision above are unchanged.
 
 ## Rollout & flags
 

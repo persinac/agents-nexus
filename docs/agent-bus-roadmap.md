@@ -77,6 +77,9 @@ caller awaits (fifo/file poll).
 **Approach**
 - Extend the presence snapshot to `{host, agents:[{name, caps[], task, busy}]}` (caps
   declared via a registry `CAPS=` line or a small caps file; `busy` from `@waiting`).
+  > The per-instance record structure (v2 presence, `agents:[{name, workspace, pane}]`) is
+  > already delivered by `presence-instance-identity` — Phase C just adds the `caps`/`task`/`busy`
+  > fields to the same record and a `resolveByCapability` reducer over the instance map.
 - `orchestrator.js` gains `resolveByCapability(cap)` (pure) → idle candidates;
   `agent-send.sh --any <cap> <msg>` lets the bridge pick a reachable, idle, least-loaded owner.
 

@@ -311,6 +311,7 @@ on is affected; traffic to other agents is unchanged. Set
 | `SLACK_PRESENCE_HEARTBEAT_MS` | `300000` | How often the bridge re-announces its full agent set (also re-announces on every registry change). |
 | `SLACK_PRESENCE_TTL_MS` | `960000` | A peer host is dropped from the map if no snapshot arrives within this window (crash/offline). |
 | `SLACK_PRESENCE_HOST` | `hostname()` | Override the host label this bridge announces under (the owner-tiebreak key). |
+| `SLACK_PRESENCE_FQDN` | `0` (off) | **Bridge.** Publish presence as **v2** per-instance `{name, workspace, pane}` records instead of a bare-name list, so two same-named agents on one host are distinct and addressable by `host/workspace/name` or `host/pane`. Consume-side is always v1+v2 tolerant; this flag only controls what this bridge *publishes* (degrades to v1 among pre-FQDN peers). Requires presence on. |
 
 > **Two processes, two envs:** the **bridge** reads these from its process env — Doppler
 > (`nexus/prd`) on the Linux box, or repo-root `.env` on a vanilla Mac (commit `73637b0`,
@@ -388,7 +389,8 @@ Mode fan-out as the bus:
   Between two people this is the *normal* state (you both have a `general`), not an
   error — namespaced addressing is how you disambiguate, and `GET /agents` is the
   directory that tells you which hosts claim a name.
-- **Reachability:** `curl :8788/agents` → `{ self, hosts, agents:[{name,host,owner,collided}], collisions }`.
+- **Reachability:** `curl :8788/agents` → `{ self, hosts, agents:[{name,workspace,pane,host,owner,collided}], collisions }`
+  — one row **per instance** (with FQDN presence on, two same-named agents on one host are two rows).
   `/health` also reports `presence` + `host`.
 
 Enable it as the **cross-host** rollout step (mirrors the bus's own enablement) by injecting
@@ -400,6 +402,28 @@ only), so a value set only in Doppler never reaches the process. Inject via a **
 repo-root `.env` directly. Full worked example (two people): [`cross-person-setup.md`](./cross-person-setup.md).
 It's only useful once ≥2 bridges run it; on a single host it's inert noise, so it ships **off**.
 Tracked in `openspec/changes/slack-agent-bus`.
+
+### FQDN presence — instance identity (opt-in, `SLACK_PRESENCE_FQDN`)
+
+Phase 2's presence gossips a per-host **set of bare names**, so two agents that share a
+name on one host (e.g. two `general`s in different buckets) collapse into one entry and
+become unaddressable — a message to `host/name` hits an ambiguous local match and is
+silently dropped. FQDN presence (**v2**) fixes this by publishing per-instance records:
+
+- **Wire:** `::nexus-presence:: {v:2, host, agents:[{name, workspace, pane}], ts}`. A
+  pre-FQDN (`v:1`) bridge is still understood (its bare names fold in as `workspace:''`),
+  and a v2 bridge among v1 peers degrades to v1 output — mixed fleets interoperate.
+- **Identity + collisions:** owner election and collision detection key on the full
+  `host/workspace/name`. Two same-named agents in *different* workspaces are distinct, not
+  a collision; the same `workspace/name` twice (across hosts, or twice on one host) IS one.
+- **Addressing:** reach a specific instance cross-host with `host/workspace/name`, or
+  `host/pane` for the tie-broken intra-bucket duplicate. An ambiguous bare name is now a
+  **logged, actionable** drop (it names the qualified addresses to retry), not a silent one.
+- **Registration:** `substrate.sh register` already records each agent's `WORKSPACE`
+  (falling back to `$NEXUS_WORKSPACE` / the herdr bucket), which is what these records carry.
+
+Off by default; enable per host like presence (process env on the bridge). Tracked in
+`openspec/changes/presence-instance-identity`.
 
 ### Cross-person (two people, one bus)
 

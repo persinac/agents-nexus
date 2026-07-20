@@ -130,6 +130,11 @@ const BUS_MAX_CHARS = parseInt(process.env.SLACK_BUS_MAX_CHARS || '8000', 10);
 // repo `.env`) when a second host joins, for cross-host FQDN election + reachability.
 const SELF_HOST = (process.env.SLACK_PRESENCE_HOST || hostname() || 'unknown').trim();
 const PRESENCE_ENABLED = BUS_ENABLED && !!AGENTS_CHANNEL && process.env.SLACK_PRESENCE_ENABLED === '1';
+// FQDN presence (v2): publish per-instance { name, workspace, pane } records instead of a
+// bare-name Set, so two same-named agents on one host are distinct and cross-host addressable
+// by host/workspace/name or host/pane. Consume-side is ALWAYS v1+v2 tolerant; this flag only
+// controls what WE PUBLISH, so a v2 bridge degrades to v1 among pre-FQDN peers. Opt-in, default off.
+const PRESENCE_FQDN = PRESENCE_ENABLED && process.env.SLACK_PRESENCE_FQDN === '1';
 const PRESENCE_HEARTBEAT_MS = parseInt(process.env.SLACK_PRESENCE_HEARTBEAT_MS || '300000', 10); // 5 min
 const PRESENCE_TTL_MS = parseInt(process.env.SLACK_PRESENCE_TTL_MS || String(16 * 60 * 1000), 10); // ~3 missed beats
 const presenceMap = new Map(); // host -> { agents:Set<string>, ts, seen }
@@ -997,20 +1002,26 @@ function liveHandles() {
   return out.split('\n').map((s) => s.trim()).filter(Boolean);
 }
 
+// This host's live agents as instance RECORDS [{name, workspace, pane}] — one per live
+// registry entry (deduped by pane), so two same-named agents on this host are two records,
+// not one collapsed name. Presence (v2) publishes these; callers that only want names map
+// `.name`. A stale registry file whose pane is gone is dropped.
 function localLiveAgents() {
   const reg = loadRegistry();
   if (!reg.length) return [];
   let live = null;
-  try {
-    live = new Set(liveHandles());
-  } catch { live = null; }
-  const names = new Set();
+  try { live = new Set(liveHandles()); } catch { live = null; }
+  const out = [];
+  const seen = new Set();
   for (const a of reg) {
     if (!a.name) continue;
     if (live && a.pane && !live.has(a.pane)) continue; // stale registry file — pane gone
-    names.add(a.name);
+    const key = a.pane || `${a.workspace || ''}\u0000${a.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name: a.name, workspace: a.workspace || '', pane: a.pane || '' });
   }
-  return Array.from(names);
+  return out;
 }
 
 // Throttle the re-announce-on-new-host nudge so a fleet booting together can't
@@ -1026,7 +1037,7 @@ async function publishPresence() {
   const ts = Math.floor(Date.now() / 1000);
   orch.applyPresence(presenceMap, { host: SELF_HOST, agents, ts }, { now: Date.now() });
   try {
-    await web.chat.postMessage({ channel: AGENTS_CHANNEL, text: orch.formatPresence({ host: SELF_HOST, agents, ts }) });
+    await web.chat.postMessage({ channel: AGENTS_CHANNEL, text: orch.formatPresence({ host: SELF_HOST, agents, ts }, { fqdn: PRESENCE_FQDN }) });
   } catch (e) {
     console.error(`[presence] publish failed: ${e.message}`);
   }
@@ -1041,7 +1052,7 @@ function consumePresence(snap) {
   orch.applyPresence(presenceMap, snap, { now: Date.now() });
   const cols = orch.presenceCollisions(presenceMap);
   if (cols.length) {
-    console.warn(`[presence] name collision: ${cols.map((c) => `${c.name}@{${c.hosts.join(',')}}`).join(' ')}`);
+    console.warn(`[presence] identity collision: ${cols.map((c) => `${c.workspace ? c.workspace + '/' : ''}${c.name} (${c.count}× @ ${c.hosts.join(',')})`).join(' ')}`);
   }
   if (isNewHost) {
     const since = Date.now() - lastPresencePublish;
@@ -1305,27 +1316,39 @@ async function handleBusMessage(event) {
       orch.parseAddress(token, { knownHosts: new Set(presenceMap.keys()), selfHost: SELF_HOST });
     // Qualified target: only the named host delivers. Not us → ignore outright.
     if (qualHost && qualHost.toLowerCase() !== SELF_HOST.toLowerCase()) return;
-    agent = resolveByName(nm, qualWs);     // local registry, scoped to the bucket
-    if (!agent) {
-      // No single match. If the name collides across local instances, resolveByName
-      // returns null BY DESIGN — surface it (was a silent drop, index.js's expensive-to-
-      // diagnose failure) so the sender knows to re-address by pane handle. Otherwise it's
-      // simply not ours and the owning host delivers.
-      const dups = loadRegistry().filter((a) => a.name.toLowerCase() === nm.toLowerCase()
-        && orch.workspaceMatches(a.workspace, qualWs || ''));
-      if (dups.length > 1) {
-        console.warn(`[bus] '${nm}' ambiguous across ${dups.length} local instances (${dups.map((d) => d.pane || d.slot).join(', ')}) — address by pane handle`);
-      }
-      return;
-    }
-    // Single-owner election: defer to another host that positively owns this name (our
-    // local match may be stale, or a genuine cross-host collision). Skipped for a qualified
-    // target — an explicit `host/` prefix naming THIS host IS the owner designation.
-    if (PRESENCE_ENABLED && !qualHost && !qualWs) {
-      const owner = orch.ownerOf(presenceMap, nm);
-      if (owner && owner !== SELF_HOST) {
-        console.warn(`[bus] ${nm} owned by ${owner}, not ${SELF_HOST} — deferring delivery`);
+    // host/pane (e.g. `alex-nexus/w3:pK`) → instance-exact, host-local resolve. The name
+    // segment is a pane handle: bypass name resolution + owner election (a pane is unique by
+    // construction). This is cross-host instance addressing for a tie-broken duplicate — the
+    // handle rode in behind a host prefix, which the bare-handle branch above never sees.
+    if (/^w[A-Za-z0-9]+:p[A-Za-z0-9]+$/.test(nm)) {
+      agent = resolveByPane(nm);
+      if (!agent) { console.warn(`[bus] no local agent for pane ${nm} (from '${token}') — dropped (from bus)`); return; }
+    } else {
+      agent = resolveByName(nm, qualWs);     // local registry, scoped to the bucket
+      if (!agent) {
+        // No single match. If the name collides across local instances, resolveByName
+        // returns null BY DESIGN — surface it (was a silent drop, index.js's expensive-to-
+        // diagnose failure) with the QUALIFIED addresses that disambiguate. Otherwise it's
+        // simply not ours and the owning host delivers.
+        const dups = loadRegistry().filter((a) => a.name.toLowerCase() === nm.toLowerCase()
+          && orch.workspaceMatches(a.workspace, qualWs || ''));
+        if (dups.length > 1) {
+          const cands = dups.map((d) => d.workspace
+            ? `${SELF_HOST}/${d.workspace}/${d.name}`
+            : `${SELF_HOST}/${d.pane || d.slot}`);
+          console.warn(`[bus] '${nm}' ambiguous across ${dups.length} local instances — qualify: ${cands.join(', ')}`);
+        }
         return;
+      }
+      // Single-owner election: defer to another host that positively owns this name (our
+      // local match may be stale, or a genuine cross-host collision). Skipped for a qualified
+      // target — an explicit `host/` prefix naming THIS host IS the owner designation.
+      if (PRESENCE_ENABLED && !qualHost && !qualWs) {
+        const owner = orch.ownerOf(presenceMap, nm);
+        if (owner && owner !== SELF_HOST) {
+          console.warn(`[bus] ${nm} owned by ${owner}, not ${SELF_HOST} — deferring delivery`);
+          return;
+        }
       }
     }
   }

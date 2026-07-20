@@ -300,15 +300,44 @@ export function parseRelay(text) {
   return { from: 'unknown', text: rest };
 }
 
+// Normalize a presence agent entry to an instance RECORD. Accepts a bare name
+// string (v1 wire / legacy) → { name, workspace:'', pane:'' }, or an object
+// (v2 wire) → its { name, workspace, pane }. This is the single shape every
+// downstream function (owner election, collisions, reachability) operates on, so
+// a mixed-version fleet folds into one representation.
+export function toInstance(a) {
+  if (a && typeof a === 'object') {
+    return { name: String(a.name ?? ''), workspace: String(a.workspace ?? ''), pane: String(a.pane ?? '') };
+  }
+  return { name: String(a ?? ''), workspace: '', pane: '' };
+}
+
+const _lc = (s) => String(s == null ? '' : s).toLowerCase();
+// Full instance key (workspace + name + pane) — used to de-dupe a snapshot; two
+// same workspace/name instances stay distinct by pane (the intra-bucket duplicate).
+function instanceKey(i) { return `${_lc(i.workspace)}\u0000${_lc(i.name)}\u0000${_lc(i.pane)}`; }
+// Identity key (workspace + name, NO pane) — the addressable identity; two instances
+// sharing it are a collision (resolvable only by pane). NUL-joined so a '/' inside a
+// workspace label can't collide with the separator.
+function identityKey(i) { return `${_lc(i.workspace)}\u0000${_lc(i.name)}`; }
+
 // Format a presence announcement: sentinel + a compact JSON state snapshot.
 // Full-state (not deltas) so a missed message self-heals on the next beat.
-export function formatPresence({ host, agents, ts }) {
-  const payload = { v: 1, host: String(host), agents: Array.from(agents || []), ts: ts || 0 };
+// `fqdn` on → v2: agents are { name, workspace, pane } records, so a same-named
+// instance is distinct and cross-host addressable. Off → v1: bare name strings
+// (unchanged wire) for back-compat with pre-FQDN bridges on the same channel.
+export function formatPresence({ host, agents, ts }, { fqdn = false } = {}) {
+  const insts = Array.from(agents || []).map(toInstance);
+  const payload = fqdn
+    ? { v: 2, host: String(host), agents: insts.map((i) => ({ name: i.name, workspace: i.workspace, pane: i.pane })), ts: ts || 0 }
+    : { v: 1, host: String(host), agents: insts.map((i) => i.name), ts: ts || 0 };
   return `${PRESENCE_SENTINEL} ${JSON.stringify(payload)}`;
 }
 
-// Parse a presence announcement back to { host, agents:string[], ts }, or null
-// if the text is not a well-formed presence message.
+// Parse a presence announcement back to { v, host, agents:instance[], ts }, or
+// null if malformed. Accepts BOTH v1 (agents = bare name strings) and v2 (agents
+// = { name, workspace, pane } records); both normalize to instance records via
+// toInstance, so a mixed-version fleet interoperates on one channel.
 export function parsePresence(text) {
   if (typeof text !== 'string') return null;
   const s = text.trim();
@@ -316,19 +345,32 @@ export function parsePresence(text) {
   try {
     const obj = JSON.parse(s.slice(PRESENCE_SENTINEL.length).trim());
     if (!obj || typeof obj.host !== 'string' || !Array.isArray(obj.agents)) return null;
-    return { host: obj.host, agents: obj.agents.map(String), ts: Number(obj.ts) || 0 };
+    return { v: Number(obj.v) || 1, host: obj.host, agents: obj.agents.map(toInstance), ts: Number(obj.ts) || 0 };
   } catch { return null; }
 }
 
-// Apply a snapshot to the map (host -> { agents:Set, ts, seen }). Ignores an
-// out-of-order snapshot (older sender ts than the one we hold for that host).
+// Apply a snapshot to the map (host -> { agents:instance[], ts, seen }). Ignores
+// an out-of-order snapshot (older sender ts than the one we hold for that host).
 // An empty agent set still records the host (a host that drained to zero agents
-// is known-empty, not left phantom-owning a stale name). Mutates + returns map.
+// is known-empty, not left phantom-owning a stale name). Stores instance RECORDS
+// (not a name Set) so two same-named agents on one host stay distinct; de-dupes
+// by full instance key so a doubled snapshot entry can't inflate the fleet.
+// Mutates + returns map.
 export function applyPresence(map, snap, { now = 0 } = {}) {
   if (!snap || !snap.host) return map;
   const prev = map.get(snap.host);
   if (prev && snap.ts && prev.ts && snap.ts < prev.ts) return map;
-  map.set(snap.host, { agents: new Set(snap.agents), ts: snap.ts || now, seen: now || snap.ts || 0 });
+  const seen = new Set();
+  const agents = [];
+  for (const raw of (snap.agents || [])) {
+    const i = toInstance(raw);
+    if (!i.name) continue;
+    const k = instanceKey(i);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    agents.push(i);
+  }
+  map.set(snap.host, { agents, ts: snap.ts || now, seen: now || snap.ts || 0 });
   return map;
 }
 
@@ -347,7 +389,7 @@ export function ownersOf(map, name) {
   const lower = String(name).toLowerCase();
   const hosts = [];
   for (const [host, rec] of map) {
-    for (const a of rec.agents) { if (String(a).toLowerCase() === lower) { hosts.push(host); break; } }
+    for (const a of rec.agents) { if (String(a.name).toLowerCase() === lower) { hosts.push(host); break; } }
   }
   return hosts.sort();
 }
@@ -359,34 +401,45 @@ export function ownerOf(map, name) {
   return hosts.length ? hosts[0] : null;
 }
 
-// Names claimed by more than one host — the collisions to surface/disambiguate.
+// Instance-identity collisions: a (workspace, name) identity claimed by more than
+// one live instance — whether across hosts (owner election must pick one) or twice
+// on ONE host (the intra-bucket duplicate, resolvable only by pane). Two SAME-named
+// agents in DIFFERENT workspaces are NOT a collision — they are distinct instances.
+// With no workspace set (v1 wire, FQDN off) this reduces to same-name grouping, so
+// cross-host name clashes are surfaced exactly as before. Returns
+// { name, workspace, hosts:[...], count } per colliding identity.
 export function presenceCollisions(map) {
-  const byName = new Map(); // lowerName -> { display, hosts:Set }
+  const byId = new Map(); // identityKey -> { name, workspace, hosts:Set, count }
   for (const [host, rec] of map) {
     for (const a of rec.agents) {
-      const k = String(a).toLowerCase();
-      if (!byName.has(k)) byName.set(k, { display: a, hosts: new Set() });
-      byName.get(k).hosts.add(host);
+      const k = identityKey(a);
+      if (!byId.has(k)) byId.set(k, { name: a.name, workspace: a.workspace || '', hosts: new Set(), count: 0 });
+      const g = byId.get(k);
+      g.hosts.add(host);
+      g.count += 1;
     }
   }
   const out = [];
-  for (const { display, hosts } of byName.values()) {
-    if (hosts.size > 1) out.push({ name: display, hosts: Array.from(hosts).sort() });
+  for (const g of byId.values()) {
+    if (g.count > 1) out.push({ name: g.name, workspace: g.workspace, hosts: Array.from(g.hosts).sort(), count: g.count });
   }
-  return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : (a.workspace < b.workspace ? -1 : a.workspace > b.workspace ? 1 : 0)));
 }
 
-// Reachability projection: every (name, host) pair in the map, annotated with the
-// resolved single `owner` and a `collided` flag. Sorted by name then host.
+// Reachability projection: one row PER INSTANCE (not per name-per-host), each with
+// its { name, workspace, pane, host }, the resolved single `owner` (host-level, by
+// name), and a `collided` flag (its workspace/name identity is shared by >1 live
+// instance). Two same-named instances on one host therefore appear as two distinct,
+// individually-addressable rows. Sorted by name, then host, then workspace.
 export function reachability(map) {
-  const collided = new Set(presenceCollisions(map).map((c) => c.name.toLowerCase()));
+  const collided = new Set(presenceCollisions(map).map((c) => identityKey(c)));
   const rows = [];
   for (const [host, rec] of map) {
     for (const a of rec.agents) {
-      rows.push({ name: a, host, owner: ownerOf(map, a), collided: collided.has(String(a).toLowerCase()) });
+      rows.push({ name: a.name, workspace: a.workspace || '', pane: a.pane || '', host, owner: ownerOf(map, a.name), collided: collided.has(identityKey(a)) });
     }
   }
-  return rows.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : (x.host < y.host ? -1 : x.host > y.host ? 1 : 0)));
+  return rows.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : (x.host < y.host ? -1 : x.host > y.host ? 1 : (x.workspace < y.workspace ? -1 : x.workspace > y.workspace ? 1 : 0))));
 }
 
 // --------------------------------------------------------------------------
