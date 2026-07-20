@@ -44,6 +44,11 @@ WORKER_EFFORT = os.environ.get("CONDUCTOR_WORKER_EFFORT", POLICY["worker_effort"
 ESC_EFFORT = POLICY.get("worker_effort_escalated", "xhigh")   # after ESCALATE_AFTER fails
 MAX_REPLANS = int(POLICY.get("max_replans", 5))
 ESCALATE_AFTER = int(POLICY.get("escalate_after_fails", 2))
+# Worker turn budget. Skill-less build subtasks (a config value + N call sites + tests) were
+# dead-looping on the old 24-turn floor: hit the cap mid-implementation, re-plan, repeat with
+# zero progress. Default 60 for all workers (matches what the skill-attached path already used);
+# override per box via policy.worker_max_turns or CONDUCTOR_WORKER_MAX_TURNS.
+WORKER_MAX_TURNS = int(os.environ.get("CONDUCTOR_WORKER_MAX_TURNS", POLICY.get("worker_max_turns", 60)))
 
 PYEXE = sys.executable
 WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conductor_worker.py")
@@ -460,8 +465,8 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
     # A profile MAY name a `skill:` = the mission procedure (techdebt → pull-techdebt, etc.).
     # The Skill TOOL can't invoke plugin skills headlessly ("Unknown skill"), so we resolve the
     # skill's SKILL.md and have the worker read + follow it directly (proven reliable). Bare name
-    # = a user skill (~/.claude/skills); `plugin:skill` = a plugin skill. Skill-less profiles stay
-    # byte-identical (setting_sources=[], 24 turns, base prompt).
+    # = a user skill (~/.claude/skills); `plugin:skill` = a plugin skill. Skill-less profiles keep
+    # the base prompt (setting_sources=[]); both paths share the WORKER_MAX_TURNS budget.
     skill = profile.get("skill")
     skill_md = _skill_md(skill) if skill else None
     append = "You are a Conductor worker. Do exactly the assigned subtask, then stop."
@@ -479,7 +484,7 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
         setting_sources=(["user", "project"] if skill_md else []),
         mcp_servers=mcp, allowed_tools=allowed,
         disallowed_tools=(list(WRITE_TOOLS) if read_only else []),
-        permission_mode="bypassPermissions", max_turns=(60 if skill_md else 24),
+        permission_mode="bypassPermissions", max_turns=WORKER_MAX_TURNS,
         system_prompt={"type": "preset", "preset": "claude_code", "append": append},
     )
     artifacts, text, status = [], [], "error"
