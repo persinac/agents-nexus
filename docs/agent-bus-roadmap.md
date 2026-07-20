@@ -135,6 +135,16 @@ messages) so it doesn't flood the store.
 
 ## Phase G — Broker substrate (optional, last)
 
+> **Status: landing early via `openspec/changes/nats-a2a-bus-transport`.** The company-scale
+> pressure (Slack Socket-Mode caps → one bot per participant) pulled G forward ahead of A/B.
+> Shipped so far: the `publish/subscribe` transport seam in `index.js` + `slack-bridge/transports/`,
+> a `NatsTransport` (JetStream stream + durable per-host consumer + KV presence), the FQDN↔subject
+> codec (`orchestrator.js`, unit-tested), and `NEXUS_BUS_TRANSPORT={slack|nats}` (default slack).
+> Caveats vs the full vision below: the wire envelope is the minimal `{to,from,msg,ts}`, **not**
+> the Phase-B typed envelope (do B next, behind the same seam), and idle-gating is still
+> ack-on-receive (ack-on-idle is the follow-up that makes a hold restart-durable). Slack stays the
+> human mirror + cross-firewall fallback, exactly as intended.
+
 **Goal:** real durable pub/sub where reachable (intra-host, or a central reachable node) — the "throw NATS at it" rung, deliberately enabled *by* the earlier phases rather than instead of them.
 
 **Approach:** behind the Phase-B envelope, abstract transport to a `publish/subscribe`
