@@ -2,7 +2,7 @@
 
 Launch autonomous **Conductor** missions from herdr.
 
-**Keybinding** (wired by the installer): `ctrl+a shift+c` → a launcher pane:
+**Keybinding** (wired by the installer): `ctrl+a shift+p` → a launcher pane:
 1. fzf pick a mode — **distribute** or **sdlc**
 2. enter a goal (distribute) or ticket/goal (sdlc)
 3. the Conductor is kicked off
