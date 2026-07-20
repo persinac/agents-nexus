@@ -30,6 +30,7 @@ The installer:
 | `--switch <name>` | **No prompts, no deps reinstall.** Repoint `.env` symlink and `.nexus-profile` at an existing `.env.<name>`. Fails if the profile file doesn't exist. |
 | `--finish-langfuse` | Re-prompt for `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` against the active profile and recreate the `proxy` container. Use this after creating an API key in the Langfuse UI (see [Two-phase Langfuse setup](#two-phase-langfuse-setup)). |
 | `--finish-slack` | Re-prompt for `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_NEXUS_CHANNEL` against the active profile, `npm install` the bridge, and (macOS) offer to install the launchd supervisor. Use this after creating the Slack app (see [Slack bridge setup](#slack-bridge-setup) and [`docs/slack-bridge.md`](docs/slack-bridge.md)). |
+| `--finish-nats` | Set `NATS_URL` + auth (`NATS_CREDS` / `NATS_TOKEN`) for the NATS A2A transport against the active profile and restart the bridge. This is the **cross-machine** step: point every box at the one shared broker. See [A2A bus transport](#a2a-bus-transport) and [`docs/slack-bridge.md`](docs/slack-bridge.md#nats-transport). |
 | `--non-interactive` | Skip the entire profile-setup step. Runs deps + tmux configs + skills + dashboard (matches the pre-rewrite installer behavior). Safe for CI / scripted re-runs. |
 | `--no-ui` | Skip the dashboard `npm install` step. |
 | `-h`, `--help` | Print usage. |
@@ -86,6 +87,7 @@ Asked regardless of the Docker selection, since they run outside the stack:
 | Integration | Prompt | Notes |
 |-------------|--------|-------|
 | Slack bridge | Enable? | If yes, optionally paste the 3 Slack tokens now, else empty `SLACK_*` keys are written to finish later via `--finish-slack`. See [Slack bridge setup](#slack-bridge-setup). |
+| A2A bus transport | `slack` / `nats` | How agents message each other. `slack` (default) uses the `#nexus-agents` channel. `nats` uses a NATS+JetStream broker — pick a **local container** (single box / dev) or point at a **shared remote broker** (cross-machine). See [A2A bus transport](#a2a-bus-transport). |
 
 ### 6. Files written
 
@@ -140,6 +142,23 @@ The Slack bridge gives you two-way control — message an agent from a `#nexus` 
 1. **First pass** — `./install.sh` and answer **yes** to the Slack bridge integration. If you already have the tokens you can paste them now; otherwise the installer writes empty `SLACK_*` keys to the profile.
 2. **Create the Slack app** — follow the manifest + scopes in [`docs/slack-bridge.md`](docs/slack-bridge.md), enable Socket Mode, generate the bot (`xoxb-…`) and app-level (`xapp-…`) tokens, and invite the bot to a private `#nexus` channel.
 3. **Second pass** — `./install.sh --finish-slack`. Paste the bot token, app token, and channel id. The installer rewrites the active profile's `SLACK_*` lines, `npm install`s the bridge, and (macOS) offers to install the launchd supervisor. Start it manually any time with `task slack:bridge`.
+
+## A2A bus transport
+
+How agents message each other (agent↔agent). The **human** notify/reply leg always stays on Slack; this only chooses the machine-to-machine medium. Full design + operations in [`docs/slack-bridge.md#nats-transport`](docs/slack-bridge.md#nats-transport).
+
+- **`slack`** (default) — A2A rides the `#nexus-agents` Slack channel. Fine for a single box; it does not scale to a fleet (Slack Socket-Mode caps connections per app).
+- **`nats`** — A2A rides a NATS + JetStream broker (durable inbox, presence KV, subject addressing). The installer offers two shapes:
+  - **Local container** — adds the `nats` compose profile so this box hosts the broker (`docker compose -f docker-compose.work.yml --profile nats up -d nats`). Great for one machine or dev. A container bound to `localhost` is **not reachable by other machines**.
+  - **Remote / shared broker** — no local container; you set `NATS_URL` to a broker every bridge can reach. **This is the cross-machine path**: run ONE broker on a shared host (or the Linux nexus box / dedicated infra) with TLS + per-user creds, and point every box's `NATS_URL` at it.
+
+Cross-machine flow:
+
+1. Stand up the shared broker once (a box running the `nats` profile with a routable bind + firewall + TLS, or managed NATS).
+2. On every participating box: `./install.sh` → choose `nats` → **remote broker** → set `NATS_URL`; or set it later with **`./install.sh --finish-nats`** (which also sets `NATS_CREDS`/`NATS_TOKEN` and restarts the bridge).
+3. Onboarding a new engineer is issuing a **credential**, not provisioning a Slack app — that is the whole point of moving off Slack.
+
+> The bridge process that speaks NATS **is** the Slack bridge, so it still needs Slack tokens to boot (for the human leg). Enable the Slack bridge too, or the process won't start.
 
 ## Switching profiles
 

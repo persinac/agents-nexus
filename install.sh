@@ -9,6 +9,7 @@
 #   ./install.sh --switch <name>       # repoint .env at an existing profile
 #   ./install.sh --finish-langfuse     # paste Langfuse keys after first run
 #   ./install.sh --finish-slack        # paste Slack bridge tokens after first run
+#   ./install.sh --finish-nats         # set NATS broker URL + auth (the cross-machine step)
 #   ./install.sh --overlay <url|path>  # snap in a private "plugs" overlay (compose: run per overlay)
 #   ./install.sh --non-interactive     # deps + skills + dashboard only (no prompts)
 #   ./install.sh --no-ui               # skip dashboard npm setup
@@ -44,7 +45,7 @@ PLATFORM_DIR="$REPO_DIR/tmux/$OS"
 SKIP_UI=false
 INTERACTIVE=true
 PROFILE_ARG=""
-MODE="install"   # install | switch | finish-langfuse | finish-slack | overlay
+MODE="install"   # install | switch | finish-langfuse | finish-slack | finish-nats | overlay
 OVERLAY_SRC=""   # --overlay <git-url|local-path>
 OVERLAY_REF=""   # --overlay-ref <branch/tag/sha>
 
@@ -56,10 +57,11 @@ while [ $# -gt 0 ]; do
     --switch)           shift; PROFILE_ARG="${1:-}"; MODE="switch" ;;
     --finish-langfuse)  MODE="finish-langfuse" ;;
     --finish-slack)     MODE="finish-slack" ;;
+    --finish-nats)      MODE="finish-nats" ;;
     --overlay)          shift; OVERLAY_SRC="${1:-}"; MODE="overlay" ;;
     --overlay-ref)      shift; OVERLAY_REF="${1:-}" ;;
     -h|--help)
-      sed -n '2,18p' "$0"
+      sed -n '2,19p' "$0"
       exit 0
       ;;
     *)
@@ -598,6 +600,7 @@ interactive_setup() {
   local cloudflare_tunnel_token=""
   local github_url="https://api.github.com" github_token=""
   local sel_slack=0 slack_bot_token="" slack_app_token="" slack_channel=""
+  local bus_transport="slack" nats_url="" nats_creds="" nats_token="" sel_nats_local=0
 
   # proxy ⇒ upstream (proxy hard-requires ANTHROPIC_API_BASE)
   if [ "$sel_proxy" = "1" ]; then
@@ -688,6 +691,56 @@ interactive_setup() {
     fi
   fi
 
+  # ── A2A bus transport (how agents message each other) ────────
+  # 'slack' (default) routes A2A over the #nexus-agents channel — fine for a single
+  # box. 'nats' routes A2A over a NATS + JetStream broker (durable inbox, presence KV,
+  # subject addressing) and is the path that scales CROSS-MACHINE. The human notify/reply
+  # leg stays on Slack either way. See docs/slack-bridge.md#nats-transport.
+  echo ""
+  echo "  A2A bus transport — how agents message each other:"
+  echo "    slack — via the #nexus-agents Slack channel (default; single-box / small)"
+  echo "    nats  — via a NATS+JetStream broker (durable; required for a cross-machine fleet)"
+  prompt_with_default bus_transport "Transport (slack/nats)" "slack"
+  case "$bus_transport" in
+    nats|NATS) bus_transport="nats" ;;
+    *)         bus_transport="slack" ;;
+  esac
+  if [ "$bus_transport" = "nats" ]; then
+    echo ""
+    echo "  NATS broker location:"
+    echo "    A LOCAL container (this box hosts the broker) is great for a single machine or"
+    echo "    dev, but a container bound to localhost is NOT reachable by other machines. For a"
+    echo "    real cross-machine fleet, run ONE broker somewhere every bridge can reach (a shared"
+    echo "    host / the Linux nexus box / dedicated infra) with TLS + per-user creds, and point"
+    echo "    every other box's NATS_URL at it."
+    if prompt_yes_no "Run a LOCAL NATS container on this box (adds the 'nats' compose profile)?" "y"; then
+      sel_nats_local=1
+      nats_url="nats://127.0.0.1:4222"
+      compose_profiles="${compose_profiles:+$compose_profiles,}nats"
+      nexus_services="$compose_profiles"
+      echo "  -> local broker on :4222 (add ',nats' already done). For cross-machine, other boxes"
+      echo "     set NATS_URL to THIS host's reachable address (e.g. nats://$(hostname -s 2>/dev/null || echo this-host):4222) + creds."
+    else
+      echo "  -> pointing at a remote/shared broker (no local container)."
+      prompt_with_default nats_url "NATS_URL (e.g. nats://nexus-box:4222 or tls://broker.internal:4222)" "nats://127.0.0.1:4222"
+      echo "  Cross-machine auth: provide an NKEY/JWT creds file or a shared token (recommended)."
+      echo "  Leave blank to finish later with: ./install.sh --finish-nats"
+      prompt_with_default nats_creds "NATS_CREDS (path to a .creds file, optional)" ""
+      if [ -z "$nats_creds" ]; then
+        prompt_secret nats_token "NATS_TOKEN (shared token, optional — ENTER to skip)" || true
+      fi
+    fi
+    # The bridge process that speaks NATS is the Slack bridge — it still needs Slack
+    # bot/app tokens to start (for the human notify/reply leg). NATS is the A2A medium, not
+    # a replacement for the bridge itself.
+    if [ "$sel_slack" != "1" ]; then
+      echo ""
+      echo "  NOTE: NATS carries agent↔agent traffic, but the bridge that runs it is the Slack"
+      echo "        bridge and needs Slack tokens to boot. Enable the Slack bridge above, or add"
+      echo "        tokens later with ./install.sh --finish-slack — otherwise the bridge won't run."
+    fi
+  fi
+
   # ── Write .env.<profile> ─────────────────────────────────────
   echo ""
   echo "  Writing $env_path ..."
@@ -704,6 +757,32 @@ interactive_setup() {
     "$sel_proxy" "$anthropic_api_base" \
     "$sel_slack" "$slack_bot_token" "$slack_app_token" "$slack_channel"
 
+  # Append the A2A bus transport block. Kept OUT of write_profile_env's positional args
+  # (already 37) — appended so NATS settings never perturb the existing arg alignment.
+  if [ "$bus_transport" = "nats" ]; then
+    {
+      echo ""
+      echo "# ── A2A bus transport: NATS + JetStream ──────────────"
+      echo "# Agent-to-agent messaging rides NATS (durable inbox + presence KV, scales"
+      echo "# cross-machine). The human notify/reply leg stays on Slack. SLACK_BUS_ENABLED"
+      echo "# is the master switch; SLACK_AGENTS_CHANNEL is not needed for NATS A2A."
+      echo "NEXUS_BUS_TRANSPORT=nats"
+      echo "SLACK_BUS_ENABLED=1"
+      echo "NATS_URL=$nats_url"
+      [ -n "$nats_creds" ] && echo "NATS_CREDS=$nats_creds"
+      [ -n "$nats_token" ] && echo "NATS_TOKEN=$nats_token"
+      echo "NATS_A2A_STREAM=NEXUS_A2A"
+      echo "NATS_A2A_SUBJECT_PREFIX=nexus.a2a"
+      echo "NATS_PRESENCE_KV=nexus_presence"
+      if [ "$sel_nats_local" = "1" ]; then
+        echo "# Local broker via the 'nats' compose profile. For CROSS-MACHINE, other boxes must"
+        echo "# reach this host (bind + firewall + TLS + creds) and set NATS_URL to its address."
+      else
+        echo "# Remote/shared broker — ensure TLS + creds/token (above); finish with ./install.sh --finish-nats"
+      fi
+    } >> "$env_path"
+  fi
+
   chmod 600 "$env_path"
   link_profile "$profile"
 
@@ -713,6 +792,8 @@ interactive_setup() {
   echo "    profile         $profile"
   echo "    compose file    $compose_file"
   echo "    services        ${compose_profiles:-<none>}"
+  echo "    A2A transport   $bus_transport"
+  [ "$bus_transport" = "nats" ] && echo "    NATS_URL        $nats_url$([ "$sel_nats_local" = "1" ] && echo "  (local 'nats' container)" || echo "  (remote/shared broker)")"
   [ "$sel_proxy"  = "1" ] && echo "    proxy upstream  $anthropic_api_base"
   [ "$sel_spark"  = "1" ] && echo "    repos path      $repos_path"
   [ "$sel_mnemon" = "1" ] && echo "    host tmux dir   $host_tmux_dir"
@@ -722,6 +803,9 @@ interactive_setup() {
   [ "$sel_cloudflare" = "1" ] && echo "      - Cloudflare tunnel (spark)"
   [ "$sel_github"     = "1" ] && echo "      - GitHub integration (spark)"
   [ "$sel_slack"      = "1" ] && echo "      - Slack bridge (finish with: ./install.sh --finish-slack)"
+  if [ "$bus_transport" = "nats" ] && [ "$sel_nats_local" != "1" ] && [ -z "$nats_creds" ] && [ -z "$nats_token" ]; then
+    echo "      - NATS A2A (no auth yet — finish with: ./install.sh --finish-nats)"
+  fi
 
   # ── Optionally start the stack ───────────────────────────────
   echo ""
@@ -767,7 +851,7 @@ write_profile_env() {
     echo "# ── Service selection ────────────────────────────────"
     echo "# docker compose reads COMPOSE_PROFILES from .env, so every"
     echo "# 'docker compose up' (and 'task up') honors this set."
-    echo "# Valid profiles: proxy, ollama, postgres (work), spark, mnemon, dashboard, langfuse"
+    echo "# Valid profiles: proxy, ollama, postgres (work), spark, mnemon, dashboard, langfuse, nats"
     echo "COMPOSE_PROFILES=$compose_profiles"
     echo "NEXUS_SERVICES=$nexus_services"
     echo ""
@@ -996,6 +1080,58 @@ finish_slack() {
   fi
 }
 
+# Mode: --finish-nats — set/replace the NATS A2A transport auth (URL, creds, token) in the
+# active profile and restart the bridge. This is the CROSS-MACHINE step: point NATS_URL at the
+# shared broker every bridge can reach and give it TLS creds / a token.
+finish_nats() {
+  local current
+  current=$(active_profile)
+  [ -n "$current" ] || { echo "ERROR: no active profile. Run ./install.sh first."; exit 1; }
+  local env_path
+  env_path=$(profile_path "$current")
+  [ -f "$env_path" ] || { echo "ERROR: $env_path not found."; exit 1; }
+  if ! grep -q '^NEXUS_BUS_TRANSPORT=nats' "$env_path"; then
+    echo "ERROR: $env_path is not on the NATS transport."
+    echo "       Re-run ./install.sh and choose the 'nats' A2A transport first."
+    exit 1
+  fi
+
+  echo "  Active profile: $current"
+  echo "  Point NATS_URL at the shared/cross-machine broker and set auth (an NKEY/JWT"
+  echo "  creds file is recommended for a fleet; a shared token is the simpler option)."
+  echo ""
+  local url creds token cur_url
+  cur_url=$(grep '^NATS_URL=' "$env_path" | head -1 | cut -d= -f2-)
+  prompt_with_default url   "NATS_URL" "${cur_url:-nats://127.0.0.1:4222}"
+  prompt_with_default creds "NATS_CREDS (path to a .creds file, optional)" ""
+  [ -z "$creds" ] && prompt_secret token "NATS_TOKEN (shared token, optional — ENTER to skip)"
+
+  # Replace NATS_URL in place; drop any old NATS_CREDS/NATS_TOKEN, then append the new ones.
+  local tmp="$env_path.tmp.$$"
+  awk -v url="$url" '
+    /^NATS_URL=/   { print "NATS_URL=" url; next }
+    /^NATS_CREDS=/ { next }
+    /^NATS_TOKEN=/ { next }
+                   { print }
+  ' "$env_path" > "$tmp"
+  { [ -n "$creds" ] && echo "NATS_CREDS=$creds"; [ -n "$token" ] && echo "NATS_TOKEN=$token"; } >> "$tmp"
+  mv "$tmp" "$env_path"
+  chmod 600 "$env_path"
+  echo "  -> updated $env_path"
+
+  # Restart the bridge so it reconnects to the new broker (same supervisors as --finish-slack).
+  if [ "$OS" = "mac" ] && check_cmd launchctl; then
+    launchctl kickstart -k "gui/$(id -u)/com.agents-nexus.slack-bridge" 2>/dev/null \
+      && echo "  -> restarted slack-bridge (launchd)" \
+      || echo "  Restart it with: launchctl kickstart -k gui/\$(id -u)/com.agents-nexus.slack-bridge"
+  elif [ "$OS" = "linux" ]; then
+    systemctl --user restart slack-bridge.service 2>/dev/null \
+      && echo "  -> restarted slack-bridge.service" \
+      || echo "  Restart it with: systemctl --user restart slack-bridge.service"
+  fi
+  echo "  Verify: curl -s localhost:8788/health   # expect \"transport\":\"nats\",\"nats\":true"
+}
+
 # ────────────────────────────────────────────────────────────────
 # Main
 # ────────────────────────────────────────────────────────────────
@@ -1011,6 +1147,10 @@ if [ "$MODE" = "finish-langfuse" ]; then
 fi
 if [ "$MODE" = "finish-slack" ]; then
   finish_slack
+  exit 0
+fi
+if [ "$MODE" = "finish-nats" ]; then
+  finish_nats
   exit 0
 fi
 if [ "$MODE" = "overlay" ]; then
