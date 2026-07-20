@@ -298,33 +298,54 @@ check_mcp_endpoint() {
   fi
 }
 
+# Register the stack's MCP servers with Claude Code.
+#
+# MCP servers are defined in ~/.claude.json (user scope) or a project .mcp.json —
+# NOT in ~/.claude/settings.json, which only carries MCP *approval* keys
+# (allowedMcpServers / deniedMcpServers / enableAllProjectMcpServers /
+# disabledMcpjsonServers). This function wrote to settings.json until 2026-07-20;
+# Claude Code ignores an mcpServers block there SILENTLY — no warning, no error —
+# so every install looked successful while `claude mcp list` stayed empty and
+# agents ran with no memory stack. Prefer the CLI, which owns that file's format.
 setup_mcp_config() {
-  local settings_file="$HOME/.claude/settings.json"
-
   # Verify the docker MCP services are actually up before wiring them in.
   echo "Checking agents-nexus MCP service reachability..."
-  check_mcp_endpoint "http://localhost:8343/sse" "Spark MCP" || true
   check_mcp_endpoint "http://localhost:8330/sse" "agent-memory MCP" || true
 
-  # On Mac, Spark is a CLI binary — use stdio. On Linux, both are Docker SSE.
-  local spark_cmd
-  spark_cmd=$(command -v spark 2>/dev/null || echo "")
-
-  cp "$settings_file" "${settings_file}.mcp-bak"
-  node - "$settings_file" "$spark_cmd" <<'NODEOF'
-const [,, settingsPath, sparkCmd] = process.argv;
+  # Migrate boxes installed before the fix: strip the inert settings.json block so
+  # it stops reading as configured. Purely cosmetic to Claude Code (which never
+  # looked at it), but it is the decoy that hid this bug.
+  local settings_file="$HOME/.claude/settings.json"
+  if [ -f "$settings_file" ] && grep -q '"mcpServers"' "$settings_file"; then
+    cp "$settings_file" "${settings_file}.mcp-bak"
+    node - "$settings_file" <<'NODEOF'
+const [,, settingsPath] = process.argv;
 const fs = require('fs');
 const cfg = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-cfg.mcpServers ??= {};
-if (sparkCmd) {
-  cfg.mcpServers.spark = { command: sparkCmd, args: ["serve"] };
-} else {
-  cfg.mcpServers.spark = { type: "sse", url: "http://localhost:8343/sse" };
-}
-cfg.mcpServers["agent-memory"] = { type: "sse", url: "http://localhost:8330/sse" };
+delete cfg.mcpServers;
 fs.writeFileSync(settingsPath, JSON.stringify(cfg, null, 2) + '\n');
 NODEOF
-  echo "  Merged MCP servers (spark + agent-memory) into ~/.claude/settings.json"
+    echo "  Removed the inert mcpServers block from ~/.claude/settings.json (backup: .mcp-bak)"
+  fi
+
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "  [warn] claude CLI not on PATH — register the memory MCP by hand with:"
+    echo "         claude mcp add --transport sse agent-memory --scope user http://localhost:8330/sse"
+    return 0
+  fi
+
+  # Idempotent: `claude mcp add` errors on an existing name, so probe first. Only
+  # agent-memory is registered at user scope — spark is project-scoped via the
+  # repo's own .mcp.json, and registering it here would double-define it.
+  if claude mcp get agent-memory >/dev/null 2>&1; then
+    echo "  [ok] MCP server: agent-memory (already registered)"
+  elif claude mcp add --transport sse agent-memory --scope user http://localhost:8330/sse >/dev/null 2>&1; then
+    echo "  Registered MCP server: agent-memory (user scope -> ~/.claude.json)"
+  else
+    echo "  [warn] could not register agent-memory — run by hand:"
+    echo "         claude mcp add --transport sse agent-memory --scope user http://localhost:8330/sse"
+  fi
+  echo "  Verify with: claude mcp list   (servers connect at startup — restart Claude Code)"
 }
 setup_mcp_config
 
