@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "artifacts", "handoff"],
+  "properties": {
+    "status": { "type": "string", "enum": ["done", "error", "blocked"] },
+    "summary": { "type": "string" },
+    "artifacts": { "type": "array", "items": { "type": "string" } },
+    "handoff": { "type": ["string", "null"] }
+  }
+}

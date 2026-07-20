@@ -161,6 +161,15 @@ hung codex can't silently pass a bad mission (it fails closed). Tune `timeout`.
 
 ## Tier 2 — Codex as a conductor DAG worker (the literal "mixed-vendor conductor")
 
+> **✅ BUILT & VERIFIED 2026-07-20.** `run_worker` branches on `profile.vendor=="codex"` →
+> `_run_worker_codex` (`codex exec -s workspace-write --output-schema result.schema.json -o OUT`,
+> `stdin=DEVNULL`, no `-a`). Returns the standard `{subtask_id,status,summary,artifacts,handoff}`
+> row. Gap E folded in (`_worktree_changed_paths` reconciles a parse-fail against `git diff` → done,
+> not a quota-burning retry); gap F folded in (inlines the profile's `SKILL.md` body). Profile
+> `backend-build-codex` (gitignored personal config). Verified via a real worker run: created a file
+> on disk, `status=done`, artifact path listed. `result.schema.json` follows the strict rule
+> (all props required, `handoff` nullable). NOT yet exercised in a full end-to-end DAG mission.
+
 **Goal:** the orchestrator can *assign a subtask to codex* by choosing a codex profile;
 codex builds it and reports the standard result row.
 **Depends on:** Tier 1 patterns (schema+exec). **Files:** `~/.tmux/conductor.yaml`,

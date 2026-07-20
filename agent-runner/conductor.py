@@ -366,7 +366,91 @@ async def design(cr: dict) -> dict:
 
 
 # ── worker (in-process for slice B) ──────────────────────────────────────────
+def _worktree_changed_paths(cwd: str) -> list:
+    """Absolute paths of files changed in the worker's worktree (git). Empty if `cwd` isn't a git
+    tree or nothing changed. Used to reconcile a codex parse-failure against real work (gap E):
+    codex may edit files correctly yet return a final message we can't parse."""
+    try:
+        out = subprocess.run(["git", "-C", cwd, "status", "--porcelain"],
+                             capture_output=True, text=True, timeout=15).stdout
+    except Exception:
+        return []
+    paths = []
+    for ln in out.splitlines():
+        f = ln[3:].strip().strip('"')
+        if f:
+            paths.append(f if os.path.isabs(f) else os.path.join(cwd, f))
+    return sorted(set(paths))
+
+
+async def _run_worker_codex(subtask: dict, profile: dict, effort: str) -> dict:
+    """run_worker's Codex path: build the subtask with `codex exec` instead of the Claude SDK, and
+    return the SAME {subtask_id,status,summary,artifacts,handoff} dict conductor_worker.py writes to
+    the DB — so dispatch/verify stay vendor-agnostic. Sandbox by profile permission (read-only →
+    read-only, else workspace-write); verify_mission's ground-truth `task lint` gate still guards the
+    output. `effort` is advisory (codex chooses its own reasoning)."""
+    read_only = profile.get("permission") == "read-only"
+    sandbox = "read-only" if read_only else "workspace-write"
+    cwd = workspace(subtask["mission_id"], subtask.get("repo"))   # worktree/scratch — never a live checkout
+
+    # Gap F: codex can't invoke the Skill TOOL headlessly → inline the SKILL.md body so skill-driven
+    # profiles (ui-design→ui-ux-design, …) actually follow the procedure, mirroring the claude path.
+    instr = subtask["goal"]
+    skill_md = _skill_md(profile["skill"]) if profile.get("skill") else None
+    if skill_md:
+        try:
+            body = open(skill_md).read()
+        except OSError:
+            body = ""
+        instr = (f"{instr}\n\n--- Assigned procedure — follow it to completion "
+                 f"(its references/ are alongside {skill_md}) ---\n{body}")
+    instr += ("\n\nYou are a Conductor worker: do exactly this subtask, then stop. Your FINAL message "
+              "MUST be JSON matching the schema — status=done|error|blocked, summary=what you did, "
+              "artifacts=[absolute paths you created/edited], handoff=one line for dependent subtasks "
+              "(or null).")
+
+    fd, out = tempfile.mkstemp(prefix="cx-result-", suffix=".json")
+    os.close(fd)
+    cmd = [CODEX_BIN, "exec", "-C", cwd, "-s", sandbox, "--skip-git-repo-check",
+           "--output-schema", RESULT_SCHEMA, "-o", out, instr]
+    r = None
+    try:
+        # stdin=DEVNULL is REQUIRED (codex exec hangs on stdin otherwise); no -a flag (exec approval
+        # defaults to "never"); the -s sandbox is the guardrail.
+        r = await asyncio.to_thread(subprocess.run, cmd, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=CODEX_WORKER_TIMEOUT)
+        wr = json.load(open(out))
+        status = wr.get("status") if wr.get("status") in ("done", "error", "blocked") else "error"
+        summary = str(wr.get("summary") or "")[-1500:]
+        artifacts = [a for a in (wr.get("artifacts") or []) if a]
+        handoff = wr.get("handoff")
+    except Exception as e:
+        # Gap E: a parse/timeout failure is NOT necessarily a WORK failure. If codex actually changed
+        # files in the worktree, reconcile to done from git — don't discard good work and let the
+        # escalate loop retry it (OpenAI-quota burn). Only truly-empty runs stay error.
+        tail = f"; stderr={r.stderr[-300:].strip()}" if (r is not None and r.stderr) else ""
+        changed = _worktree_changed_paths(cwd)
+        if changed:
+            status = "done"
+            summary = (f"codex worker: final-message parse failed ({e}){tail}; reconciled from git — "
+                       f"{len(changed)} file(s) changed, treated as done.")
+            artifacts, handoff = changed, None
+        else:
+            status, summary, artifacts, handoff = "error", f"codex worker failed: {e}{tail}", [], None
+    finally:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+
+    artifacts = sorted({a if os.path.isabs(a) else os.path.join(cwd, a) for a in artifacts})
+    return {"subtask_id": subtask["id"], "status": status,
+            "summary": summary, "artifacts": artifacts, "handoff": handoff}
+
+
 async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
+    if profile.get("vendor") == "codex":   # T2: mixed-vendor DAG worker — codex builds this subtask
+        return await _run_worker_codex(subtask, profile, effort)
     tools = list(profile.get("tools", []))
     mcp = _load_mcp(profile.get("mcp", []))
     allowed = tools + [f"mcp__{s}__*" for s in mcp]
@@ -606,7 +690,9 @@ REVIEW_CODEX = int(os.environ.get("CONDUCTOR_REVIEWER_CODEX",
                                   POLICY.get("reviewer", {}).get("codex", 0)))
 CODEX_BIN = os.environ.get("CODEX_BIN") or shutil.which("codex") or "/usr/local/bin/codex"
 CODEX_TIMEOUT = int(os.environ.get("CONDUCTOR_CODEX_TIMEOUT", "600"))
+CODEX_WORKER_TIMEOUT = int(os.environ.get("CONDUCTOR_CODEX_WORKER_TIMEOUT", "1800"))
 VERDICT_SCHEMA = os.path.join(REPO, "agent-runner", "schemas", "verdict.schema.json")
+RESULT_SCHEMA = os.path.join(REPO, "agent-runner", "schemas", "result.schema.json")
 
 
 def _reviewer_prompt(goal: str, summaries: list, probes: list, lens: str, cwd: str,
