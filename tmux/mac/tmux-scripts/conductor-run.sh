@@ -33,18 +33,33 @@ fi
 if [ "${goal%% *}" = "dry!" ]; then mode_flag="--dry-run"; goal="${goal#dry! }"; fi
 if [ "${goal%% *}" = "live!" ]; then goal="${goal#live! }"; fi   # allow live! on the box too (no-op flag)
 
+# Distribute (default): detach the mission into its own mission/<slug> herdr workspace
+# — orchestrator + workers tile together (the watchable view), reports to Slack on done.
+# Foreground: run the orchestrator right here in this pane (dies if the pane closes).
+# A `fg!` goal prefix forces foreground and skips the prompt (scripted/quick runs). No TTY
+# (piped/non-interactive) → read hits EOF → default distribute, no hang.
+dist_flag="--distribute"
+if [ "${goal%% *}" = "fg!" ]; then
+  dist_flag=""; goal="${goal#fg! }"
+else
+  printf 'Distribute into its own mission workspace? [Y/n] '
+  IFS= read -r _d || true
+  case "$_d" in [Nn]*) dist_flag="" ;; esac
+fi
+
 cd "$REPO/agent-runner" 2>/dev/null || { echo "cannot cd to $REPO/agent-runner"; read -r _; exit 1; }
 
 echo "▶ Conductor mission"
 echo "  host:  $host"
 echo "  repo:  $REPO"
 echo "  mode:  ${mode_flag:-LIVE}"
+echo "  dispatch: $([ -n "$dist_flag" ] && echo 'distributed → own mission workspace' || echo 'foreground → this pane')"
 echo "  goal:  $goal"
 echo "────────────────────────────────────────────────────────────"
 if [ -x .venv/bin/python ]; then
-  .venv/bin/python conductor.py $mode_flag "$goal"
+  .venv/bin/python conductor.py $dist_flag $mode_flag "$goal"
 else
-  task conductor -- $mode_flag "$goal"
+  task conductor -- $dist_flag $mode_flag "$goal"
 fi
 rc=$?
 echo "────────────────────────────────────────────────────────────"
