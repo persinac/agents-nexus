@@ -328,24 +328,33 @@ function identityKey(i) { return `${_lc(i.workspace)}\u0000${_lc(i.name)}`; }
 // (unchanged wire) for back-compat with pre-FQDN bridges on the same channel.
 export function formatPresence({ host, agents, ts }, { fqdn = false } = {}) {
   const insts = Array.from(agents || []).map(toInstance);
+  const names = insts.map((i) => i.name);
+  // CRITICAL back-compat: v2 keeps `agents` as bare NAMES (a v1 bridge does
+  // `obj.agents.map(String)` — objects there would become "[object Object]") and carries
+  // the rich per-instance identity in a SEPARATE `instances` field that v1 ignores. So the
+  // wire is back-compatible in BOTH directions. v1 output is byte-for-byte unchanged.
   const payload = fqdn
-    ? { v: 2, host: String(host), agents: insts.map((i) => ({ name: i.name, workspace: i.workspace, pane: i.pane })), ts: ts || 0 }
-    : { v: 1, host: String(host), agents: insts.map((i) => i.name), ts: ts || 0 };
+    ? { v: 2, host: String(host), agents: names, instances: insts.map((i) => ({ name: i.name, workspace: i.workspace, pane: i.pane })), ts: ts || 0 }
+    : { v: 1, host: String(host), agents: names, ts: ts || 0 };
   return `${PRESENCE_SENTINEL} ${JSON.stringify(payload)}`;
 }
 
 // Parse a presence announcement back to { v, host, agents:instance[], ts }, or
-// null if malformed. Accepts BOTH v1 (agents = bare name strings) and v2 (agents
-// = { name, workspace, pane } records); both normalize to instance records via
-// toInstance, so a mixed-version fleet interoperates on one channel.
+// null if malformed. Prefers the rich v2 `instances` field (per-instance records);
+// falls back to the bare-name `agents` field (v1, and the v2 back-compat mirror).
+// Also tolerates a legacy v2 line whose `agents` were records. Everything normalizes
+// to instance records via toInstance, so a mixed-version fleet interoperates.
 export function parsePresence(text) {
   if (typeof text !== 'string') return null;
   const s = text.trim();
   if (!s.startsWith(PRESENCE_SENTINEL)) return null;
   try {
     const obj = JSON.parse(s.slice(PRESENCE_SENTINEL.length).trim());
-    if (!obj || typeof obj.host !== 'string' || !Array.isArray(obj.agents)) return null;
-    return { v: Number(obj.v) || 1, host: obj.host, agents: obj.agents.map(toInstance), ts: Number(obj.ts) || 0 };
+    if (!obj || typeof obj.host !== 'string') return null;
+    const raw = Array.isArray(obj.instances) ? obj.instances
+      : Array.isArray(obj.agents) ? obj.agents : null;
+    if (!raw) return null;
+    return { v: Number(obj.v) || 1, host: obj.host, agents: raw.map(toInstance), ts: Number(obj.ts) || 0 };
   } catch { return null; }
 }
 

@@ -410,9 +410,12 @@ name on one host (e.g. two `general`s in different buckets) collapse into one en
 become unaddressable — a message to `host/name` hits an ambiguous local match and is
 silently dropped. FQDN presence (**v2**) fixes this by publishing per-instance records:
 
-- **Wire:** `::nexus-presence:: {v:2, host, agents:[{name, workspace, pane}], ts}`. A
-  pre-FQDN (`v:1`) bridge is still understood (its bare names fold in as `workspace:''`),
-  and a v2 bridge among v1 peers degrades to v1 output — mixed fleets interoperate.
+- **Wire:** `::nexus-presence:: {v:2, host, agents:[names], instances:[{name, workspace, pane}], ts}`.
+  `agents` stays bare **names** so a pre-FQDN (`v:1`) bridge — which does `agents.map(String)` —
+  reads them correctly (records there would become `"[object Object]"`); the rich identity rides
+  in a separate `instances` field it ignores. A v1 line (bare names, no `instances`) folds in as
+  `workspace:''`. `parsePresence` prefers `instances`, falls back to `agents`. Back-compat runs
+  **both** ways — mixed fleets interoperate.
 - **Identity + collisions:** owner election and collision detection key on the full
   `host/workspace/name`. Two same-named agents in *different* workspaces are distinct, not
   a collision; the same `workspace/name` twice (across hosts, or twice on one host) IS one.

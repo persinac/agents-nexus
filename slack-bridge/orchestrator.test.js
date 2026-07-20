@@ -322,24 +322,31 @@ test('toInstance: normalizes v1 strings and v2 records', () => {
   assert.deepEqual(toInstance({ name: 'x' }), { name: 'x', workspace: '', pane: '' }); // partial record
 });
 
-test('formatPresence: v1 bare names by default, v2 records when fqdn', () => {
+test('formatPresence: v1 bare names by default; v2 = names + instances (back-compat both ways)', () => {
   const insts = [{ name: 'general', workspace: 'interactive', pane: 'w3:pK' }];
   const v1 = formatPresence({ host: 'alex', agents: insts, ts: 1 });
   assert.ok(v1.startsWith(PRESENCE_SENTINEL));
   assert.deepEqual(JSON.parse(v1.slice(PRESENCE_SENTINEL.length).trim()),
     { v: 1, host: 'alex', agents: ['general'], ts: 1 });
-  const v2 = formatPresence({ host: 'alex', agents: insts, ts: 1 }, { fqdn: true });
-  assert.deepEqual(JSON.parse(v2.slice(PRESENCE_SENTINEL.length).trim()),
-    { v: 2, host: 'alex', agents: [{ name: 'general', workspace: 'interactive', pane: 'w3:pK' }], ts: 1 });
+  const v2obj = JSON.parse(formatPresence({ host: 'alex', agents: insts, ts: 1 }, { fqdn: true }).slice(PRESENCE_SENTINEL.length).trim());
+  assert.deepEqual(v2obj, { v: 2, host: 'alex', agents: ['general'],
+    instances: [{ name: 'general', workspace: 'interactive', pane: 'w3:pK' }], ts: 1 });
+  // BACK-COMPAT: a v1 bridge does `obj.agents.map(String)` — with names there it never
+  // sees "[object Object]"; it just misses the workspace/pane it doesn't understand.
+  assert.deepEqual(v2obj.agents.map(String), ['general']);
 });
 
-test('parsePresence: reads v1 and v2, always returns instance records', () => {
+test('parsePresence: reads v1, new-v2 (prefers instances), and legacy-v2 records', () => {
   const v1 = parsePresence('::nexus-presence:: {"v":1,"host":"alex","agents":["general","db"],"ts":5}');
   assert.equal(v1.v, 1);
   assert.deepEqual(v1.agents, [{ name: 'general', workspace: '', pane: '' }, { name: 'db', workspace: '', pane: '' }]);
-  const v2 = parsePresence('::nexus-presence:: {"v":2,"host":"alex","agents":[{"name":"general","workspace":"interactive","pane":"w3:pK"}],"ts":5}');
+  // new v2 wire: bare-name `agents` (v1-readable) + rich `instances` (v2 reads these)
+  const v2 = parsePresence('::nexus-presence:: {"v":2,"host":"alex","agents":["general"],"instances":[{"name":"general","workspace":"interactive","pane":"w3:pK"}],"ts":5}');
   assert.equal(v2.v, 2);
-  assert.deepEqual(v2.agents, [{ name: 'general', workspace: 'interactive', pane: 'w3:pK' }]);
+  assert.deepEqual(v2.agents, [{ name: 'general', workspace: 'interactive', pane: 'w3:pK' }]); // prefers instances
+  // legacy v2 (agents were records, no instances field) still parses via toInstance
+  const legacy = parsePresence('::nexus-presence:: {"v":2,"host":"alex","agents":[{"name":"g","workspace":"w","pane":"p"}],"ts":5}');
+  assert.deepEqual(legacy.agents, [{ name: 'g', workspace: 'w', pane: 'p' }]);
   const round = parsePresence(formatPresence({ host: 'alex', agents: v2.agents, ts: 9 }, { fqdn: true }));
   assert.deepEqual(round.agents, v2.agents); // format → parse round-trips
 });
