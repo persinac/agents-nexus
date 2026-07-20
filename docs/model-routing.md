@@ -108,6 +108,17 @@ ROUTE_429_WINDOW_SECS=20
 Pass through the `proxy` service in `docker-compose.yml` / `docker-compose.work.yml` with the
 same `${VAR:-default}` style as `LANGFUSE_*`. No new service.
 
+**Runtime toggle (no restart).** `ROUTE_ENABLED`/`ROUTE_DOWNGRADE_TIERS` are read live, so an
+`/admin/route` endpoint flips them without recreating the container — which matters because the
+proxy is the whole fleet's gateway and a rebuild blips every agent for the ~seconds it takes to
+swap. Registered *before* the catch-all so it is served locally, not proxied upstream:
+```
+GET  /admin/route                     → {enabled, downgrade_tiers, max_retries, pool, cooldowns_active}
+POST /admin/route  {"enabled": true}  → applies on the next request; ephemeral (reverts on restart)
+```
+The env value is the boot default; the runtime override lives in memory (single uvicorn worker →
+one shared view). Set `ROUTE_ADMIN_TOKEN` to require an `x-route-admin-token` header on the POST.
+
 ### 4. Net-savings gate (the measurable activation criterion)
 Langfuse routing metadata makes the gate concrete: compare served-model vs requested-model cost
 on downgraded turns, and watch for quality regressions. Keep routing ON only if net savings

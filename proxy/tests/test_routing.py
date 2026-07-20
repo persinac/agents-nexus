@@ -17,6 +17,7 @@ import httpx
 import pytest
 from fastapi import Response
 from fastapi.responses import StreamingResponse
+from fastapi.testclient import TestClient
 
 import routing
 import main
@@ -146,6 +147,36 @@ def test_route_enabled_downgrades_trivial_but_not_work(monkeypatch):
     # work sessions are never routed, even on a trivial turn
     w_served, w_diff = main._decide_served(True, "work-acme", trivial, "claude-opus-4-8")
     assert w_served == "claude-opus-4-8" and w_diff == "n/a"
+
+
+# ── admin: hot-reload ROUTE_ENABLED without a restart ───────────────────────
+
+def test_admin_route_toggles_enabled_live(monkeypatch):
+    monkeypatch.setattr(main, "ROUTE_ENABLED", False)
+    monkeypatch.setattr(main, "ROUTE_ADMIN_TOKEN", "")  # open on a localhost box
+    tc = TestClient(main.app)
+
+    # GET reflects current state (and is NOT proxied upstream — no upstream call)
+    assert tc.get("/admin/route").json()["enabled"] is False
+    # POST flips the live module global that _decide_served reads
+    r = tc.post("/admin/route", json={"enabled": True})
+    assert r.status_code == 200 and r.json()["enabled"] is True
+    assert main.ROUTE_ENABLED is True
+    trivial = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
+    assert main._decide_served(True, None, trivial, "claude-opus-4-8")[0] == "claude-haiku-4-5"
+    # and back off again
+    assert tc.post("/admin/route", json={"enabled": False}).json()["enabled"] is False
+    assert main._decide_served(True, None, trivial, "claude-opus-4-8")[0] == "claude-opus-4-8"
+
+
+def test_admin_route_token_guard(monkeypatch):
+    monkeypatch.setattr(main, "ROUTE_ADMIN_TOKEN", "s3cret")
+    monkeypatch.setattr(main, "ROUTE_ENABLED", False)
+    tc = TestClient(main.app)
+    assert tc.post("/admin/route", json={"enabled": True}).status_code == 403
+    assert main.ROUTE_ENABLED is False  # unchanged
+    ok = tc.post("/admin/route", json={"enabled": True}, headers={"x-route-admin-token": "s3cret"})
+    assert ok.status_code == 200 and main.ROUTE_ENABLED is True
 
 
 # ── orchestration (httpx.MockTransport, no network) ─────────────────────────

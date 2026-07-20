@@ -58,6 +58,11 @@ _COOLDOWNS = routing.Cooldowns(
     threshold=routing._int_env("ROUTE_429_SHED_THRESHOLD", 2),
     window=float(os.environ.get("ROUTE_429_WINDOW_SECS", "20")),
 )
+# ROUTE_ENABLED / ROUTE_DOWNGRADE_TIERS can be flipped at runtime via /admin/route
+# (no container restart → no fleet blip). The env values above are only the boot
+# defaults; runtime overrides are in-memory and revert on restart. Optional token
+# guards the mutating POST — empty = open (fine on a localhost-only box).
+ROUTE_ADMIN_TOKEN = os.environ.get("ROUTE_ADMIN_TOKEN", "").strip()
 
 
 @app.on_event("shutdown")
@@ -84,6 +89,55 @@ def _response_headers(r: httpx.Response) -> dict[str, str]:
 @app.get("/health/readiness")
 async def health():
     return {"status": "healthy"}
+
+
+# ── Admin: hot-reload routing config (no restart, no fleet blip) ───────────────
+# Registered BEFORE the catch-all proxy route so these paths are served locally,
+# not forwarded upstream. Reads are open; the mutating POST honors an optional
+# ROUTE_ADMIN_TOKEN. Changes take effect on the next request (_decide_served reads
+# the module globals live) and are ephemeral — a restart reverts to the env values.
+
+def _route_config() -> dict:
+    return {
+        "enabled": ROUTE_ENABLED,
+        "downgrade_tiers": sorted(ROUTE_DOWNGRADE_TIERS),
+        "max_retries": ROUTE_MAX_RETRIES,
+        "pool": [{"model": m.model, "tier": m.tier, "cost": m.cost} for m in _ROUTE_POOL],
+        "cooldowns_active": sorted(_COOLDOWNS.active(time.monotonic())),
+    }
+
+
+@app.get("/admin/route")
+async def get_route_config():
+    return _route_config()
+
+
+@app.post("/admin/route")
+async def set_route_config(request: Request):
+    global ROUTE_ENABLED, ROUTE_DOWNGRADE_TIERS
+    if ROUTE_ADMIN_TOKEN and request.headers.get("x-route-admin-token") != ROUTE_ADMIN_TOKEN:
+        return Response(
+            content=json.dumps({"error": {"type": "forbidden",
+                                           "message": "bad or missing x-route-admin-token"}}).encode(),
+            status_code=403, media_type="application/json",
+        )
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    if "enabled" in payload:
+        ROUTE_ENABLED = bool(payload["enabled"])
+    if "downgrade_tiers" in payload:
+        tiers = payload["downgrade_tiers"]
+        if isinstance(tiers, str):
+            tiers = [t.strip() for t in tiers.split(",")]
+        if isinstance(tiers, list):
+            ROUTE_DOWNGRADE_TIERS = frozenset(t for t in tiers if t in {"trivial", "normal", "hard"})
+    log.info("route config updated via /admin/route: enabled=%s downgrade_tiers=%s",
+             ROUTE_ENABLED, sorted(ROUTE_DOWNGRADE_TIERS))
+    return _route_config()
 
 
 # ── Upstream routing policy ───────────────────────────────────────────────────
