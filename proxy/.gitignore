@@ -1,0 +1,5 @@
+# Dev-only test scaffolding (pytest is not a runtime dependency)
+.venv-test/
+__pycache__/
+*.pyc
+.pytest_cache/

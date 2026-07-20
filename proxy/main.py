@@ -18,6 +18,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 from langfuse import get_client, propagate_attributes
 
+import routing
+
 log = logging.getLogger("proxy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -41,6 +43,26 @@ app = FastAPI()
 # hung/unreachable work upstream fails fast (in seconds) instead of stalling every
 # request on the TCP connect.
 client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=3.0))
+
+# ── Routing / resilience config ───────────────────────────────────────────
+# Resilience (bounded pre-first-byte retry on transient 5xx/429/connect errors)
+# is ALWAYS on. ROUTE_ENABLED gates only the *proactive* same-vendor downgrade;
+# with ROUTE_ENABLED=0 the outbound body is byte-for-byte today's (kill switch).
+ROUTE_ENABLED = os.environ.get("ROUTE_ENABLED", "0") == "1"
+ROUTE_DOWNGRADE_TIERS = frozenset(
+    t.strip() for t in os.environ.get("ROUTE_DOWNGRADE_TIERS", "trivial").split(",") if t.strip()
+)
+ROUTE_MAX_RETRIES = routing._int_env("ROUTE_MAX_RETRIES", 2)
+_ROUTE_POOL = routing.load_pool()
+_COOLDOWNS = routing.Cooldowns(
+    threshold=routing._int_env("ROUTE_429_SHED_THRESHOLD", 2),
+    window=float(os.environ.get("ROUTE_429_WINDOW_SECS", "20")),
+)
+# ROUTE_ENABLED / ROUTE_DOWNGRADE_TIERS can be flipped at runtime via /admin/route
+# (no container restart → no fleet blip). The env values above are only the boot
+# defaults; runtime overrides are in-memory and revert on restart. Optional token
+# guards the mutating POST — empty = open (fine on a localhost-only box).
+ROUTE_ADMIN_TOKEN = os.environ.get("ROUTE_ADMIN_TOKEN", "").strip()
 
 
 @app.on_event("shutdown")
@@ -67,6 +89,55 @@ def _response_headers(r: httpx.Response) -> dict[str, str]:
 @app.get("/health/readiness")
 async def health():
     return {"status": "healthy"}
+
+
+# ── Admin: hot-reload routing config (no restart, no fleet blip) ───────────────
+# Registered BEFORE the catch-all proxy route so these paths are served locally,
+# not forwarded upstream. Reads are open; the mutating POST honors an optional
+# ROUTE_ADMIN_TOKEN. Changes take effect on the next request (_decide_served reads
+# the module globals live) and are ephemeral — a restart reverts to the env values.
+
+def _route_config() -> dict:
+    return {
+        "enabled": ROUTE_ENABLED,
+        "downgrade_tiers": sorted(ROUTE_DOWNGRADE_TIERS),
+        "max_retries": ROUTE_MAX_RETRIES,
+        "pool": [{"model": m.model, "tier": m.tier, "cost": m.cost} for m in _ROUTE_POOL],
+        "cooldowns_active": sorted(_COOLDOWNS.active(time.monotonic())),
+    }
+
+
+@app.get("/admin/route")
+async def get_route_config():
+    return _route_config()
+
+
+@app.post("/admin/route")
+async def set_route_config(request: Request):
+    global ROUTE_ENABLED, ROUTE_DOWNGRADE_TIERS
+    if ROUTE_ADMIN_TOKEN and request.headers.get("x-route-admin-token") != ROUTE_ADMIN_TOKEN:
+        return Response(
+            content=json.dumps({"error": {"type": "forbidden",
+                                           "message": "bad or missing x-route-admin-token"}}).encode(),
+            status_code=403, media_type="application/json",
+        )
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    if "enabled" in payload:
+        ROUTE_ENABLED = bool(payload["enabled"])
+    if "downgrade_tiers" in payload:
+        tiers = payload["downgrade_tiers"]
+        if isinstance(tiers, str):
+            tiers = [t.strip() for t in tiers.split(",")]
+        if isinstance(tiers, list):
+            ROUTE_DOWNGRADE_TIERS = frozenset(t for t in tiers if t in {"trivial", "normal", "hard"})
+    log.info("route config updated via /admin/route: enabled=%s downgrade_tiers=%s",
+             ROUTE_ENABLED, sorted(ROUTE_DOWNGRADE_TIERS))
+    return _route_config()
 
 
 # ── Upstream routing policy ───────────────────────────────────────────────────
@@ -122,75 +193,259 @@ async def proxy(request: Request, path: str):
             pass
 
     is_stream = bool(body.get("stream"))
+    requested_model = body.get("model")
     t0 = time.monotonic()
+    served_model, difficulty = _decide_served(is_messages, session_id, body, requested_model)
+
+    method = request.method
+    params = dict(request.query_params)
 
     if is_stream:
-        return _stream_response(request, path, body_bytes, body, headers, t0, session_id)
-
-    upstream = _upstream_for(session_id)
-    try:
-        r = await client.request(
-            request.method, f"{upstream}/{path}",
-            content=body_bytes, headers=headers, params=dict(request.query_params),
+        return await _stream_response(
+            path, body_bytes, body, headers, params, t0, session_id,
+            requested_model, served_model, difficulty,
         )
-    except httpx.HTTPError as e:
-        is_work = _is_work(session_id)
-        msg = WORK_HARD_FAIL_MSG if is_work else str(e)
-        log.warning(
-            "upstream %s unreachable (%s /%s)%s: %s",
-            upstream, request.method, path,
-            " [work: hard-fail, no bypass]" if is_work else "",
-            e,
-        )
-        return Response(
-            content=json.dumps({"error": {"type": "upstream_unavailable", "message": msg}}).encode(),
-            status_code=502,
-            media_type="application/json",
-        )
-    if is_messages and r.status_code == 200:
-        try:
-            asyncio.create_task(_log_generation(body, r.json(), t0, session_id))
-        except Exception:
-            pass
-    return Response(
-        content=r.content,
-        status_code=r.status_code,
-        headers=_response_headers(r),
+    return await _nonstream_response(
+        method, path, body_bytes, body, headers, params, t0, session_id,
+        is_messages, requested_model, served_model, difficulty,
     )
 
 
-def _stream_response(
-    request: Request,
-    path: str,
-    body_bytes: bytes,
-    body: dict,
-    headers: dict,
-    t0: float,
-    session_id: str | None,
-) -> StreamingResponse:
-    chunks: list[bytes] = []
+# ── routing decision + request shaping ─────────────────────────────────────
 
+def _decide_served(is_messages, session_id, body, requested_model):
+    """Return (served_model, difficulty). Fail-open to the requested model:
+    routing is skipped when ROUTE_ENABLED=0, for non-messages, for work sessions,
+    or on any classify/select error."""
+    if not (ROUTE_ENABLED and is_messages and body and not _is_work(session_id)):
+        return requested_model, "n/a"
+    try:
+        difficulty = routing.classify_difficulty(body)
+        served = routing.select_model(
+            requested_model, difficulty, _ROUTE_POOL, _COOLDOWNS,
+            ROUTE_DOWNGRADE_TIERS, time.monotonic(),
+        )
+        return served, difficulty
+    except Exception as e:  # fail-open — never break a request over routing
+        log.warning("routing decision failed (fail-open to %s): %s", requested_model, e)
+        return requested_model, "n/a"
+
+
+def _body_for_model(model, requested_model, body, body_bytes) -> bytes:
+    """Bytes to forward upstream. Byte-identical to the original when the model is
+    unchanged (preserves prompt caching and the ROUTE_ENABLED=0 kill switch);
+    re-serialized with only `model` swapped otherwise."""
+    if not model or model == requested_model or not body:
+        return body_bytes
+    try:
+        return json.dumps({**body, "model": model}).encode()
+    except (TypeError, ValueError):
+        return body_bytes
+
+
+def _retry_after_seconds(r: httpx.Response):
+    ra = r.headers.get("retry-after")
+    if ra is None:
+        return None
+    try:
+        return float(ra)
+    except (TypeError, ValueError):
+        return None
+
+
+def _routing_meta(requested_model, served_model, difficulty, action, retries):
+    return {
+        "requested_model": requested_model,
+        "served_model": served_model,
+        "difficulty": difficulty,
+        "action": action,
+        "retries": retries,
+    }
+
+
+# ── non-streaming path (resilient) ─────────────────────────────────────────
+
+async def _nonstream_response(
+    method, path, body_bytes, body, headers, params, t0, session_id,
+    is_messages, requested_model, served_model, difficulty,
+):
     upstream = _upstream_for(session_id)
+    is_work = _is_work(session_id)
+
+    model = served_model
+    action = "downgrade" if served_model and served_model != requested_model else "passthrough"
+    retries = 0
+    r = None
+    last_exc = None
+
+    while True:
+        content = _body_for_model(model, requested_model, body, body_bytes)
+        for attempt in range(ROUTE_MAX_RETRIES + 1):
+            try:
+                r = await client.request(method, f"{upstream}/{path}",
+                                         content=content, headers=headers, params=params)
+                last_exc = None
+            except httpx.HTTPError as e:
+                r, last_exc = None, e
+                if attempt < ROUTE_MAX_RETRIES:
+                    retries += 1
+                    await asyncio.sleep(routing.backoff_delays(attempt))
+                    continue
+                break
+            if r.status_code in routing.RETRYABLE:
+                _COOLDOWNS.record(model, r.status_code, time.monotonic())
+                if attempt < ROUTE_MAX_RETRIES:
+                    retries += 1
+                    await asyncio.sleep(routing.backoff_delays(attempt, _retry_after_seconds(r)))
+                    continue
+                break  # retries exhausted for this model → try a shed
+            if r.status_code == 429:
+                # Non-stream 429: surface verbatim (Claude Code's HTTP-429 backoff
+                # works here); record it so a persistent throttle sheds next time.
+                _COOLDOWNS.record(model, 429, time.monotonic())
+            break  # 2xx / 4xx / final → committed
+
+        if r is not None and r.status_code not in routing.RETRYABLE:
+            break
+        # connect error or retryable-exhausted → shed down-ladder (personal only)
+        if is_work:
+            break
+        nxt = routing.shed_model(model, _ROUTE_POOL, _COOLDOWNS, time.monotonic())
+        if not nxt or nxt == model:
+            break
+        model, action = nxt, "shed"
+
+    meta = _routing_meta(requested_model, model, difficulty, action, retries)
+
+    if r is None:
+        msg = WORK_HARD_FAIL_MSG if is_work else str(last_exc)
+        log.warning("upstream %s unreachable (%s /%s)%s: %s", upstream, method, path,
+                    " [work: hard-fail, no bypass]" if is_work else "", last_exc)
+        return Response(
+            content=json.dumps({"error": {"type": "upstream_unavailable", "message": msg}}).encode(),
+            status_code=502, media_type="application/json",
+        )
+    if is_messages and r.status_code == 200:
+        body["model"] = model  # cost attribution = served model
+        try:
+            asyncio.create_task(_log_generation(body, r.json(), t0, session_id, meta))
+        except Exception:
+            pass
+    return Response(content=r.content, status_code=r.status_code, headers=_response_headers(r))
+
+
+# ── streaming path (resilient; owns pre-first-byte 5xx/429) ────────────────
+
+async def _stream_response(
+    path, body_bytes, body, headers, params, t0, session_id,
+    requested_model, served_model, difficulty,
+):
+    """Open the upstream stream and decide the outcome BEFORE returning a
+    StreamingResponse: FastAPI flushes 200+headers the instant the body starts,
+    so an upstream 5xx/429 can only be owned here, pre-first-byte. Retry the same
+    model (bounded), then shed down-ladder; only a committed 200 stream becomes a
+    StreamingResponse. On give-up we surface the real upstream status (or 502) so
+    Claude Code's HTTP backoff engages — never a torn 200 stream."""
+    upstream = _upstream_for(session_id)
+    is_work = _is_work(session_id)
+
+    model = served_model
+    action = "downgrade" if served_model and served_model != requested_model else "passthrough"
+    retries = 0
+    resp = None
+    last_exc = None
+
+    while True:
+        content = _body_for_model(model, requested_model, body, body_bytes)
+        committed = False
+        retryable = False  # terminal status is a retryable 5xx/429 (resp kept open)
+        for attempt in range(ROUTE_MAX_RETRIES + 1):
+            try:
+                req = client.build_request("POST", f"{upstream}/{path}",
+                                           content=content, headers=headers, params=params)
+                resp = await client.send(req, stream=True)
+                last_exc = None
+            except httpx.HTTPError as e:
+                resp, last_exc = None, e
+                if attempt < ROUTE_MAX_RETRIES:
+                    retries += 1
+                    await asyncio.sleep(routing.backoff_delays(attempt))
+                    continue
+                break
+            if resp.status_code == 200:
+                committed = True
+                break
+            if resp.status_code in routing.RETRYABLE or resp.status_code == 429:
+                _COOLDOWNS.record(model, resp.status_code, time.monotonic())
+                if attempt < ROUTE_MAX_RETRIES:
+                    ra = _retry_after_seconds(resp)
+                    await resp.aclose()
+                    resp = None
+                    retries += 1
+                    await asyncio.sleep(routing.backoff_delays(attempt, ra))
+                    continue
+                retryable = True  # keep resp OPEN to surface verbatim (or replace on shed)
+                break
+            break  # non-retryable status (e.g. 400) → surface verbatim
+
+        if committed:
+            break
+        if resp is not None and not retryable:
+            break  # non-retryable error status → surface verbatim
+        # retryable-exhausted (resp holds the last 5xx/429) OR connect-exhausted (resp None)
+        if is_work:
+            break  # work never sheds — surface the real status (or 502 if resp None)
+        nxt = routing.shed_model(model, _ROUTE_POOL, _COOLDOWNS, time.monotonic())
+        if not nxt or nxt == model:
+            break  # nothing cheaper — surface what we have
+        if resp is not None:
+            await resp.aclose()  # discard the retryable resp; try a cheaper model
+            resp = None
+        model, action = nxt, "shed"
+
+    meta = _routing_meta(requested_model, model, difficulty, action, retries)
+
+    # give-up: no response at all (connect errors exhausted) → real error status
+    if resp is None:
+        msg = WORK_HARD_FAIL_MSG if is_work else (str(last_exc) if last_exc else "upstream error")
+        log.warning("stream upstream unreachable (%s /%s)%s: %s", upstream, path,
+                    " [work: hard-fail, no bypass]" if is_work else "", last_exc)
+        return Response(
+            content=json.dumps({"error": {"type": "upstream_unavailable", "message": msg}}).encode(),
+            status_code=502, media_type="application/json",
+        )
+
+    # give-up: non-200 upstream (retryable exhausted or a 4xx) → surface verbatim,
+    # so a 429/5xx reaches Claude Code as a real HTTP status (its backoff works)
+    # rather than a 200 event-stream carrying an in-band error it won't back off on.
+    if resp.status_code != 200:
+        err_body = await resp.aread()
+        err_headers = _response_headers(resp)
+        await resp.aclose()
+        log.warning("stream upstream %s after %d retr%s (%s /%s), surfacing verbatim",
+                    resp.status_code, retries, "y" if retries == 1 else "ies", upstream, path)
+        return Response(content=err_body, status_code=resp.status_code, headers=err_headers)
+
+    # committed 200 stream
+    body["model"] = model  # cost attribution = served model
+    r = resp
 
     async def generate() -> AsyncGenerator[bytes, None]:
-        primary = f"{upstream}/{path}"
+        chunks: list[bytes] = []
         try:
-            async with client.stream("POST", primary, content=body_bytes, headers=headers) as r:
+            try:
                 async for chunk in r.aiter_bytes():
                     chunks.append(chunk)
                     yield chunk
-        except httpx.HTTPError as e:
-            # Single upstream per session — no cross-routing. If bytes already
-            # streamed we can't recover; either way surface the error. Work
-            # sessions get the compliance hint (never a silent Anthropic bypass).
-            if _is_work(session_id) and not chunks:
-                log.warning("upstream stream unreachable (%s) [work: hard-fail]: %s", primary, e)
-                yield _stream_error(RuntimeError(WORK_HARD_FAIL_MSG))
+            except httpx.HTTPError as e:
+                # Drop AFTER the first byte — committed, cannot retry. Surface as
+                # an in-band SSE error (same as today's behaviour).
+                log.warning("stream error after first byte (%s): %s", upstream, e)
+                yield _stream_error(e)
                 return
-            log.warning("upstream stream error (%s): %s", primary, e)
-            yield _stream_error(e)
-            return
-        asyncio.create_task(_log_stream(body, chunks, t0, session_id))
+            asyncio.create_task(_log_stream(body, chunks, t0, session_id, meta))
+        finally:
+            await r.aclose()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -229,19 +484,23 @@ def _pick_output(summary: dict) -> str | dict:
     return summary
 
 
-async def _log_generation(body: dict, response: dict, t0: float, session_id: str | None) -> None:
+async def _log_generation(body: dict, response: dict, t0: float, session_id: str | None,
+                          routing_meta: dict | None = None) -> None:
     try:
         usage = response.get("usage", {}) or {}
         summary = _summarize_blocks(response.get("content", []))
         output = _pick_output(summary)
 
+        metadata = {"latency_ms": round((time.monotonic() - t0) * 1000)}
+        if routing_meta:
+            metadata["routing"] = routing_meta
         _emit_trace(
             name="messages",
             session_id=session_id,
             body=body,
             output=output,
             usage_details=_usage_details(usage),
-            metadata={"latency_ms": round((time.monotonic() - t0) * 1000)},
+            metadata=metadata,
         )
     except Exception as e:
         log.warning("langfuse log failed: %s", e)
@@ -262,7 +521,8 @@ def _usage_details(usage: dict) -> dict:
     }
 
 
-async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: str | None) -> None:
+async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: str | None,
+                      routing_meta: dict | None = None) -> None:
     try:
         raw = b"".join(chunks).decode("utf-8", errors="replace")
         usage_acc: dict = {}
@@ -317,16 +577,19 @@ async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: st
         summary = _summarize_blocks(blocks)
         output = _pick_output(summary)
 
+        metadata = {
+            "latency_ms": round((time.monotonic() - t0) * 1000),
+            "stream": True,
+        }
+        if routing_meta:
+            metadata["routing"] = routing_meta
         _emit_trace(
             name="messages-stream",
             session_id=session_id,
             body=body,
             output=output,
             usage_details=_usage_details(usage_acc),
-            metadata={
-                "latency_ms": round((time.monotonic() - t0) * 1000),
-                "stream": True,
-            },
+            metadata=metadata,
         )
     except Exception as e:
         log.warning("langfuse stream log failed: %s", e)
