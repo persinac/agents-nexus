@@ -157,6 +157,14 @@ services:
       # SDK default rejects items > 1 MB. Self-hosted Langfuse accepts much
       # larger; bump to 2 MB so our 750 KB-per-field _preview cap leaves headroom.
       LANGFUSE_MAX_EVENT_SIZE_BYTES: "2000000"
+      # Routing + resilience (see docs/model-routing.md). Resilience is always on;
+      # ROUTE_ENABLED gates only the proactive same-vendor downgrade (default off).
+      ROUTE_ENABLED: ${ROUTE_ENABLED:-0}
+      ROUTE_DOWNGRADE_TIERS: ${ROUTE_DOWNGRADE_TIERS:-trivial}
+      ROUTE_CHEAP_MODEL: ${ROUTE_CHEAP_MODEL:-claude-haiku-4-5}
+      ROUTE_MAX_RETRIES: ${ROUTE_MAX_RETRIES:-2}
+      ROUTE_429_SHED_THRESHOLD: ${ROUTE_429_SHED_THRESHOLD:-2}
+      ROUTE_429_WINDOW_SECS: ${ROUTE_429_WINDOW_SECS:-20}
     ports:
       - "${PROXY_PORT:-4000}:4000"
 
