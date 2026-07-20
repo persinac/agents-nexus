@@ -1,0 +1,10 @@
+{
+  "_comment": "Anthropic LIST prices, USD per MTok. Fetched 2026-07-20 from platform.claude.com docs. Sonnet 5 is on introductory pricing ($2/$10) through 2026-08-31, then $3/$15 on 2026-09-01 — update then. cache_read = 0.1x input, 5-min cache_write = 1.25x input. routing-report.py reads this over its built-in defaults; the nightly snapshot picks up edits automatically. Personal traffic is on the subscription, so these are a notional value/quota proxy, not cash.",
+  "models": {
+    "claude-opus-4-8":  {"input": 5.0, "output": 25.0},
+    "claude-sonnet-5":  {"input": 2.0, "output": 10.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0}
+  },
+  "cache_read_mult": 0.10,
+  "cache_write_mult": 1.25
+}

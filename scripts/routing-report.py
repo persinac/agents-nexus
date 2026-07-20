@@ -10,28 +10,56 @@ Langfuse's ClickHouse, and prints:
   B. request mix + volumes  — where the token spend actually is
   C. realized savings       — $ saved on turns that actually downgraded
   D. headroom / what-if     — opus->sonnet opportunity (all + low-risk subset)
+  E. per-agent spend        — list-$ per sess/<agent> + cache-safe sonnet-pin headroom
 
 No secrets required: it queries ClickHouse via `docker exec langfuse-clickhouse`.
-Cost figures use the editable PRICES table below (Langfuse has no prices set for
-these models) and are ESTIMATES — see the caveats printed at the end.
+Cost figures use Anthropic list prices (PRICES below / routing-prices.json). For
+personal subscription traffic they are a NOTIONAL list-value / quota proxy, not
+cash — see the caveats printed at the end.
 
 Usage:  python3 scripts/routing-report.py [WINDOW]     # WINDOW e.g. "24 HOUR" (default), "7 DAY"
 """
 
+import json
+import os.path
 import re
 import subprocess
 import sys
 
-# ── EDIT ME: real Anthropic list prices, USD per 1M tokens ───────────────────
+# ── Prices: Anthropic list, USD per 1M tokens ────────────────────────────────
+# Personal sessions run on the subscription (direct-Anthropic OAuth), so $ here
+# is a NOTIONAL list-value / quota-consumption proxy, not cash — only work-gateway
+# traffic (work-*) is real per-token spend. Override without editing code via
+# scripts/routing-prices.json (see load_prices). Current 2026-07-20; Sonnet 5 is
+# on introductory pricing ($2/$10) through 2026-08-31, then $3/$15.
 PRICES = {
-    "claude-opus-4-8":  {"input": 15.0, "output": 75.0},
-    "claude-sonnet-5":  {"input": 3.0,  "output": 15.0},
-    "claude-haiku-4-5": {"input": 0.80, "output": 4.0},
+    "claude-opus-4-8":  {"input": 5.0, "output": 25.0},
+    "claude-sonnet-5":  {"input": 2.0, "output": 10.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
 }
-CACHE_READ_MULT = 0.10    # cache-read priced ~0.1x base input
-CACHE_WRITE_MULT = 1.25   # cache-creation priced ~1.25x base input
+CACHE_READ_MULT = 0.10    # cache-read priced 0.1x base input
+CACHE_WRITE_MULT = 1.25   # 5-min cache-creation priced 1.25x base input
 
 CH = ["docker", "exec", "langfuse-clickhouse", "clickhouse-client"]
+
+
+def load_prices() -> None:
+    """Overlay scripts/routing-prices.json (sibling) onto the built-in defaults,
+    so rates update without code edits and the nightly snapshot picks them up."""
+    global CACHE_READ_MULT, CACHE_WRITE_MULT
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "routing-prices.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return
+    for m, p in (data.get("models") or {}).items():
+        if isinstance(p, dict) and "input" in p and "output" in p:
+            PRICES[m] = {"input": float(p["input"]), "output": float(p["output"])}
+    if "cache_read_mult" in data:
+        CACHE_READ_MULT = float(data["cache_read_mult"])
+    if "cache_write_mult" in data:
+        CACHE_WRITE_MULT = float(data["cache_write_mult"])
 
 
 def ch(query: str) -> list[list[str]]:
@@ -71,10 +99,12 @@ def bar(n: int, total: int, width: int = 24) -> str:
 
 
 def main() -> None:
+    load_prices()
     window = sys.argv[1] if len(sys.argv) > 1 else "24 HOUR"
     if not re.fullmatch(r"\d+\s+(MINUTE|HOUR|DAY|WEEK)", window, re.I):
         sys.exit(f"bad WINDOW {window!r} — use e.g. '24 HOUR', '7 DAY'")
     W = f"start_time > now() - INTERVAL {window} AND metadata['routing'] != ''"
+    Wo = f"o.start_time > now() - INTERVAL {window} AND o.metadata['routing'] != ''"
     J = "JSONExtractString(metadata['routing'],'{}')"
 
     print(f"\n=== nexus-proxy routing report — last {window} ===")
@@ -101,7 +131,7 @@ def main() -> None:
                  sum(usage_details['cache_read_input_tokens']),
                  sum(usage_details['input']+usage_details['cache_creation_input_tokens'])
                  FROM observations WHERE {W} GROUP BY m ORDER BY count() DESC""")
-    print(f"\n[B] request mix + token volume (output = the real cost driver)")
+    print(f"\n[B] request mix + token volume (cache-read often dominates cost)")
     print(f"    {'requested':<20}{'turns':>7}{'output_tok':>13}{'cache_read':>13}{'fresh_in':>11}")
     for m, n, o, cr, fi in rows:
         print(f"    {m:<20}{int(n):>7}{int(o):>13,}{int(cr):>13,}{int(fi):>11,}")
@@ -150,12 +180,41 @@ def main() -> None:
     else:
         print("    (no opus-requested turns in window)")
 
+    # ── E. per-agent spend + cache-safe sonnet-pin headroom ──────────────────
+    rows = ch(f"""SELECT t.session_id AS agent, o.provided_model_name AS model, count(),
+                 sum(o.usage_details['input']), sum(o.usage_details['output']),
+                 sum(o.usage_details['cache_read_input_tokens']),
+                 sum(o.usage_details['cache_creation_input_tokens'])
+                 FROM observations o INNER JOIN traces t ON o.trace_id = t.id
+                 WHERE {Wo} GROUP BY agent, model""")
+    agents: dict = {}
+    for agent, model, turns, i, o, cr, cw in rows:
+        u = {"input": int(i), "output": int(o),
+             "cache_read_input_tokens": int(cr), "cache_creation_input_tokens": int(cw)}
+        c = price(model, u)
+        a = agents.setdefault(agent or "(untagged)",
+                              {"turns": 0, "cost": 0.0, "out": 0, "save": 0.0, "top": ("", 0)})
+        a["turns"] += int(turns); a["cost"] += c; a["out"] += int(o)
+        if "opus" in (model or ""):  # cache-safe: a pinned agent's cache lives on sonnet
+            a["save"] += c - price("claude-sonnet-5", u)
+        if int(turns) > a["top"][1]:
+            a["top"] = (model, int(turns))
+    print(f"\n[E] per-agent list-value $ ({window}) + cache-safe sonnet-pin headroom")
+    print(f"    {'agent':<40}{'turns':>6}{'model':>9}{'out/turn':>9}{'list-$':>9}{'pin→sonnet':>12}")
+    for agent, a in sorted(agents.items(), key=lambda kv: kv[1]["cost"], reverse=True)[:12]:
+        tier = (a["top"][0] or "?").replace("claude-", "").split("-")[0]
+        opt = a["out"] // a["turns"] if a["turns"] else 0
+        pin = f"save ${a['save']:.2f}" if a["save"] > 0.01 else "—"
+        print(f"    {agent[:40]:<40}{a['turns']:>6}{tier:>9}{opt:>9}{'$'+format(a['cost'],'.2f'):>9}{pin:>12}")
+    print("    candidates = opus-dominant rows with a pin→sonnet number (whole-session pin keeps cache)")
+
     print("\n--- caveats ---")
-    print("  * $ uses the editable PRICES table (Langfuse has no model prices set); verify rates.")
-    print("  * Downgrades lose the requested model's prompt cache (cache is per-model), so a real")
-    print("    downgraded turn's buckets skew to fresh input — [C] is a same-tokens approximation.")
-    print("  * Difficulty currently counts FULL context size incl. cache-read (cheap); the real cost")
-    print("    driver is output tokens. Consider weighting difficulty toward generation, not context.\n")
+    print("  * $ = Anthropic LIST value (PRICES / routing-prices.json). Personal traffic is on the")
+    print("    subscription, so it's a quota/budget proxy, not cash; only work-* sessions are real $.")
+    print("  * [C]/[D] per-TURN downgrade loses the requested model's per-model cache, so a real")
+    print("    downgraded big turn skews to fresh input and can be net-negative — [D] is an upper bound.")
+    print("  * [E] pin→sonnet is cache-SAFE: pinning a whole sess/<agent> to sonnet moves its cache")
+    print("    onto sonnet (cheaper reads), so that headroom is actually capturable — the real lever.\n")
 
 
 if __name__ == "__main__":
