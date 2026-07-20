@@ -10,6 +10,11 @@ prefix = "ctrl+a"
 # Point the numeric row at focus_agent; free it from the default tab-switch.
 focus_agent = "prefix+1..9"
 switch_tab = ""
+# ctrl+a x -> close the focused AGENT. Unbind herdr's native close_pane (default
+# prefix+x) so the [[keys.command]] shim below owns it: the shim DEREGISTERS the agent
+# (herdr's missing pane-died analog) before closing, so herdr-recover doesn't respawn a
+# deliberate close. herdr fires no pane-died event — see bin/herdr-close-agent.sh.
+close_pane = ""
 
 # ctrl+a + shift+<arrow OR hjkl> -> SWAP the focused pane toward a neighbour. NOTE: herdr
 # has NO native swap_pane_* key action (verified vs 0.7.4 --default-config), so the old
@@ -97,6 +102,18 @@ command = "/opt/homebrew/bin/herdr pane swap --direction down --current"
 key = "prefix+shift+c"
 type = "shell"
 command = "/opt/homebrew/bin/herdr agent start conductor --focus -- bash -lc 'read -r -p \"conductor goal: \" g; exec \"$HOME/.tmux/conductor-run.sh\" \"$g\"'"
+
+# ctrl+a x -> DEREGISTER-then-close the focused agent — herdr's missing pane-died hook.
+# herdr emits no pane-died/closed event, so without this a closed agent's stale
+# ~/.tmux/registry entry looks like a crash casualty and herdr-recover revives it. The
+# shim resolves the focused pane, runs agent-deregister.sh + worktree-cleanup.sh (the same
+# scripts tmux's pane-died hook uses), then `herdr pane close`. Overrides the native
+# close_pane (unbound above). herdr runs type=shell via sh -c, so the VAR=val env prefix
+# and $HOME are honored.
+[[keys.command]]
+key = "prefix+x"
+type = "shell"
+command = "HERDR_BIN=/opt/homebrew/bin/herdr NEXUS_TMUX_DIR=$HOME/.tmux $HOME/.tmux/herdr-close-agent.sh"
 
 [ui]
 show_agent_labels_on_pane_borders = true
