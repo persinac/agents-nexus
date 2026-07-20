@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import deque
 
@@ -163,18 +164,57 @@ def _trunc(s, n=240):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+_SECRET_SCOPE = ("ANTHROPIC_API_KEY", "DOPPLER_PROJECT", "DOPPLER_CONFIG",
+                 "NEXUS_SECRETS_BACKENDS")
+
+
 def _load_key():
+    """Resolve ANTHROPIC_API_KEY: process env -> repo .env -> secrets chain.
+
+    The two cheap lookups come first so the common case costs no subprocess. The
+    chain fallback exists because this hook is spawned by Claude Code, not by
+    systemd, so it can't inherit an env exported by secret-run.sh the way the
+    Slack bridge does — it has to shell out to secret-get.sh itself.
+    """
     if os.environ.get("ANTHROPIC_API_KEY"):
         return
+    root = os.path.realpath(__file__)
+    for _ in range(4):  # tmux/mac/tmux-scripts/ -> repo root
+        root = os.path.dirname(root)
+
+    # .env is read (not sourced) for the key and the chain's scope settings.
+    cfg = {}
     try:
-        root = os.path.realpath(__file__)
-        for _ in range(4):  # tmux/mac/tmux-scripts/ -> repo root
-            root = os.path.dirname(root)
         for ln in open(os.path.join(root, ".env"), errors="replace"):
             ln = ln.strip()
-            if ln.startswith("ANTHROPIC_API_KEY=") and "=" in ln:
-                os.environ["ANTHROPIC_API_KEY"] = ln.split("=", 1)[1].strip()
-                break
+            if not ln or ln.startswith("#") or "=" not in ln:
+                continue
+            k, v = ln.split("=", 1)
+            if k in _SECRET_SCOPE:
+                cfg[k] = v.strip()
+    except Exception:
+        pass
+
+    if cfg.get("ANTHROPIC_API_KEY"):
+        os.environ["ANTHROPIC_API_KEY"] = cfg["ANTHROPIC_API_KEY"]
+        return
+
+    # secret-get.sh self-defaults its chain to `env` alone, which would never
+    # reach Doppler here — pass the chain explicitly.
+    sec = os.path.join(root, "scripts", "secrets", "secret-get.sh")
+    if not os.path.exists(sec):
+        return
+    try:
+        out = subprocess.run(
+            ["bash", sec,
+             "--project", cfg.get("DOPPLER_PROJECT", "nexus"),
+             "--config", cfg.get("DOPPLER_CONFIG", "prd"),
+             "--backends", cfg.get("NEXUS_SECRETS_BACKENDS", "env,doppler"),
+             "ANTHROPIC_API_KEY"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        if out:
+            os.environ["ANTHROPIC_API_KEY"] = out
     except Exception:
         pass
 
