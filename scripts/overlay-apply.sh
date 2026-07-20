@@ -42,7 +42,7 @@
 #   [[env]]                        # 0+  merge KEY=VAL into the active profile .env (kept if present)
 #     key = "SOME_KEY"
 #     value = "default"
-#   [[template]]                   # 0+  glob of copied files to sed __HOME__/__NODE_BIN__ in-place
+#   [[template]]                   # 0+  glob of copied files to fill __HOME__/__NODE_BIN__/__AGENTS_NEXUS_DIR__ in-place
 #     glob = "launchd/*.plist"
 set -u
 
@@ -225,7 +225,14 @@ PY
 
 # ── template one file (reused by apply + restore) ────────────────────────────
 NODE_BIN="$(dirname "$(command -v node 2>/dev/null || echo /usr/local/bin/node)")"
-_tmpl_one(){ run perl -i -pe "s{__HOME__}{$HOME}g; s{__NODE_BIN__}{$NODE_BIN}g" "$1"; }
+# Fill placeholders in a copied file. Values are passed through the ENVIRONMENT and read
+# via perl's %ENV — never interpolated into the perl program — so a value containing
+# perl-significant chars is substituted literally. (Critically: an email-style $HOME like
+# /Users/a@b.com would, if interpolated into the code, have "@b" parsed as an array and
+# vanish → /Users/a.com. Reading from %ENV avoids that.) __AGENTS_NEXUS_DIR__ resolves to
+# the core repo root this overlay is being layered into.
+_tmpl_one(){ run env "_NX_HOME=$HOME" "_NX_NODE_BIN=$NODE_BIN" "_NX_AGENTS_NEXUS_DIR=$NEXUS_DIR" \
+  perl -i -pe 's{__HOME__}{$ENV{_NX_HOME}}g; s{__NODE_BIN__}{$ENV{_NX_NODE_BIN}}g; s{__AGENTS_NEXUS_DIR__}{$ENV{_NX_AGENTS_NEXUS_DIR}}g' "$1"; }
 _apply_templates(){ # _apply_templates NAME REL...  → template any REL matching NAME's [[template]] globs
   local name="$1"; shift
   local man; man="$(clone_dir "$name")/overlay.toml"; [ -f "$man" ] || return 0

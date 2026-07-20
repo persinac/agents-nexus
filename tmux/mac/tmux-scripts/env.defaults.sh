@@ -20,17 +20,18 @@ export NEXUS_TMUX_DIR="${NEXUS_TMUX_DIR:-$HOME/.tmux}"
 # NEXUS_SUBSTRATE=tmux in env.sh (sourced after this) or the process env.
 export NEXUS_SUBSTRATE="${NEXUS_SUBSTRATE:-herdr}"
 
-# ── OS-aware path defaults ───────────────────────────────────────────────────
-# The mac fleet lives under ~/repos; the Linux personal box uses ~/repos.
-# The scripts' inline `${REPO_DIR:-$HOME/repos}` fallback is wrong on mac (empty
-# picker), so pick the right default by platform here.
-case "$OSTYPE" in
-  darwin*) _NX_REPO_DEFAULT="$HOME/repos" ;;
-  *)       _NX_REPO_DEFAULT="$HOME/repos" ;;
-esac
-export REPO_DIR="${REPO_DIR:-$_NX_REPO_DEFAULT}"
-export CHECKPOINT_DIR="${CHECKPOINT_DIR:-$HOME/vault/Checkpoints}"
-unset _NX_REPO_DEFAULT
+# ── Per-machine path defaults (degrade path only) ────────────────────────────
+# Seed these ONLY when there is no env.sh to set them. This file is sourced BEFORE
+# env.sh, so assigning them unconditionally here would shadow an env.sh that uses the
+# ${VAR:-…} idiom — silently defeating the "env.sh on top always wins" contract above
+# (a box whose repos live under, say, ~/work/repos would still get ~/repos → empty
+# picker). A teammate who only linked the picker (no install.sh, no env.sh) still gets
+# a usable fallback here; the consuming scripts also self-default (${REPO_DIR:-$HOME/repos})
+# as a last resort. A box whose repos/checkpoints live elsewhere sets these in env.sh.
+if [ ! -f "$NEXUS_TMUX_DIR/env.sh" ]; then
+  export REPO_DIR="${REPO_DIR:-$HOME/repos}"
+  export CHECKPOINT_DIR="${CHECKPOINT_DIR:-$HOME/vault/Checkpoints}"
+fi
 
 # ── Agent bus defaults (safe if the bridge is down — open-claude probes health) ─
 export SENDMESSAGE_BUS_ENABLED="${SENDMESSAGE_BUS_ENABLED:-1}"
