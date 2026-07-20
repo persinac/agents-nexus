@@ -1,0 +1,12 @@
+[Unit]
+Description=Snapshot nexus-proxy routing calibration report into ~/.local/state/agents-nexus/routing (history past the Langfuse trace TTL)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash __AGENTS_NEXUS_DIR__/scripts/routing-snapshot.sh
+Environment=HOME=__HOME__
+Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

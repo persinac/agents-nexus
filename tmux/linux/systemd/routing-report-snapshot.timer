@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily nexus-proxy routing snapshot — 11:37 UTC (~05:37 MT)
+
+[Timer]
+OnCalendar=*-*-* 11:37:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
