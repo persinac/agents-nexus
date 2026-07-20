@@ -51,16 +51,42 @@ log_dir="${HERDR_PLUGIN_STATE_DIR:-${TMPDIR:-/tmp}}"
     "$(date '+%Y-%m-%dT%H:%M:%S')" "$msg" \
     "${HERDR_PANE_ID:-?}" "${HERDR_WORKSPACE_ID:-?}" >> "$log_dir/presence.log"; } 2>/dev/null || true
 
+# Load the env layer — portable defaults, then per-machine env.sh on top (the same
+# order as open-claude.sh). herdr runs plugin hooks with a STRIPPED environment (no
+# NEXUS_* reaches us), so without this NEXUS_PRESENCE_NOTIFY_CMD / _SOUND set in
+# env.sh are invisible here and the documented override silently does nothing.
+# Sourced AFTER the fast gate above: only a real `blocked` transition pays for it,
+# so the high-frequency no-op path still spawns nothing.
+NEXUS_TMUX_DIR="${NEXUS_TMUX_DIR:-$HOME/.tmux}"
+# shellcheck source=/dev/null
+[ -f "$NEXUS_TMUX_DIR/env.defaults.sh" ] && source "$NEXUS_TMUX_DIR/env.defaults.sh"
+# shellcheck source=/dev/null
+[ -f "$NEXUS_TMUX_DIR/env.sh" ] && source "$NEXUS_TMUX_DIR/env.sh"
+
 # Dispatch. Precedence: explicit override -> macOS toast -> Linux toast -> bell.
+# A channel must SUCCEED to count as delivered; a channel that EXISTS but fails
+# falls through to the next. The old form selected a branch on `command -v` alone
+# and swallowed the result with `|| true`, so a present-but-broken notifier ate
+# the alert and left the bell unreachable — e.g. notify-send on WSL/headless,
+# where the binary installs fine but no org.freedesktop.Notifications daemon is
+# registered on the session bus, so every toast fails with ServiceUnknown.
+notified=0
+
 if [ -n "${NEXUS_PRESENCE_NOTIFY_CMD:-}" ]; then
-  NEXUS_PRESENCE_MSG="$msg" sh -c "$NEXUS_PRESENCE_NOTIFY_CMD" >/dev/null 2>&1 || true
-elif [ "$(uname)" = "Darwin" ] && command -v osascript >/dev/null 2>&1; then
+  NEXUS_PRESENCE_MSG="$msg" sh -c "$NEXUS_PRESENCE_NOTIFY_CMD" >/dev/null 2>&1 && notified=1
+fi
+
+if [ "$notified" = 0 ] && [ "$(uname)" = "Darwin" ] && command -v osascript >/dev/null 2>&1; then
   safe="${msg//\"/}"                       # AppleScript string can't hold a raw double-quote
   sound="${NEXUS_PRESENCE_SOUND:-Submarine}"
-  osascript -e "display notification \"$safe\" with title \"herdr · agent blocked\" sound name \"$sound\"" >/dev/null 2>&1 || true
-elif command -v notify-send >/dev/null 2>&1; then
-  notify-send -u critical "herdr · agent blocked" "$msg" >/dev/null 2>&1 || true
-else
+  osascript -e "display notification \"$safe\" with title \"herdr · agent blocked\" sound name \"$sound\"" >/dev/null 2>&1 && notified=1
+fi
+
+if [ "$notified" = 0 ] && command -v notify-send >/dev/null 2>&1; then
+  notify-send -u critical "herdr · agent blocked" "$msg" >/dev/null 2>&1 && notified=1
+fi
+
+if [ "$notified" = 0 ]; then
   printf '\a' >/dev/tty 2>/dev/null || true # last resort: terminal bell
 fi
 exit 0

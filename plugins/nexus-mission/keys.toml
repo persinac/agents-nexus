@@ -1,7 +1,14 @@
 # nexus.mission keybinding — appended to ~/.config/herdr/config.toml by the installer.
-# ctrl+a shift+c -> launch a Conductor mission (fzf mode picker → goal → kick). "C" = Conductor.
-# shift+c is a free chord; shift+d stays herdr's built-in close_workspace.
+# ctrl+a shift+p -> launch a Conductor mission (fzf mode picker → goal → kick). "P" = pipeline.
+#
+# NOT shift+c: the base config.toml owns that chord (the conductor-run.sh shell shim, migrated
+# from the old tmux `bind C`). herdr resolves a duplicate chord FIRST-WINS and disables the
+# loser silently — with mission's block appended after the base config, shift+c here never
+# fired. Observed as a reload-config diagnostic:
+#   prefix+shift+c: kept keys.command[12].key, disabled keys.command[21].key
+# NOTE: shift+p displaces herdr's native rename_pane, the same trade fleet makes for
+# shift+g (new_worktree) and shift+w (rename_workspace).
 [[keys.command]]
-key = "prefix+shift+c"
+key = "prefix+shift+p"
 type = "plugin_action"
 command = "nexus.mission.new"
