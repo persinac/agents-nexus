@@ -90,15 +90,28 @@ fi
 # in herdr mode and any pane-backed sender lacking PROJECT_SLUG fell straight to "unknown"
 # (the F4HFKXH56W/unknown on the bus). Same fold the hooks already do.
 SELF_PANE="${TMUX_PANE:-${HERDR_PANE_ID:-}}"
-FROM="${AGENT_FROM:-${PROJECT_SLUG:-}}"
-if [ -z "$FROM" ] && [ -n "$SELF_PANE" ]; then
+# Resolve the sender identity as a FULL FQDN component — workspace/name — so the bridge stamps
+# host/workspace/name. A BARE name is dangerous: the same name can exist in multiple workspaces
+# (e.g. several `general`s), so a bare `host/name` `from` is ambiguous, and a recipient that
+# shares the name misreads the message as a self-loopback. We ALWAYS fold in the sender pane's
+# registry WORKSPACE. An AGENT_FROM/PROJECT_SLUG that already contains '/' is taken as explicit.
+_self_name="${AGENT_FROM:-${PROJECT_SLUG:-}}"
+_self_ws=""
+if [ -n "$SELF_PANE" ]; then
   for f in "$REGISTRY_DIR"/*; do
     [ -f "$f" ] || continue
     if [ "$(grep '^PANE_ID=' "$f" | cut -d= -f2)" = "$SELF_PANE" ]; then
-      FROM="$(grep '^NAME=' "$f" | cut -d= -f2)"; break
+      [ -z "$_self_name" ] && _self_name="$(grep '^NAME=' "$f" | cut -d= -f2)"
+      _self_ws="$(grep '^WORKSPACE=' "$f" | cut -d= -f2-)"
+      break
     fi
   done
 fi
+case "$_self_name" in
+  */*) FROM="$_self_name" ;;                                             # already qualified
+  '')  FROM="" ;;                                                        # unknown → register block below
+  *)   if [ -n "$_self_ws" ]; then FROM="$_self_ws/$_self_name"; else FROM="$_self_name"; fi ;;
+esac
 # Still unnamed but we DO have a live pane → register it now. Everything in the fleet gets a
 # registry entry, ephemeral or not: an agent that can talk on the bus must be nameable +
 # addressable back. Name = herdr's own agent label, else the cwd basename. The entry is
