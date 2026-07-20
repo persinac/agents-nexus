@@ -2,9 +2,17 @@
 // Requires a broker on nats://127.0.0.1:4222 (docker run -d -p 4222:4222 nats:latest -js).
 // Run: node transports/nats-transport.itest.mjs   (NOT part of `npm test`).
 import assert from 'node:assert/strict';
+import { connect } from '@nats-io/transport-node';
+import { jetstreamManager } from '@nats-io/jetstream';
 import { createNatsTransport } from './nats-transport.js';
 
 const SELF = 'F4HFKXH56W';
+// ISOLATED subject prefix — MUST NOT be `nexus.a2a` (the prod stream binds that, and
+// JetStream forbids two streams with overlapping subjects, so a shared prefix makes the
+// test fail against a real broker AND blocks the prod stream). Own prefix + own stream/KV.
+const IT_PREFIX = 'nexusit.a2a';
+const IT_STREAM = 'NEXUS_A2A_IT';
+const IT_KV = 'nexus_presence_it';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = false;
 const ok = (m) => console.log(`  ✔ ${m}`);
@@ -13,8 +21,9 @@ const fail = (m, e) => { failed = true; console.error(`  �’ ${m}: ${e?.messa
 const t = createNatsTransport({
   selfHost: SELF,
   url: 'nats://127.0.0.1:4222',
-  streamName: 'NEXUS_A2A_IT',
-  kvBucket: 'nexus_presence_it',
+  subjectPrefix: IT_PREFIX,       // isolated — never overlaps the prod `nexus.a2a.>` stream
+  streamName: IT_STREAM,
+  kvBucket: IT_KV,
   presenceTtlMs: 60_000,
   ackWaitMs: 10_000,
 });
@@ -72,6 +81,14 @@ try {
   fail('integration', e);
 } finally {
   await t.close().catch(() => {});
+  // Self-clean: delete the test stream + KV-backing stream so a re-run (or the prod
+  // bridge) never trips over leftover streams. Best-effort.
+  try {
+    const nc = await connect({ servers: 'nats://127.0.0.1:4222' });
+    const jsm = await jetstreamManager(nc);
+    for (const s of [IT_STREAM, `KV_${IT_KV}`]) { try { await jsm.streams.delete(s); } catch {} }
+    await nc.drain();
+  } catch { /* broker gone — nothing to clean */ }
 }
 
 console.log(failed ? 'INTEGRATION: FAIL' : 'INTEGRATION: PASS');
