@@ -649,3 +649,102 @@ export function capWithMarker(str, max) {
   if (s.length <= max) return s;
   return `${s.slice(0, max)} …[truncated ${s.length - max} chars]`;
 }
+
+// --------------------------------------------------------------------------
+// FQDN ↔ NATS subject codec (shared contract for the NATS A2A transport).
+//
+// The A2A address is an FQDN `<host>/<workspace>/<name>` (parseAddress splits a
+// wire token into exactly these three fields; workspace may be '' or contain '/').
+// The NATS transport addresses by SUBJECT, so we need a deterministic, reversible,
+// collision-free map to a fixed 3-token subject tail:
+//   `<prefix>.<enc(host)>.<enc(workspace)>.<enc(name)>`  (prefix default `nexus.a2a`)
+// A bridge subscribes only its own host subtree (`<prefix>.<enc(host)>.>`), so the
+// broker routes each message to exactly the owning host — no fleet-wide fan-out.
+//
+// Token encoding keeps the safe set `[A-Za-z0-9_-]` verbatim (so a kebab agent name
+// like `svc-chatbot` is human-readable) and escapes every other byte as `<esc>HH`
+// (two lowercase hex of the UTF-8 byte). The escape char has no passthrough, so
+// decoding is unambiguous: an `<esc>` always introduces a 2-hex escape. An empty token
+// maps to `<esc>e`, which encode() can never emit for a non-empty string (a real
+// `<esc>` becomes `<esc>7e`/…), so it round-trips cleanly.
+//
+// Two escape chars for two namespaces with different legal charsets:
+//   - SUBJECTS forbid `. * >` and whitespace but allow `~` → escape with `~`.
+//   - KV KEYS are limited to `[-/=.\w]` (NO `~`) → escape with `=`.
+// Both escape chars are outside the passthrough set, so the scheme is identical.
+// --------------------------------------------------------------------------
+const _PASSTHROUGH = /[A-Za-z0-9_-]/;
+
+function _encodeToken(s, esc) {
+  const str = String(s == null ? '' : s);
+  if (str === '') return `${esc}e`;            // empty-token sentinel (unreachable by a non-empty input)
+  let out = '';
+  for (const b of Buffer.from(str, 'utf8')) {
+    const ch = String.fromCharCode(b);
+    out += _PASSTHROUGH.test(ch) ? ch : `${esc}${b.toString(16).padStart(2, '0')}`;
+  }
+  return out;
+}
+
+function _decodeToken(tok, esc) {
+  const t = String(tok == null ? '' : tok);
+  if (t === `${esc}e`) return '';
+  const bytes = [];
+  for (let i = 0; i < t.length; i += 1) {
+    if (t[i] === esc) {
+      const hex = t.slice(i + 1, i + 3);
+      if (!/^[0-9a-fA-F]{2}$/.test(hex)) return null;   // malformed escape → not a valid token
+      bytes.push(parseInt(hex, 16));
+      i += 2;
+    } else {
+      bytes.push(t.charCodeAt(i) & 0xff);
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+// Subject tokens escape with `~` (subject-legal; never produces `. * >` or whitespace).
+export function encodeSubjectToken(s) { return _encodeToken(s, '~'); }
+export function decodeSubjectToken(tok) { return _decodeToken(tok, '~'); }
+
+// FQDN object -> full publish subject. host/workspace/name each default to ''.
+export function fqdnToSubject({ host = '', workspace = '', name = '' } = {}, { prefix = 'nexus.a2a' } = {}) {
+  return `${prefix}.${encodeSubjectToken(host)}.${encodeSubjectToken(workspace)}.${encodeSubjectToken(name)}`;
+}
+
+// Publish subject -> FQDN object, or null if the subject doesn't match `<prefix>.a.b.c`.
+// Encoded tokens never contain '.', so splitting the tail on '.' yields exactly 3 parts.
+export function subjectToFqdn(subject, { prefix = 'nexus.a2a' } = {}) {
+  const s = String(subject == null ? '' : subject);
+  const head = `${prefix}.`;
+  if (!s.startsWith(head)) return null;
+  const parts = s.slice(head.length).split('.');
+  if (parts.length !== 3) return null;
+  const host = decodeSubjectToken(parts[0]);
+  const workspace = decodeSubjectToken(parts[1]);
+  const name = decodeSubjectToken(parts[2]);
+  if (host === null || workspace === null || name === null) return null;
+  return { host, workspace, name };
+}
+
+// The wildcard subscription filter for a host: everything addressed to `host`.
+export function hostSubjectFilter(host, { prefix = 'nexus.a2a' } = {}) {
+  return `${prefix}.${encodeSubjectToken(host)}.>`;
+}
+
+// FQDN <-> JetStream KV key. KV keys are dot-delimited and limited to `[-/=.\w]`
+// (NO `~`), so presence entries use the `=`-escaped token grammar:
+// `<enc(host)>.<enc(workspace)>.<enc(name)>`.
+export function fqdnToKvKey({ host = '', workspace = '', name = '' } = {}) {
+  return `${_encodeToken(host, '=')}.${_encodeToken(workspace, '=')}.${_encodeToken(name, '=')}`;
+}
+
+export function kvKeyToFqdn(key) {
+  const parts = String(key == null ? '' : key).split('.');
+  if (parts.length !== 3) return null;
+  const host = _decodeToken(parts[0], '=');
+  const workspace = _decodeToken(parts[1], '=');
+  const name = _decodeToken(parts[2], '=');
+  if (host === null || workspace === null || name === null) return null;
+  return { host, workspace, name };
+}

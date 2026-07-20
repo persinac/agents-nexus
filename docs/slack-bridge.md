@@ -319,6 +319,58 @@ on is affected; traffic to other agents is unchanged. Set
 > `~/.tmux/env.sh`). Both must have it set for an end-to-end remote send. `curl
 > :8788/health` reports `"bus": true` once the bridge side is live.
 
+### NATS transport (opt-in, `NEXUS_BUS_TRANSPORT=nats`) {#nats-transport}
+
+The A2A **medium** is pluggable. Slack was the right bootstrap — a free durable log + a
+human UI in one — but it does not scale to a company-wide fleet: Socket Mode caps concurrent
+connections per app (~10), which forces one Slack app *per participant* (hundreds of
+security-approved apps in a Vanta workspace), plus `chat.postMessage` rate limits and PHI in
+Slack. `NEXUS_BUS_TRANSPORT=nats` routes **agent-to-agent** traffic over a NATS + JetStream
+broker instead; the **human** notify/reply leg (`#nexus`, `/notify`, threads, `/relay`) stays
+on Slack. This realizes [agent-bus-roadmap Phase G](agent-bus-roadmap.md#phase-g--broker-substrate-optional-last)
+(full change: `openspec/changes/nats-a2a-bus-transport`).
+
+**What moves, what doesn't.** Only the transport touch points change — publish (`/send`) and
+inbound A2A delivery. Routing (`parseAddress`), the delivery layer (`send-keys` / SDK inbox),
+the `@waiting` idle-gate, and presence *semantics* are unchanged. **`agent-send.sh` is
+unchanged** — it still POSTs `:8788/send`; the transport is chosen bridge-side.
+
+**Mapping** (the subject/key codec is unit-tested in `orchestrator.js`; the transport is in
+`slack-bridge/transports/nats-transport.js`):
+
+| Slack bus | NATS transport |
+| --- | --- |
+| FQDN token scanned off one channel by every host | **Subject** `nexus.a2a.<host>.<workspace>.<name>`; a bridge subscribes only its own `nexus.a2a.<self-host>.>` — the broker routes to the owner, no fan-out |
+| `#nexus-agents` history = the durable log | **JetStream stream** `NEXUS_A2A` (bounded retention) — offline recipients drain from their durable consumer on reconnect; also the audit/replay record |
+| in-memory `busQueue` idle-gate | Same in-memory idle-gate today (ack-on-receive). Ack-on-idle — holding the JetStream message un-acked until delivery so a hold survives a bridge restart — is a tracked follow-up |
+| presence gossip on the channel | **JetStream KV** `nexus_presence`, FQDN-keyed with a TTL; upserted on a heartbeat, TTL-aged on departure |
+| one Slack app per participant | one broker; a participant joins with a **credential** (NKEY/JWT), not a messaging app |
+
+**Config** (env — see `.env.example`): `NEXUS_BUS_TRANSPORT` (`slack` default | `nats`),
+`NATS_URL`, `NATS_A2A_STREAM`, `NATS_A2A_SUBJECT_PREFIX`, `NATS_PRESENCE_KV`, and one of
+`NATS_CREDS` / `NATS_TOKEN` / `NATS_USER`+`NATS_PASS`. The bus is still gated by
+`SLACK_BUS_ENABLED=1` (the master switch). `curl :8788/health` reports `"transport":"nats"`
+and `"nats":true` once connected.
+
+**Broker** (single-node pilot; add TLS + subject-scoped creds + a 3-node cluster for the
+company fleet):
+
+```bash
+docker compose -f docker-compose.work.yml --profile nats up -d   # nats://…:4222 (+ :8222 monitor)
+```
+
+**Migration is dual-run + flag-reversible.** Point a host at NATS (`NEXUS_BUS_TRANSPORT=nats`);
+the human legs keep working on Slack. Roll back any time with `NEXUS_BUS_TRANSPORT=slack` +
+restart — the bridge is back on the `#nexus-agents` bus with the in-memory idle-gate, no other
+change. Cut the fleet over host-by-host.
+
+> **Verification status:** the transport (publish, durable consumer, host isolation, offline
+> backlog, envelope round-trip, KV presence) is integration-tested against a live
+> `nats-server` (`slack-bridge/transports/nats-transport.itest.mjs`, run manually — needs a
+> broker on `:4222`, not part of `npm test`). The subject/KV codec is unit-tested in
+> `npm test`. Full bridge-in-nats-mode end-to-end (bridge + broker + Slack tokens together) is
+> the rollout step (change tasks 8.x).
+
 ### Enable it (one-time)
 
 1. Create a **dedicated** `#nexus-agents` channel and invite the bot. ⚠️ It **must be a

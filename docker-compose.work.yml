@@ -187,6 +187,35 @@ services:
       ollama:
         condition: service_healthy
 
+  # ── Messaging: NATS + JetStream (A2A bus transport) ───────────────────────
+  # Durable agent-to-agent bus for the slack-bridge when NEXUS_BUS_TRANSPORT=nats.
+  # JetStream provides the durable stream (offline delivery + replay/audit) and the KV
+  # presence bucket; subjects carry FQDN addressing so a bridge subscribes only its own
+  # host subtree (no fleet-wide fan-out). Single node for the pilot — for cross-host / the
+  # company fleet, front it with TLS + subject-scoped NKEY/JWT creds and run a 3-node cluster.
+  #   docker compose -f docker-compose.work.yml --profile nats up -d
+  # The bridge points at it via NATS_URL (host: nats://nexus-nats:4222 in-stack, or the
+  # box's reachable address cross-host).
+  nats:
+    profiles: ["nats"]
+    image: nats:2.10-alpine
+    container_name: nexus-nats
+    restart: always
+    # -js enables JetStream; -sd is the JetStream store dir (persisted on the volume);
+    # -m 8222 exposes the HTTP monitoring endpoint used by the healthcheck.
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - nats-data:/data
+    ports:
+      - "${NATS_PORT:-4222}:4222"
+      - "${NATS_MONITOR_PORT:-8222}:8222"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
   # ── Dashboard ────────────────────────────────────────────────────────────
 
   dashboard:
@@ -417,6 +446,7 @@ services:
 volumes:
   postgres-data:
   ollama-data:
+  nats-data:
   spark-index:
   langfuse-postgres-data:
   langfuse-redis-data:

@@ -3,7 +3,7 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn } from './orchestrator.js';
 
 // The addressed-bus parser lives in index.js (it needs no orchestrator state), but its
 // shape is a shared contract with formatRelay/parsePresence — a relay or presence line must
@@ -417,4 +417,84 @@ test('ownersOf / ownerOf: name-level ownership on records, lexically-smallest ho
   assert.deepEqual(ownersOf(map, 'general'), ['buddy', 'nexus']);
   assert.equal(ownerOf(map, 'general'), 'buddy');
   assert.equal(ownerOf(map, 'nope'), null);
+});
+
+// --------------------------------------------------------------------------
+// FQDN ↔ NATS subject codec. Reversible, collision-free, subject-legal output.
+// --------------------------------------------------------------------------
+
+test('encode/decode subject token round-trips (passthrough, escapes, unicode, empty)', () => {
+  for (const s of ['svc-chatbot', 'agents-nexus', 'F4HFKXH56W', 'search/r12n/svc-r12n',
+                   'a.b', 'has space', 'star*and>gt', '~tilde~', 'café', '', '_under_', 'MixedCase09']) {
+    assert.equal(decodeSubjectToken(encodeSubjectToken(s)), s, `round-trip: ${JSON.stringify(s)}`);
+  }
+});
+
+test('encoded token contains only subject-legal characters', () => {
+  const illegal = /[.\s*>]/;   // NATS forbids '.', whitespace, '*', '>' inside a token
+  for (const s of ['search/r12n/svc-r12n', 'a.b.c', 'x y z', 'a*b>c', 'name-with-🎉']) {
+    assert.ok(!illegal.test(encodeSubjectToken(s)), `token legal for ${JSON.stringify(s)}: ${encodeSubjectToken(s)}`);
+  }
+});
+
+test('empty token uses the ~e sentinel and is unreachable by non-empty input', () => {
+  assert.equal(encodeSubjectToken(''), '~e');
+  assert.equal(decodeSubjectToken('~e'), '');
+  // No non-empty string encodes to '~e' (a real '~' becomes '~7e').
+  for (const s of ['e', '~', 'ee', '~e~e']) assert.notEqual(encodeSubjectToken(s), '~e');
+});
+
+test('fqdnToSubject / subjectToFqdn round-trip across host/workspace/name shapes', () => {
+  const cases = [
+    { host: 'F4HFKXH56W', workspace: 'search/r12n/svc-r12n', name: 'svc-r12n' },
+    { host: 'nexus', workspace: '', name: 'general' },                 // no workspace
+    { host: '', workspace: '', name: 'agents-nexus' },                 // bare name (unresolved host)
+    { host: 'a.b', workspace: 'c.d', name: 'e.f' },                    // dots everywhere
+  ];
+  for (const fqdn of cases) {
+    const subj = fqdnToSubject(fqdn);
+    assert.equal(subj.split('.').length, 5, `prefix(2) + 3 tokens for ${JSON.stringify(fqdn)}: ${subj}`);
+    assert.deepEqual(subjectToFqdn(subj), fqdn, `round-trip ${subj}`);
+  }
+});
+
+test('fqdnToSubject honors a custom prefix and hostSubjectFilter wildcards the tail', () => {
+  const subj = fqdnToSubject({ host: 'h', workspace: 'w', name: 'n' }, { prefix: 'x.y' });
+  assert.ok(subj.startsWith('x.y.'));
+  assert.deepEqual(subjectToFqdn(subj, { prefix: 'x.y' }), { host: 'h', workspace: 'w', name: 'n' });
+  assert.equal(hostSubjectFilter('F4HFKXH56W'), 'nexus.a2a.F4HFKXH56W.>');
+  assert.equal(hostSubjectFilter('a.b', { prefix: 'p' }), 'p.a~2eb.>');   // dot in host escaped, wildcard tail
+});
+
+test('subjectToFqdn rejects a subject with the wrong prefix or arity', () => {
+  assert.equal(subjectToFqdn('other.ns.h.w.n'), null);           // wrong prefix
+  assert.equal(subjectToFqdn('nexus.a2a.h.w'), null);            // too few tokens
+  assert.equal(subjectToFqdn('nexus.a2a.h.w.n.extra'), null);    // too many tokens
+});
+
+test('a host subtree subscription matches exactly its own host subjects (isolation)', () => {
+  // The broker routes by subject; a bridge for host H binds hostSubjectFilter(H).
+  // Encode host tokens the same way and confirm same-host subjects share the H prefix
+  // while a different host does not — the property the durable consumer relies on.
+  const hPrefix = hostSubjectFilter('hostA').replace(/>$/, '');   // 'nexus.a2a.hostA.'
+  assert.ok(fqdnToSubject({ host: 'hostA', workspace: 'w', name: 'n' }).startsWith(hPrefix));
+  assert.ok(!fqdnToSubject({ host: 'hostB', workspace: 'w', name: 'n' }).startsWith(hPrefix));
+});
+
+test('fqdnToKvKey / kvKeyToFqdn round-trip + NATS-KV-legal charset', () => {
+  const fqdn = { host: 'F4HFKXH56W', workspace: 'search/r12n', name: 'svc-r12n' };
+  const key = fqdnToKvKey(fqdn);
+  // NATS KV keys are limited to [-/=.\w] and MUST NOT contain '~' (subjects allow it,
+  // KV keys don't — the bug the live-broker integration test caught).
+  assert.ok(/^[-/=.\w]+$/.test(key), `KV-legal charset: ${key}`);
+  assert.ok(!key.includes('~'), `no tilde in KV key: ${key}`);
+  assert.equal(key.split('.').length, 3);
+  assert.deepEqual(kvKeyToFqdn(key), fqdn);
+  // Workspaces with '/', dots, and spaces stay KV-legal + reversible.
+  for (const ws of ['', 'a/b/c', 'a.b', 'has space', 'x=y']) {
+    const k = fqdnToKvKey({ host: 'h', workspace: ws, name: 'n' });
+    assert.ok(/^[-/=.\w]+$/.test(k), `KV-legal for ws=${JSON.stringify(ws)}: ${k}`);
+    assert.deepEqual(kvKeyToFqdn(k), { host: 'h', workspace: ws, name: 'n' });
+  }
+  assert.equal(kvKeyToFqdn('too.few'), null);
 });

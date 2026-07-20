@@ -119,6 +119,26 @@ const AGENTS_CHANNEL = process.env.SLACK_AGENTS_CHANNEL || '';
 // removes the limit entirely. Was a silent `.slice(0, 1500)` — the bug integration-tests caught.
 const BUS_MAX_CHARS = parseInt(process.env.SLACK_BUS_MAX_CHARS || '8000', 10);
 
+// --- A2A bus transport selection (default 'slack'; 'nats' = NATS + JetStream) ---
+// The bus medium is pluggable: `slack` (default) keeps the #nexus-agents channel path
+// byte-for-byte; `nats` routes A2A publish/subscribe over a NATS JetStream broker so the
+// fleet scales past Slack's Socket-Mode / per-app-bot ceiling. Routing, the delivery layer
+// (send-keys / SDK inbox), the idle-gate, and the HUMAN notify/reply leg are UNCHANGED —
+// only the A2A publish (`/send`) and inbound A2A delivery move. The `nats` client is imported
+// dynamically at startup ONLY in nats mode, so a slack-only bridge needs no NATS dependency.
+// The bus is still gated by SLACK_BUS_ENABLED=1 regardless of transport (the master switch).
+const BUS_TRANSPORT = (process.env.NEXUS_BUS_TRANSPORT || 'slack').toLowerCase();
+const NATS_URL = process.env.NATS_URL || 'nats://127.0.0.1:4222';
+const NATS_CREDS = process.env.NATS_CREDS || '';                 // creds file (NKEY/JWT) — the scale path
+const NATS_TOKEN = process.env.NATS_TOKEN || '';
+const NATS_USER = process.env.NATS_USER || '';
+const NATS_PASS = process.env.NATS_PASS || '';
+const NATS_A2A_STREAM = process.env.NATS_A2A_STREAM || 'NEXUS_A2A';
+const NATS_A2A_SUBJECT_PREFIX = process.env.NATS_A2A_SUBJECT_PREFIX || 'nexus.a2a';
+const NATS_PRESENCE_KV = process.env.NATS_PRESENCE_KV || 'nexus_presence';
+let natsTransport = null;   // the NatsTransport instance (set at startup in nats mode)
+let natsReady = false;      // true once connected + subscribed
+
 // --- Presence registry (Phase 2; opt-in on top of the bus; default OFF) ---
 // Each bridge announces its live local agent set on the bus channel and consumes
 // peers into presenceMap (host -> { agents:Set, ts, seen }). From it we derive a
@@ -1580,7 +1600,8 @@ const httpServer = http.createServer((req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, connected: socketConnected, threads: threadMap.size, bus: BUS_ENABLED && !!AGENTS_CHANNEL, presence: PRESENCE_ENABLED, host: SELF_HOST }));
+    const busUp = BUS_ENABLED && (BUS_TRANSPORT === 'nats' ? natsReady : !!AGENTS_CHANNEL);
+    res.end(JSON.stringify({ ok: true, connected: socketConnected, threads: threadMap.size, bus: busUp, transport: BUS_TRANSPORT, nats: BUS_TRANSPORT === 'nats' ? natsReady : undefined, presence: PRESENCE_ENABLED, host: SELF_HOST }));
     return;
   }
 
@@ -1670,9 +1691,9 @@ const httpServer = http.createServer((req, res) => {
     req.on('end', async () => {
       res.setHeader('Content-Type', 'application/json');
       try {
-        if (!BUS_ENABLED || !AGENTS_CHANNEL) {
+        if (!BUS_ENABLED) {
           res.writeHead(409);
-          res.end(JSON.stringify({ ok: false, error: 'bus disabled (set SLACK_BUS_ENABLED=1 + SLACK_AGENTS_CHANNEL)' }));
+          res.end(JSON.stringify({ ok: false, error: 'bus disabled (set SLACK_BUS_ENABLED=1)' }));
           return;
         }
         const { to, from, msg } = JSON.parse(body || '{}');
@@ -1680,9 +1701,29 @@ const httpServer = http.createServer((req, res) => {
         // Self-identify by FQDN (SELF_HOST/[workspace/]name) by default so the recipient can
         // reply across hosts unambiguously; the bridge owns SELF_HOST, so it stamps the host.
         const sender = qualifyFrom(from).slice(0, 120);
+        const capped = orch.capWithMarker(msg, BUS_MAX_CHARS);
+
+        // NATS transport: publish a structured envelope to the target's subject. The broker
+        // routes it to the owning host's durable consumer; that bridge formats + delivers it
+        // (see the subscribe handler). No Slack channel involved.
+        if (BUS_TRANSPORT === 'nats') {
+          if (!natsReady) {
+            res.writeHead(503);
+            res.end(JSON.stringify({ ok: false, error: 'nats transport not connected' }));
+            return;
+          }
+          const fqdn = orch.parseAddress(to, { knownHosts: new Set(presenceMap.keys()), selfHost: SELF_HOST });
+          const pub = await natsTransport.publish(fqdn, { to, from: sender, msg: capped });
+          res.writeHead(200);
+          res.end(JSON.stringify({ ok: true, subject: pub.subject, seq: pub.seq }));
+          return;
+        }
+
+        // Slack transport (default): post an addressed, sender-tagged line to the channel.
+        if (!AGENTS_CHANNEL) { res.writeHead(409); res.end(JSON.stringify({ ok: false, error: 'SLACK_AGENTS_CHANNEL not set' })); return; }
         // `to: ↩ from <sender>: <msg>` — the leading `to:` is what the receiving
         // bridge's addressed-message parser keys on; the rest is delivered verbatim.
-        const text = `${to}: ↩ from ${sender}: ${orch.capWithMarker(msg, BUS_MAX_CHARS)}`;
+        const text = `${to}: ↩ from ${sender}: ${capped}`;
         const posted = await web.chat.postMessage({ channel: AGENTS_CHANNEL, text });
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true, ts: posted.ts }));
@@ -1776,7 +1817,56 @@ const httpServer = http.createServer((req, res) => {
     console.log('[slack-bridge] orchestrator spawn branch disabled (set SLACK_SPAWN_ENABLED=1 to enable)');
   }
 
-  if (BUS_ENABLED && AGENTS_CHANNEL) {
+  if (BUS_ENABLED && BUS_TRANSPORT === 'nats') {
+    // NATS A2A transport: connect, subscribe our host subtree, and deliver inbound
+    // messages through the SAME path as the Slack bus (handleBusMessage → resolution +
+    // idle-gate + send-keys/inbox). The human notify/reply leg stays on Slack. Best-effort:
+    // a NATS failure logs and leaves A2A-over-NATS down without affecting the Slack legs.
+    try {
+      const { createNatsTransport } = await import('./transports/nats-transport.js');
+      natsTransport = createNatsTransport({
+        selfHost: SELF_HOST,
+        url: NATS_URL,
+        streamName: NATS_A2A_STREAM,
+        subjectPrefix: NATS_A2A_SUBJECT_PREFIX,
+        kvBucket: NATS_PRESENCE_KV,
+        presenceTtlMs: PRESENCE_TTL_MS,
+        credsFile: NATS_CREDS || undefined,
+        token: NATS_TOKEN || undefined,
+        user: NATS_USER || undefined,
+        pass: NATS_PASS || undefined,
+      });
+      await natsTransport.connect();
+      // Inbound: synthesize the SAME addressed line the Slack bus posts, then reuse
+      // handleBusMessage (which only reads event.text). ack-on-receive: the in-memory
+      // busQueue idle-gates a busy recipient exactly as today. (Ack-on-idle — holding the
+      // JetStream message un-acked until delivery, so a hold survives a bridge restart — is
+      // a tracked follow-up; today a restart mid-hold falls back to the stream + redelivery.)
+      await natsTransport.subscribe(async (envelope, msg) => {
+        const line = `${envelope.to}: ↩ from ${envelope.from}: ${envelope.msg}`;
+        try { await handleBusMessage({ text: line }); }
+        catch (e) { console.error(`[nats] delivery failed for ${envelope.to}: ${e.message}`); }
+        finally { try { msg.ack(); } catch { /* connection draining */ } }
+      });
+      natsReady = true;
+      console.log(`[slack-bridge] A2A transport = NATS ENABLED (${NATS_URL}, stream=${NATS_A2A_STREAM}, prefix=${NATS_A2A_SUBJECT_PREFIX})`);
+      if (BUS_DEFER) {
+        setInterval(flushBusQueue, BUS_FLUSH_MS);
+        console.log(`[slack-bridge] bus idle-gated delivery ON (deliver on @waiting=2, flush every ${BUS_FLUSH_MS}ms, queue cap ${BUS_QUEUE_MAX}/pane)`);
+      }
+      // Presence: upsert our live local agents into the JetStream KV on a heartbeat so any
+      // bridge can build reachability + resolve bare names. TTL ages out reaped agents.
+      const pushNatsPresence = async () => {
+        try { await natsTransport.presenceUpsert(loadRegistry()); }
+        catch (e) { console.error(`[nats] presence upsert failed: ${e.message}`); }
+      };
+      await pushNatsPresence();
+      setInterval(() => { pushNatsPresence().catch(() => {}); }, PRESENCE_HEARTBEAT_MS);
+      console.log(`[slack-bridge] NATS presence heartbeat every ${PRESENCE_HEARTBEAT_MS}ms (bucket=${NATS_PRESENCE_KV})`);
+    } catch (e) {
+      console.error(`[slack-bridge] NATS transport failed to start: ${e.message} — A2A over NATS is DOWN (Slack human legs unaffected)`);
+    }
+  } else if (BUS_ENABLED && AGENTS_CHANNEL) {
     console.log(`[slack-bridge] inter-agent bus ENABLED (channel=${AGENTS_CHANNEL})`);
     if (BUS_DEFER) {
       setInterval(flushBusQueue, BUS_FLUSH_MS);
