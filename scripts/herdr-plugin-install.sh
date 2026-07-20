@@ -25,8 +25,16 @@ fi
 # Resolve the repo root: prefer an explicit AGENTS_NEXUS_DIR, else derive from this
 # script's location (scripts/ -> repo root), following one symlink level.
 _src="${BASH_SOURCE[0]}"
-[ -L "$_src" ] && _src="$(readlink "$_src")"
-case "$_src" in /*) ;; *) _src="$(dirname "${BASH_SOURCE[0]}")/$_src" ;; esac
+# Follow one symlink level. A relative readlink target is relative to the LINK's dir;
+# an absolute one replaces the path. When it is not a symlink, leave BASH_SOURCE as-is
+# (dirname+cd below resolves both relative like "scripts/foo.sh" and absolute invocations).
+if [ -L "$_src" ]; then
+  _target="$(readlink "$_src")"
+  case "$_target" in
+    /*) _src="$_target" ;;
+    *)  _src="$(dirname "$_src")/$_target" ;;
+  esac
+fi
 SCRIPT_DIR="$(cd "$(dirname "$_src")" && pwd)"
 NEXUS_DIR="${AGENTS_NEXUS_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
