@@ -16,9 +16,11 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 import yaml
@@ -543,19 +545,44 @@ def _changed_files(ws):
     return files
 
 
+# ── cross-vendor reviewer (Codex) ─────────────────────────────────────────────
+# One of the N adversarial reviewers can run on OpenAI Codex instead of the Claude SDK —
+# a genuine second-model opinion in the verify stage. Read-only, verdict-only, same
+# {lens, verdict} contract as review_one, and fails CLOSED (pass=False) on any error so a
+# hung/broken codex can never silently pass a bad mission. Set `policy.reviewer.codex` (or
+# CONDUCTOR_REVIEWER_CODEX) to how many of the `count` reviewers run on codex; 0 = off.
+REVIEW_CODEX = int(os.environ.get("CONDUCTOR_REVIEWER_CODEX",
+                                  POLICY.get("reviewer", {}).get("codex", 0)))
+CODEX_BIN = os.environ.get("CODEX_BIN") or shutil.which("codex") or "/usr/local/bin/codex"
+CODEX_TIMEOUT = int(os.environ.get("CONDUCTOR_CODEX_TIMEOUT", "600"))
+VERDICT_SCHEMA = os.path.join(REPO, "agent-runner", "schemas", "verdict.schema.json")
+
+
+def _reviewer_prompt(goal: str, summaries: list, probes: list, lens: str, cwd: str,
+                     can_inspect: bool = True) -> str:
+    """Shared adversarial-reviewer prompt used by BOTH the Claude and Codex reviewers.
+    `can_inspect=False` (codex) tells the model to judge from the inline summaries/probes only:
+    codex's read-only sandbox can't run shell on this box (unprivileged-userns/bubblewrap is
+    AppArmor-restricted), and the probes already carry each artifact's head + the check output."""
+    inspect = (f"You MAY inspect artifacts under {cwd} (Read/Grep/Bash, read-only)."
+               if can_inspect else
+               "Judge ONLY from the summaries and ground-truth probes below; do not run shell commands.")
+    return (
+        f"You are an ADVERSARIAL reviewer using the '{lens}' lens. Find why this mission is NOT "
+        f"correctly/completely done. Be strict: if anything is unverified, missing, or wrong, FAIL it. "
+        f"{inspect}\n\n"
+        f"Goal: {goal}\nWork summaries: {json.dumps(summaries)}\n"
+        f"Ground-truth probes: {json.dumps(probes)}\n\n"
+        'Respond with ONLY JSON: {"pass":true,"findings":[{"severity":"blocker|major|minor","where":"","what":""}]}'
+    )
+
+
 async def review_one(mid: str, goal: str, summaries: list, probes: list, lens: str, cwd: str) -> dict:
     """One adversarial reviewer (read-only) with a distinct lens. Returns {lens, verdict}."""
     profile = PROFILES.get("reviewer", {})
     mcp = _load_mcp(profile.get("mcp", []))
     tools = list(profile.get("tools", [])) + [f"mcp__{s}__*" for s in mcp]
-    prompt = (
-        f"You are an ADVERSARIAL reviewer using the '{lens}' lens. Find why this mission is NOT "
-        f"correctly/completely done. Be strict: if anything is unverified, missing, or wrong, FAIL it. "
-        f"You MAY inspect artifacts under {cwd} (Read/Grep/Bash, read-only).\n\n"
-        f"Goal: {goal}\nWork summaries: {json.dumps(summaries)}\n"
-        f"Ground-truth probes: {json.dumps(probes)}\n\n"
-        'Respond with ONLY JSON: {"pass":true,"findings":[{"severity":"blocker|major|minor","where":"","what":""}]}'
-    )
+    prompt = _reviewer_prompt(goal, summaries, probes, lens, cwd)
     opts = ClaudeAgentOptions(
         model=MODEL, effort=ORCH_EFFORT, cwd=cwd, setting_sources=[],
         mcp_servers=mcp, allowed_tools=tools, disallowed_tools=list(WRITE_TOOLS),
@@ -572,6 +599,39 @@ async def review_one(mid: str, goal: str, summaries: list, probes: list, lens: s
     except Exception as e:
         return {"lens": lens, "verdict": {"pass": False,
                 "findings": [{"severity": "major", "where": lens, "what": f"reviewer failed: {e}"}]}}
+
+
+async def review_one_codex(mid: str, goal: str, summaries: list, probes: list, lens: str, cwd: str) -> dict:
+    """review_one's twin, running on OpenAI Codex (`codex exec`) instead of the Claude SDK.
+    Read-only sandbox; the final message is constrained to the verdict schema via --output-schema
+    and captured with -o. Same {lens, verdict} contract; fails CLOSED on any error (parse/timeout/
+    nonzero exit) so codex can never rubber-stamp a bad mission."""
+    prompt = _reviewer_prompt(goal, summaries, probes, lens, cwd, can_inspect=False)
+    fd, out = tempfile.mkstemp(prefix="cx-verdict-", suffix=".json")
+    os.close(fd)
+    cmd = [CODEX_BIN, "exec", "-C", cwd, "-s", "read-only", "--skip-git-repo-check",
+           "--output-schema", VERDICT_SCHEMA, "-o", out, prompt]
+    r = None
+    try:
+        # stdin=DEVNULL is REQUIRED — `codex exec` blocks reading stdin otherwise (would hang the
+        # whole gather). No -a flag: exec is non-interactive (approval defaults to "never"); the
+        # -s read-only sandbox is the guardrail. Model/effort left to codex defaults.
+        r = await asyncio.to_thread(subprocess.run, cmd, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=CODEX_TIMEOUT)
+        verdict = json.load(open(out))
+        if not isinstance(verdict.get("pass"), bool) or not isinstance(verdict.get("findings"), list):
+            raise ValueError(f"bad verdict shape: {verdict!r}")
+        return {"lens": f"{lens}(codex)", "verdict": verdict}
+    except Exception as e:
+        tail = f"; stderr={r.stderr[-200:].strip()}" if (r is not None and r.stderr) else ""
+        return {"lens": f"{lens}(codex)", "verdict": {"pass": False,
+                "findings": [{"severity": "major", "where": lens,
+                              "what": f"codex reviewer failed: {e}{tail}"}]}}
+    finally:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
 
 
 async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
@@ -627,9 +687,13 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
         cwd = REPO
     n = max(1, REVIEWERS)
     lenses = [REVIEW_LENSES[i % len(REVIEW_LENSES)] for i in range(n)]
-    print(f"[conductor] verify: {n} reviewers ({', '.join(dict.fromkeys(lenses))})")
-    reviews = await asyncio.gather(*[review_one(mid, goal, summaries, probes, lenses[i], cwd)
-                                     for i in range(n)])
+    # Route the last k reviewers to Codex (cross-vendor second opinion); 0 = pure-claude.
+    k = min(REVIEW_CODEX, n) if (REVIEW_CODEX > 0 and os.path.exists(CODEX_BIN)) else 0
+    tag = f" — last {k} on codex" if k else ""
+    print(f"[conductor] verify: {n} reviewers ({', '.join(dict.fromkeys(lenses))}){tag}")
+    reviews = await asyncio.gather(*[
+        (review_one_codex if i >= n - k else review_one)(mid, goal, summaries, probes, lenses[i], cwd)
+        for i in range(n)])
     passed = sum(1 for r in reviews if r["verdict"].get("pass"))
     findings = [dict(f, lens=r["lens"]) for r in reviews for f in (r["verdict"].get("findings") or [])]
     blockers = [f for f in findings if f.get("severity") == "blocker"]
