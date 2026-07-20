@@ -748,3 +748,95 @@ export function kvKeyToFqdn(key) {
   if (host === null || workspace === null || name === null) return null;
   return { host, workspace, name };
 }
+
+// --------------------------------------------------------------------------
+// Typed A2A envelope (Phase B). A2A messages carry a versioned envelope with a
+// KIND and, for request/reply, a correlation id — so an agent can ask another
+// agent a question and match the answer, and the runtime can tell a directive
+// from an event from a reply. Version-tolerant: a kind-less legacy message (the
+// flat NATS record {to,from,msg} or a bare `to: ↩ from x: y` Slack line) is a
+// `msg`, so a mixed old/new fleet interoperates (the presence v1/v2 discipline).
+//
+// On the wire: a `msg` stays the human-readable addressed line (unchanged, so old
+// bridges + humans read it); `request`/`reply`/`event` serialize as an ENV_SENTINEL
+// JSON blob. The sentinel leads with ':' so parseAddressedLine's `^[A-Za-z0-9]`
+// anchor never mistakes a raw sentinel for a `name: body` delivery — but when it is
+// ADDRESSED the sender posts `to: <sentinel> {json}`, which parses as token=to +
+// body=<sentinel>{json}, so the owning host still routes it, then decodes the body.
+// --------------------------------------------------------------------------
+export const ENV_SENTINEL = '::nexus-env::';
+export const A2A_KINDS = ['msg', 'request', 'reply', 'event'];
+
+// Build a normalized envelope. `id`/`ts` are stamped by the bridge (one uuid source)
+// unless already present. Optional fields are omitted when empty so `msg` stays lean.
+export function buildEnvelope({ v = 1, id = '', ts = 0, from = 'unknown', to = '', kind = 'msg', corr, reply_to, body = '', meta } = {}) {
+  const e = {
+    v: Number(v) || 1,
+    id: String(id || ''),
+    ts: Number(ts) || 0,
+    from: String(from == null ? 'unknown' : from),
+    to: String(to == null ? '' : to),
+    kind: A2A_KINDS.includes(kind) ? kind : 'msg',
+    body: String(body == null ? '' : body),
+  };
+  if (corr) e.corr = String(corr);
+  if (reply_to) e.reply_to = String(reply_to);
+  if (meta && typeof meta === 'object') e.meta = meta;
+  return e;
+}
+
+// Parse an input to an envelope, or null if it isn't one. Accepts:
+//   - an object envelope (has `kind` or `v`) → normalized;
+//   - the legacy flat record {to,from,msg,ts} (no kind) → { kind:'msg', body:msg };
+//   - a string beginning with ENV_SENTINEL → the JSON after it.
+// A bare addressed line (no sentinel) is NOT handled here — the caller keeps using
+// parseAddressedLine for that and treats the body as a `msg` (back-compat path).
+export function parseEnvelope(input) {
+  if (input == null) return null;
+  if (typeof input === 'object') {
+    if (typeof input.kind === 'string' || input.v != null) {
+      return buildEnvelope({ ...input, body: input.body != null ? input.body : (input.msg != null ? input.msg : '') });
+    }
+    if ('msg' in input || 'to' in input) {
+      return buildEnvelope({ from: input.from, to: input.to, kind: 'msg', body: input.msg != null ? input.msg : (input.body != null ? input.body : ''), ts: input.ts });
+    }
+    return null;
+  }
+  const s = String(input).trim();
+  if (s.startsWith(ENV_SENTINEL)) {
+    try {
+      const obj = JSON.parse(s.slice(ENV_SENTINEL.length).trim());
+      return buildEnvelope({ ...obj, body: obj.body != null ? obj.body : (obj.msg != null ? obj.msg : '') });
+    } catch { return null; }
+  }
+  return null;
+}
+
+// Serialize an envelope to its sentinel wire form (for the Slack transport's non-msg
+// kinds and for logging). NATS carries the raw JSON object, not this string.
+export function formatEnvelope(e) {
+  return `${ENV_SENTINEL} ${JSON.stringify(e)}`;
+}
+
+// Render an envelope to the agent-visible delivered text, by kind. `msg` is EXACTLY
+// today's `↩ from <sender>: <body>` (byte-for-byte back-compat). A `request` appends a
+// one-line hint of the exact reply command so the recipient (a Claude agent reading
+// text) learns the reply verb without any runner change.
+export function renderDelivery(e) {
+  const from = e.from || 'unknown';
+  const body = e.body == null ? '' : e.body;
+  switch (e.kind) {
+    case 'request': {
+      const target = e.reply_to || from;
+      const hint = `reply with: agent-send.sh --reply ${e.id} ${target} "<your answer>"`;
+      return `↩ request from ${from} [id ${e.id}]: ${body}\n(${hint})`;
+    }
+    case 'reply':
+      return `↩ reply from ${from}${e.corr ? ` [re ${e.corr}]` : ''}: ${body}`;
+    case 'event':
+      return `↩ event from ${from}: ${body}`;
+    case 'msg':
+    default:
+      return `↩ from ${from}: ${body}`;
+  }
+}

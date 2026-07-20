@@ -32,11 +32,24 @@
 VIA_SLACK=0
 FORCE_LOCAL=0
 RELAY=0
-case "$1" in
-  --via-slack) VIA_SLACK=1; shift ;;
-  --local)     FORCE_LOCAL=1; shift ;;
-  --relay)     RELAY=1; shift ;;
-esac
+KIND=""       # typed-envelope kind (Phase B): request | reply | event ; empty = msg (unchanged)
+CORR=""       # correlation id for --reply (the request's id)
+REPLY_TO=""   # override where a reply should be addressed
+# Parse leading flags. The typed verbs (--request/--reply/--event) build a Phase-B envelope
+# via the bridge and therefore force the bus path; a bare `agent-send.sh <to> <msg>` is a
+# plain `msg`, unchanged. --reply takes the correlation id; --reply-to takes an address.
+while true; do
+  case "$1" in
+    --via-slack) VIA_SLACK=1; shift ;;
+    --local)     FORCE_LOCAL=1; shift ;;
+    --relay)     RELAY=1; shift ;;
+    --request)   KIND="request"; shift ;;
+    --reply)     KIND="reply"; CORR="${2:?"--reply needs a correlation id: agent-send.sh --reply <id> <to> <msg>"}"; shift 2 ;;
+    --event)     KIND="event"; shift ;;
+    --reply-to)  REPLY_TO="${2:?"--reply-to needs an address"}"; shift 2 ;;
+    *) break ;;
+  esac
+done
 
 # --relay has NO target: the whole remainder is text posted to #nexus-agents for
 # a HUMAN to read (share your output instead of copy-pasting it into a Slack DM).
@@ -103,8 +116,15 @@ FROM="${FROM:-unknown}"
 # Route a message to the bridge bus. Returns 0 on a 200, non-zero otherwise.
 route_via_bus() {
   local to="$1" payload http
-  payload=$(TO="$to" FROM="$FROM" MSG="$MSG" python3 -c \
-    'import json,os;print(json.dumps({"to":os.environ["TO"],"from":os.environ["FROM"],"msg":os.environ["MSG"]}))') \
+  # Include the typed-envelope fields when set (Phase B). Absent → the bridge treats it as a
+  # plain `msg`, so a bare send is byte-for-byte unchanged. Optional keys are omitted, not null.
+  payload=$(TO="$to" FROM="$FROM" MSG="$MSG" KIND="$KIND" CORR="$CORR" REPLY_TO="$REPLY_TO" python3 -c \
+    'import json,os
+d={"to":os.environ["TO"],"from":os.environ["FROM"],"msg":os.environ["MSG"]}
+for k in ("kind","corr","reply_to"):
+    v=os.environ.get(k.upper() if k!="reply_to" else "REPLY_TO","")
+    if v: d[k]=v
+print(json.dumps(d))') \
     || { echo "bus: could not encode payload"; return 2; }
   http=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' -X POST \
          -H 'content-type: application/json' -d "$payload" \
@@ -206,8 +226,14 @@ if [ "$RELAY" = "1" ]; then
   route_via_relay; exit $?
 fi
 
-# --via-slack forces the bus regardless of locality (the owning host delivers).
-if [ "$VIA_SLACK" = "1" ]; then
+# --via-slack, OR a typed kind (--request/--reply/--event), forces the bus regardless of
+# locality — a typed envelope (id + correlation) is built by the bridge, so it can't take the
+# local send-keys fast path. The owning host delivers. Requires the bus enabled.
+if [ "$VIA_SLACK" = "1" ] || [ -n "$KIND" ]; then
+  if [ -n "$KIND" ] && [ "$BUS_ENABLED" != "1" ]; then
+    echo "--${KIND} needs the bus (set SLACK_BUS_ENABLED=1); typed A2A is bus-only." >&2
+    exit 1
+  fi
   route_via_bus "$TARGET"; exit $?
 fi
 

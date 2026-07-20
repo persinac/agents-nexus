@@ -61,6 +61,17 @@ try {
   assert.equal(received.find((e) => e.msg === 'live-7777').from, 'tester');
   ok('envelope round-trips { to, from, msg }');
 
+  // 3b) A typed Phase-B envelope round-trips over the transport with all fields intact.
+  await t.publish({ host: SELF, workspace: '', name: 'agents-nexus' },
+    { v: 1, id: 'req-1', ts: 1, from: 'tester', to: 'agents-nexus', kind: 'request', reply_to: `${SELF}/_req/req-1`, body: 'typed-9' });
+  for (let i = 0; i < 40 && !received.find((e) => e.id === 'req-1'); i += 1) await sleep(100);
+  const typed = received.find((e) => e.id === 'req-1');
+  assert.ok(typed, 'typed envelope received');
+  assert.equal(typed.kind, 'request');
+  assert.equal(typed.reply_to, `${SELF}/_req/req-1`);
+  assert.equal(typed.body, 'typed-9');
+  ok('typed envelope (kind/id/reply_to/body) round-trips over the transport');
+
   // 4) Presence KV upsert + snapshot round-trip.
   await t.presenceUpsert([
     { name: 'agents-nexus', workspace: '', pane: 'wA:p1' },

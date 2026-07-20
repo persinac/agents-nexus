@@ -16,6 +16,7 @@
  */
 
 import http from 'http';
+import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { execFileSync } from 'child_process';
@@ -171,6 +172,15 @@ const BUS_DEFER = BUS_ENABLED && process.env.SLACK_BUS_DEFER !== '0';
 const BUS_FLUSH_MS = parseInt(process.env.SLACK_BUS_FLUSH_MS || '4000', 10);
 const BUS_QUEUE_MAX = parseInt(process.env.SLACK_BUS_QUEUE_MAX || '50', 10); // per pane; oldest dropped beyond (still in channel)
 const busQueue = new Map(); // pane -> [{ target, body, at }]
+
+// --- Typed envelope + request/reply (Phase B) ---
+// A2A messages carry a typed envelope (kind msg/request/reply/event; see orchestrator.js).
+// `pendingRequests` tracks outstanding POST /request awaits (id -> { resolve, timer }); a
+// `reply` whose `corr` matches is intercepted to resolve the waiter (interceptReply) instead
+// of being delivered to an agent. A deadline resolves every waiter so none hangs.
+const REQUEST_TTL_MS = parseInt(process.env.SLACK_BUS_REQUEST_TTL_MS || '120000', 10); // 2 min default
+const pendingRequests = new Map(); // request id -> { resolve, timer, at }
+const shortId = () => randomUUID().replace(/-/g, '').slice(0, 12);
 
 // --- Human-typing guard (opt-in; default OFF) ---
 // `@waiting=2` means the Claude *process* is idle at the prompt — but that is
@@ -1307,98 +1317,101 @@ function flushBusQueue() {
 // live agent in THIS host's registry; otherwise ignore (another host owns it).
 // This never posts anything back, so there is no feedback loop. The delivered
 // text already carries the `↩ from <sender>:` prefix, baked in at post time.
-async function handleBusMessage(event) {
-  if (!event.text) return;
-  // Addressed bus message: `[host/]name: body`. The optional `host/` prefix
-  // namespaces the target to a specific bridge (matched against SELF_HOST) so
-  // two people's identically-named agents — both fleets have `general`,
-  // `orchestrator`, slot names — don't both deliver the same message. A bare
-  // `name:` is the original host-local form and behaves exactly as before.
-  const parsed = orch.parseAddressedLine(cleanSlackText(event.text));
-  if (!parsed) return;                     // not an addressed bus message — ignore
-  const { token, body } = parsed;
-
-  // Resolve the token to ONE local instance. A herdr pane handle (wN:pN) or a bare slot
-  // number is instance-exact and host-local → resolve directly and bypass the presence
-  // owner-election. This is the colon-truncation fix: `wQ:pF` now survives the parser
-  // (the delimiter is colon-SPACE) and resolves to that pane, instead of truncating to
-  // `wQ` and silently dropping. Everything else is a [host/][workspace/]name.
-  let agent = null;
+// Resolve a bus address token to ONE local agent, or null (logging why). A herdr pane handle
+// (wN:pN) or a bare slot number is instance-exact and host-local → resolve directly, bypassing
+// presence owner-election (the colon-SPACE delimiter lets `wQ:pF` survive the parser). Anything
+// else is a [host/][workspace/]name resolved right-to-left with owner-election. Extracted from
+// the old handleBusMessage so the Slack legacy line, the Slack typed envelope, and the NATS
+// consumer all resolve identically.
+function resolveBusTarget(token) {
   if (/^w[A-Za-z0-9]+:p[A-Za-z0-9]+$/.test(token)) {
-    agent = resolveByPane(token);
-    if (!agent) { console.warn(`[bus] no local agent for pane ${token} — dropped (from bus)`); return; }
-  } else if (/^\d+$/.test(token)) {
-    agent = resolveBySlot(token);
-    if (!agent) { console.warn(`[bus] no local agent at slot ${token} — dropped (from bus)`); return; }
-  } else {
-    // [host/][workspace/]name, parsed right-to-left (nx-resolve).
-    const { host: qualHost, workspace: qualWs, name: nm } =
-      orch.parseAddress(token, { knownHosts: new Set(presenceMap.keys()), selfHost: SELF_HOST });
-    // Qualified target: only the named host delivers. Not us → ignore outright.
-    if (qualHost && qualHost.toLowerCase() !== SELF_HOST.toLowerCase()) return;
-    // host/pane (e.g. `alex-nexus/w3:pK`) → instance-exact, host-local resolve. The name
-    // segment is a pane handle: bypass name resolution + owner election (a pane is unique by
-    // construction). This is cross-host instance addressing for a tie-broken duplicate — the
-    // handle rode in behind a host prefix, which the bare-handle branch above never sees.
-    if (/^w[A-Za-z0-9]+:p[A-Za-z0-9]+$/.test(nm)) {
-      agent = resolveByPane(nm);
-      if (!agent) { console.warn(`[bus] no local agent for pane ${nm} (from '${token}') — dropped (from bus)`); return; }
-    } else {
-      agent = resolveByName(nm, qualWs);     // local registry, scoped to the bucket
-      if (!agent) {
-        // No single match. If the name collides across local instances, resolveByName
-        // returns null BY DESIGN — surface it (was a silent drop, index.js's expensive-to-
-        // diagnose failure) with the QUALIFIED addresses that disambiguate. Otherwise it's
-        // simply not ours and the owning host delivers.
-        const dups = loadRegistry().filter((a) => a.name.toLowerCase() === nm.toLowerCase()
-          && orch.workspaceMatches(a.workspace, qualWs || ''));
-        if (dups.length > 1) {
-          const cands = dups.map((d) => d.workspace
-            ? `${SELF_HOST}/${d.workspace}/${d.name}`
-            : `${SELF_HOST}/${d.pane || d.slot}`);
-          console.warn(`[bus] '${nm}' ambiguous across ${dups.length} local instances — qualify: ${cands.join(', ')}`);
-        }
-        return;
-      }
-      // Single-owner election: defer to another host that positively owns this name (our
-      // local match may be stale, or a genuine cross-host collision). Skipped for a qualified
-      // target — an explicit `host/` prefix naming THIS host IS the owner designation.
-      if (PRESENCE_ENABLED && !qualHost && !qualWs) {
-        const owner = orch.ownerOf(presenceMap, nm);
-        if (owner && owner !== SELF_HOST) {
-          console.warn(`[bus] ${nm} owned by ${owner}, not ${SELF_HOST} — deferring delivery`);
-          return;
-        }
-      }
-    }
+    const a = resolveByPane(token);
+    if (!a) console.warn(`[bus] no local agent for pane ${token} — dropped (from bus)`);
+    return a;
   }
-  const target = agent.name || token;      // friendly label for the idle-gate + delivery logs below
-  // Idle-gate: inject only when the recipient is idle at the prompt (@waiting=2);
-  // if it is mid-task or at a permission prompt, hold the message and let
-  // flushBusQueue deliver it when the agent next goes idle — so a running task is
-  // never interrupted and the message is never lost into a busy pane.
+  if (/^\d+$/.test(token)) {
+    const a = resolveBySlot(token);
+    if (!a) console.warn(`[bus] no local agent at slot ${token} — dropped (from bus)`);
+    return a;
+  }
+  const { host: qualHost, workspace: qualWs, name: nm } =
+    orch.parseAddress(token, { knownHosts: new Set(presenceMap.keys()), selfHost: SELF_HOST });
+  if (qualHost && qualHost.toLowerCase() !== SELF_HOST.toLowerCase()) return null; // not our host
+  if (/^w[A-Za-z0-9]+:p[A-Za-z0-9]+$/.test(nm)) {
+    const a = resolveByPane(nm);
+    if (!a) console.warn(`[bus] no local agent for pane ${nm} (from '${token}') — dropped (from bus)`);
+    return a;
+  }
+  const agent = resolveByName(nm, qualWs);
+  if (!agent) {
+    // resolveByName returns null on a cross-instance name collision BY DESIGN — surface the
+    // qualified addresses (was a silent, expensive-to-diagnose drop); else it's simply not ours.
+    const dups = loadRegistry().filter((a) => a.name.toLowerCase() === nm.toLowerCase()
+      && orch.workspaceMatches(a.workspace, qualWs || ''));
+    if (dups.length > 1) {
+      const cands = dups.map((d) => d.workspace ? `${SELF_HOST}/${d.workspace}/${d.name}` : `${SELF_HOST}/${d.pane || d.slot}`);
+      console.warn(`[bus] '${nm}' ambiguous across ${dups.length} local instances — qualify: ${cands.join(', ')}`);
+    }
+    return null;
+  }
+  // Single-owner election: defer to another host that positively owns this name. Skipped for a
+  // qualified target — an explicit `host/` prefix naming THIS host IS the owner designation.
+  if (PRESENCE_ENABLED && !qualHost && !qualWs) {
+    const owner = orch.ownerOf(presenceMap, nm);
+    if (owner && owner !== SELF_HOST) { console.warn(`[bus] ${nm} owned by ${owner}, not ${SELF_HOST} — deferring delivery`); return null; }
+  }
+  return agent;
+}
+
+// Idle-gate + deliver a ready text to a resolved agent. Injects only at @waiting=2 (and not
+// while a human is mid-draft in the pane); otherwise holds in the per-pane queue for flush on
+// idle — so a running task is never interrupted and the message is never lost.
+function deliverOrQueue(agent, text, label) {
+  const target = label || agent.name || '?';
   if (BUS_DEFER && agent.pane) {
     const w = paneWaiting(agent.pane);
-    if (w !== '2') {
-      enqueueBus(agent.pane, target, body);
-      console.log(`[bus] ${target} busy (@waiting=${w || 'unset'}) — queued for idle delivery`);
-      return;
-    }
-    // Idle at the prompt, but a human may be mid-draft in this pane — don't inject
-    // over their keystrokes. Hold; flushBusQueue delivers once typing goes quiet.
-    if (HUMAN_GUARD && humanTyping(agent.pane)) {
-      enqueueBus(agent.pane, target, body);
-      console.log(`[bus] ${target} idle but human is typing — queued (grace ${HUMAN_TYPING_GRACE_MS}ms)`);
-      return;
-    }
+    if (w !== '2') { enqueueBus(agent.pane, target, text); console.log(`[bus] ${target} busy (@waiting=${w || 'unset'}) — queued for idle delivery`); return; }
+    if (HUMAN_GUARD && humanTyping(agent.pane)) { enqueueBus(agent.pane, target, text); console.log(`[bus] ${target} idle but human is typing — queued (grace ${HUMAN_TYPING_GRACE_MS}ms)`); return; }
   }
-  const res = agent.pane ? deliverToPane(agent.pane, body) : deliverToSlot(agent.slot, body);
-  if (res.ok) {
-    flashPane(agent.pane, 'bus msg');
-    console.log(`[bus] delivered to ${target} (${agent.pane || agent.slot}): ${body.slice(0, 60)}`);
-  } else {
-    console.error(`[bus] delivery to ${target} failed: ${res.error}`);
-  }
+  const res = agent.pane ? deliverToPane(agent.pane, text) : deliverToSlot(agent.slot, text);
+  if (res.ok) { flashPane(agent.pane, 'bus msg'); console.log(`[bus] delivered to ${target} (${agent.pane || agent.slot}): ${text.slice(0, 60)}`); }
+  else console.error(`[bus] delivery to ${target} failed: ${res.error}`);
+}
+
+// Intercept a `reply` that answers an outstanding POST /request (matched by `corr`): resolve
+// the awaiting HTTP caller and do NOT deliver to an agent. Returns true if intercepted.
+function interceptReply(env) {
+  if (env.kind !== 'reply' || !env.corr) return false;
+  const pending = pendingRequests.get(env.corr);
+  if (!pending) return false;
+  pendingRequests.delete(env.corr);
+  clearTimeout(pending.timer);
+  pending.resolve({ status: 'ok', from: env.from, body: env.body, id: env.corr });
+  console.log(`[bus] request ${env.corr} answered by ${env.from}`);
+  return true;
+}
+
+// Route a typed envelope to its local target: intercept a /request reply first, else resolve
+// `to` and deliver the kind-rendered text. Shared by the Slack typed-line path + NATS consumer.
+function routeEnvelope(env) {
+  if (interceptReply(env)) return;
+  const agent = resolveBusTarget(env.to);
+  if (!agent) return;                           // not ours / unresolved (resolveBusTarget logged)
+  deliverOrQueue(agent, orch.renderDelivery(env), agent.name || env.to);
+}
+
+// Inter-agent bus delivery on the Slack transport: a channel line `to: body` posted by some
+// host's /send. If `body` is a typed-envelope sentinel, route the envelope; otherwise it's a
+// legacy `msg` whose body already carries the `↩ from <sender>:` prefix baked in at post time —
+// deliver it verbatim (host-local ownership rule, no re-post → no loop).
+async function handleBusMessage(event) {
+  if (!event.text) return;
+  const parsed = orch.parseAddressedLine(cleanSlackText(event.text));
+  if (!parsed) return;
+  const env = orch.parseEnvelope(parsed.body);   // non-null only for a `::nexus-env::` sentinel body
+  if (env) { if (!env.to) env.to = parsed.token; routeEnvelope(env); return; }
+  const agent = resolveBusTarget(parsed.token);
+  if (agent) deliverOrQueue(agent, parsed.body, agent.name || parsed.token);
 }
 
 async function handleMessage(event) {
@@ -1590,9 +1603,29 @@ async function handleMessage(event) {
     `:information_source: Address an agent with \`name: your message\` (or reply in a thread I started). Active: ${liveAgentList()}`);
 }
 
+// Publish a typed envelope via the ACTIVE transport. NATS → publish to the target's subject.
+// Slack → post to the agents channel: a `msg` stays the human-readable addressed line (old
+// bridges + humans read it), a typed kind uses `to: <::nexus-env:: json>` (addressed so the
+// owning host routes it, sentinel so it never parses as a plain delivery). Returns transport info.
+async function publishEnv(env) {
+  if (BUS_TRANSPORT === 'nats') {
+    if (!natsReady) throw new Error('nats transport not connected');
+    const fqdn = orch.parseAddress(env.to, { knownHosts: new Set(presenceMap.keys()), selfHost: SELF_HOST });
+    return natsTransport.publish(fqdn, env);
+  }
+  if (!AGENTS_CHANNEL) throw new Error('SLACK_AGENTS_CHANNEL not set');
+  const text = env.kind === 'msg'
+    ? `${env.to}: ↩ from ${env.from}: ${env.body}`
+    : `${env.to}: ${orch.formatEnvelope(env)}`;
+  const posted = await web.chat.postMessage({ channel: AGENTS_CHANNEL, text });
+  return { ts: posted.ts };
+}
+
 // ---------------------------------------------------------------------------
 // Outbound: localhost HTTP for the Notification hook.
-//   POST /notify { name, message, slot?, pane? }  -> post to #nexus, track thread
+//   POST /notify  { name, message, slot?, pane? }        -> post to #nexus, track thread
+//   POST /send    { to, from, msg, kind?, corr?, reply_to? } -> publish an A2A envelope
+//   POST /request { to, body, deadline_ms?, from? }      -> publish a request, await the reply
 //   GET  /health | /agents | /status
 // ---------------------------------------------------------------------------
 const httpServer = http.createServer((req, res) => {
@@ -1696,38 +1729,65 @@ const httpServer = http.createServer((req, res) => {
           res.end(JSON.stringify({ ok: false, error: 'bus disabled (set SLACK_BUS_ENABLED=1)' }));
           return;
         }
-        const { to, from, msg } = JSON.parse(body || '{}');
+        const { to, from, msg, kind, corr, reply_to } = JSON.parse(body || '{}');
         if (!to || !msg) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'to and msg required' })); return; }
         // Self-identify by FQDN (SELF_HOST/[workspace/]name) by default so the recipient can
         // reply across hosts unambiguously; the bridge owns SELF_HOST, so it stamps the host.
         const sender = qualifyFrom(from).slice(0, 120);
         const capped = orch.capWithMarker(msg, BUS_MAX_CHARS);
-
-        // NATS transport: publish a structured envelope to the target's subject. The broker
-        // routes it to the owning host's durable consumer; that bridge formats + delivers it
-        // (see the subscribe handler). No Slack channel involved.
-        if (BUS_TRANSPORT === 'nats') {
-          if (!natsReady) {
-            res.writeHead(503);
-            res.end(JSON.stringify({ ok: false, error: 'nats transport not connected' }));
-            return;
-          }
-          const fqdn = orch.parseAddress(to, { knownHosts: new Set(presenceMap.keys()), selfHost: SELF_HOST });
-          const pub = await natsTransport.publish(fqdn, { to, from: sender, msg: capped });
-          res.writeHead(200);
-          res.end(JSON.stringify({ ok: true, subject: pub.subject, seq: pub.seq }));
-          return;
-        }
-
-        // Slack transport (default): post an addressed, sender-tagged line to the channel.
-        if (!AGENTS_CHANNEL) { res.writeHead(409); res.end(JSON.stringify({ ok: false, error: 'SLACK_AGENTS_CHANNEL not set' })); return; }
-        // `to: ↩ from <sender>: <msg>` — the leading `to:` is what the receiving
-        // bridge's addressed-message parser keys on; the rest is delivered verbatim.
-        const text = `${to}: ↩ from ${sender}: ${capped}`;
-        const posted = await web.chat.postMessage({ channel: AGENTS_CHANNEL, text });
+        // Build the typed envelope; the bridge stamps the id + ts (one uuid source). A bare
+        // send (no kind) is `msg`, unchanged on the wire. A `request` defaults reply_to to the
+        // sender so the answer routes back to them.
+        const env = orch.buildEnvelope({
+          id: shortId(), ts: Date.now(), from: sender, to, kind: kind || 'msg', corr,
+          reply_to: reply_to || ((kind === 'request') ? sender : undefined), body: capped,
+        });
+        const info = await publishEnv(env);
         res.writeHead(200);
-        res.end(JSON.stringify({ ok: true, ts: posted.ts }));
+        res.end(JSON.stringify({ ok: true, id: env.id, ...info }));
       } catch (e) {
+        if (/not connected/.test(e.message)) { res.writeHead(503); res.end(JSON.stringify({ ok: false, error: e.message })); return; }
+        if (/SLACK_AGENTS_CHANNEL/.test(e.message)) { res.writeHead(409); res.end(JSON.stringify({ ok: false, error: e.message })); return; }
+        res.writeHead(500);
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Request/reply: publish a `request` to an agent and AWAIT its reply. A skill/loop/Conductor
+  // node can ask an agent and get a structured answer (async — the agent replies on its turn).
+  // reply_to is a bridge-local address (SELF_HOST/_req/<id>) so the reply routes back to THIS
+  // host's consumer; interceptReply matches `corr` and resolves this waiter. Always resolves —
+  // on a reply, or with {status:'timeout'} at the deadline — so the HTTP call never hangs.
+  if (req.method === 'POST' && url.pathname === '/request') {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', async () => {
+      res.setHeader('Content-Type', 'application/json');
+      try {
+        if (!BUS_ENABLED) { res.writeHead(409); res.end(JSON.stringify({ ok: false, error: 'bus disabled (set SLACK_BUS_ENABLED=1)' })); return; }
+        const parsed = JSON.parse(body || '{}');
+        const { to, deadline_ms } = parsed;
+        const reqBody = parsed.body != null ? parsed.body : parsed.msg;
+        if (!to || !reqBody) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'to and body required' })); return; }
+        const id = shortId();
+        const replyAddr = `${SELF_HOST}/_req/${id}`;   // bridge-local; interceptReply matches corr=id
+        const env = orch.buildEnvelope({
+          id, ts: Date.now(), from: parsed.from ? qualifyFrom(parsed.from).slice(0, 120) : replyAddr,
+          to, kind: 'request', reply_to: replyAddr, body: orch.capWithMarker(String(reqBody), BUS_MAX_CHARS),
+        });
+        await publishEnv(env);
+        const deadline = Math.max(1000, parseInt(deadline_ms, 10) || REQUEST_TTL_MS);
+        const result = await new Promise((resolve) => {
+          const timer = setTimeout(() => { pendingRequests.delete(id); resolve({ status: 'timeout', id }); }, deadline);
+          pendingRequests.set(id, { resolve, timer, at: Date.now() });
+        });
+        res.writeHead(200);
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (e) {
+        if (/not connected/.test(e.message)) { res.writeHead(503); res.end(JSON.stringify({ ok: false, error: e.message })); return; }
+        if (/SLACK_AGENTS_CHANNEL/.test(e.message)) { res.writeHead(409); res.end(JSON.stringify({ ok: false, error: e.message })); return; }
         res.writeHead(500);
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
@@ -1837,15 +1897,14 @@ const httpServer = http.createServer((req, res) => {
         pass: NATS_PASS || undefined,
       });
       await natsTransport.connect();
-      // Inbound: synthesize the SAME addressed line the Slack bus posts, then reuse
-      // handleBusMessage (which only reads event.text). ack-on-receive: the in-memory
-      // busQueue idle-gates a busy recipient exactly as today. (Ack-on-idle — holding the
-      // JetStream message un-acked until delivery, so a hold survives a bridge restart — is
-      // a tracked follow-up; today a restart mid-hold falls back to the stream + redelivery.)
+      // Inbound: the payload IS a typed envelope (Phase B) — parse + route through the shared
+      // path (reply-intercept → resolve → idle-gated deliver of the kind-rendered text). A
+      // legacy {to,from,msg} record still parses as a `msg`. ack-on-receive: the in-memory
+      // busQueue idle-gates a busy recipient as today. (Ack-on-idle — holding the JetStream
+      // message un-acked until delivery so a hold survives a restart — is a tracked follow-up.)
       await natsTransport.subscribe(async (envelope, msg) => {
-        const line = `${envelope.to}: ↩ from ${envelope.from}: ${envelope.msg}`;
-        try { await handleBusMessage({ text: line }); }
-        catch (e) { console.error(`[nats] delivery failed for ${envelope.to}: ${e.message}`); }
+        try { const env = orch.parseEnvelope(envelope); if (env) routeEnvelope(env); }
+        catch (e) { console.error(`[nats] delivery failed for ${envelope && envelope.to}: ${e.message}`); }
         finally { try { msg.ack(); } catch { /* connection draining */ } }
       });
       natsReady = true;

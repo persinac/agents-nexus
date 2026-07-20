@@ -3,7 +3,7 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery } from './orchestrator.js';
 
 // The addressed-bus parser lives in index.js (it needs no orchestrator state), but its
 // shape is a shared contract with formatRelay/parsePresence — a relay or presence line must
@@ -497,4 +497,56 @@ test('fqdnToKvKey / kvKeyToFqdn round-trip + NATS-KV-legal charset', () => {
     assert.deepEqual(kvKeyToFqdn(k), { host: 'h', workspace: ws, name: 'n' });
   }
   assert.equal(kvKeyToFqdn('too.few'), null);
+});
+
+// --------------------------------------------------------------------------
+// Typed A2A envelope (Phase B): build / parse (version-tolerant) / render.
+// --------------------------------------------------------------------------
+
+test('buildEnvelope normalizes fields + defaults to kind msg', () => {
+  const e = buildEnvelope({ from: 'a', to: 'b', body: 'hi' });
+  assert.equal(e.v, 1); assert.equal(e.kind, 'msg'); assert.equal(e.body, 'hi');
+  assert.equal('corr' in e, false); assert.equal('reply_to' in e, false);
+  const r = buildEnvelope({ from: 'a', to: 'b', kind: 'reply', corr: 'X1', reply_to: 'h/w/a', body: 'ok', meta: { status: 'ok' } });
+  assert.equal(r.kind, 'reply'); assert.equal(r.corr, 'X1'); assert.equal(r.reply_to, 'h/w/a'); assert.deepEqual(r.meta, { status: 'ok' });
+  // unknown kind falls back to msg
+  assert.equal(buildEnvelope({ kind: 'bogus' }).kind, 'msg');
+});
+
+test('parseEnvelope is version-tolerant (legacy record + object + sentinel)', () => {
+  // legacy flat NATS record → msg
+  const a = parseEnvelope({ to: 'b', from: 'a', msg: 'hello', ts: 5 });
+  assert.equal(a.kind, 'msg'); assert.equal(a.body, 'hello'); assert.equal(a.from, 'a');
+  // an object envelope
+  const b = parseEnvelope({ v: 1, kind: 'request', id: 'X', from: 'a', to: 'b', body: 'q' });
+  assert.equal(b.kind, 'request'); assert.equal(b.id, 'X');
+  // the sentinel wire string
+  const wire = formatEnvelope(buildEnvelope({ id: 'X2', kind: 'reply', corr: 'X', from: 'a', to: 'b', body: 'ans' }));
+  const c = parseEnvelope(wire);
+  assert.equal(c.kind, 'reply'); assert.equal(c.corr, 'X'); assert.equal(c.body, 'ans');
+  // non-envelope inputs
+  assert.equal(parseEnvelope('just text'), null);
+  assert.equal(parseEnvelope('name: ↩ from x: hi'), null);   // bare addressed line handled elsewhere
+  assert.equal(parseEnvelope(null), null);
+});
+
+test('formatEnvelope sentinel never parses as an addressed delivery (raw)', () => {
+  // A raw sentinel line (unaddressed) must be rejected by parseAddressedLine (leading ':').
+  const wire = formatEnvelope(buildEnvelope({ id: 'X', kind: 'event', from: 'a', to: 'b', body: 'ping' }));
+  assert.equal(parseAddressedLine(wire), null);
+  // But when ADDRESSED (`to: <sentinel> {json}`), it parses as token=to + sentinel body,
+  // so the owning host routes it and then decodes the body as an envelope.
+  const addressed = `b: ${wire}`;
+  const p = parseAddressedLine(addressed);
+  assert.equal(p.token, 'b');
+  assert.equal(parseEnvelope(p.body).kind, 'event');
+});
+
+test('renderDelivery: msg is byte-for-byte the legacy line; typed kinds are labelled', () => {
+  assert.equal(renderDelivery(buildEnvelope({ from: 'general', body: 'do it' })), '↩ from general: do it');
+  const req = renderDelivery(buildEnvelope({ id: 'abc', kind: 'request', from: 'general', reply_to: 'F4/w/general', body: 'status?' }));
+  assert.match(req, /^↩ request from general \[id abc\]: status\?/);
+  assert.match(req, /agent-send\.sh --reply abc F4\/w\/general/);   // the reply hint targets reply_to
+  assert.equal(renderDelivery(buildEnvelope({ kind: 'reply', corr: 'abc', from: 'svc', body: 'green' })), '↩ reply from svc [re abc]: green');
+  assert.equal(renderDelivery(buildEnvelope({ kind: 'event', from: 'svc', body: 'deployed' })), '↩ event from svc: deployed');
 });

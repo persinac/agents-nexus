@@ -49,6 +49,14 @@ startup replay); new `scripts/agent-outbox.py` (mirrors `agent-ledger.py`).
 
 ## Phase B — Typed envelopes + request/reply (RPC)
 
+> **Status: implemented via `openspec/changes/bus-typed-envelopes`.** Versioned envelope
+> `{v,id,ts,from,to,kind,corr,reply_to,body,meta}` (kinds msg/request/reply/event) in
+> `orchestrator.js` (build/parse/render, unit-tested + version-tolerant back-compat = msg);
+> bridge `/send` carries it, `POST /request` awaits a reply with a deadline, reply↔request
+> correlation via an in-flight map; `agent-send.sh --request/--reply/--event/--reply-to`.
+> Carried across both transports (Slack sentinel line for non-msg; NATS JSON payload).
+> Async correlation (agents reply on their turn), not blocking RPC. See docs/slack-bridge.md#typed-envelopes.
+
 **Goal:** structured, correlated messages; agent A can *ask* B and await a reply. The single biggest capability unlock (backs the old #10 handoff/chaining and #15 agent-awareness ideas).
 
 **Approach**

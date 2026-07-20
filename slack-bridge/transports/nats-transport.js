@@ -147,18 +147,15 @@ export function createNatsTransport(opts = {}) {
     logger.log?.(`[nats] connected ${url} as host=${selfHost}`);
   }
 
-  // Publish an A2A envelope to the target's subject. `envelope` carries { to, from,
-  // msg, ts } — `to` is the address token as typed (kept for the delivered line), the
-  // subject is derived from the resolved fqdn. Returns { subject, seq }.
+  // Publish a typed A2A envelope to the target's subject. `envelope` is the full envelope
+  // ({ v, id, ts, from, to, kind, corr?, reply_to?, body, meta? }); `to` is the address token
+  // as typed (kept for delivery), the subject is derived from the resolved fqdn. The payload is
+  // the envelope JSON verbatim, so the consuming bridge parses it straight back. A legacy caller
+  // passing { to, from, msg } still works — the receiver's parseEnvelope treats it as a `msg`.
   async function publish(fqdn, envelope) {
     if (!state.js) throw new Error('NatsTransport: not connected');
     const subject = subjectFor(fqdn);
-    const payload = enc.encode(JSON.stringify({
-      to: envelope.to,
-      from: envelope.from ?? 'unknown',
-      msg: envelope.msg ?? '',
-      ts: envelope.ts ?? Date.now(),
-    }));
+    const payload = enc.encode(JSON.stringify(envelope));
     const ack = await state.js.publish(subject, payload);
     return { subject, seq: ack.seq };
   }

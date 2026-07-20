@@ -371,6 +371,39 @@ change. Cut the fleet over host-by-host.
 > `npm test`. Full bridge-in-nats-mode end-to-end (bridge + broker + Slack tokens together) is
 > the rollout step (change tasks 8.x).
 
+### Typed envelopes + request/reply (Phase B) {#typed-envelopes}
+
+A2A messages carry a versioned **typed envelope** `{ v, id, ts, from, to, kind, corr?, reply_to?, body, meta? }`. `kind` is one of:
+
+| kind | meaning | delivered as |
+| --- | --- | --- |
+| `msg` (default) | fire-and-forget nudge (today's behavior) | `↩ from <sender>: <body>` |
+| `request` | expects a reply; carries an `id` | `↩ request from <sender> [id X]: <body>` + a one-line reply hint |
+| `reply` | answers a request; `corr` = the request's `id` | `↩ reply from <sender> [re X]: <body>` |
+| `event` | notification, no reply | `↩ event from <sender>: <body>` |
+
+**Backward compatible.** A message with no `kind` (the legacy NATS record or a bare `to: ↩ from x: y` line) is a `msg`, and a `msg`'s delivered text is byte-for-byte unchanged — so a mixed old/new fleet interoperates. On Slack, `msg` stays the human-readable addressed line; `request`/`reply`/`event` ride a `to: ::nexus-env:: {json}` sentinel line (addressed so the owner routes it, sentinel so it never parses as a plain delivery).
+
+**agent-send.sh verbs** (bare send unchanged):
+
+```bash
+agent-send.sh --request <to> "what's the deploy status?"      # mints an id; reply routes back to you
+agent-send.sh --reply <id> <to> "green, shipped 5m ago"        # answers request <id>
+agent-send.sh --event <to> "cache warmed"                      # notification, no reply
+```
+
+A `request` is delivered with the exact reply command, so the recipient agent knows how to answer. Request/reply is **async** (the agent replies on its next turn), not a blocking RPC.
+
+**Await a reply programmatically** — `POST /request` publishes a request and holds the response until the reply arrives or the deadline elapses (so a skill/loop/Conductor node can ask an agent and get an answer):
+
+```bash
+curl -s localhost:8788/request -H 'content-type: application/json' \
+  -d '{"to":"svc-chatbot","body":"is CI green on main?","deadline_ms":30000}'
+# → {"ok":true,"status":"ok","from":"…/svc-chatbot","body":"yes, green"}   (or {"status":"timeout"})
+```
+
+Config: `SLACK_BUS_REQUEST_TTL_MS` (default `120000`) — the default request deadline. This is roadmap [Phase B](agent-bus-roadmap.md#phase-b--typed-envelopes--requestreply-rpc); full change: `openspec/changes/bus-typed-envelopes`.
+
 ### Enable it (one-time)
 
 1. Create a **dedicated** `#nexus-agents` channel and invite the bot. ⚠️ It **must be a
