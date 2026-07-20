@@ -84,6 +84,15 @@ MY_WORKSPACE="${NEXUS_WORKSPACE:-}"
 # "$MY_HOST/" is on THIS box — hand files off by writing into its repo tree (no S3/user-drop detour).
 MY_HOST="${SLACK_PRESENCE_HOST:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)}"
 
+# A2A sender identity — export the FULL FQDN component (workspace/name) so agent-send.sh
+# stamps a `host/workspace/name` `from` WITHOUT depending on a live registry lookup. A bare
+# name is ambiguous when the same name exists in >1 workspace (e.g. several `general`s), which
+# makes a recipient misread a message as a self-loopback. The bridge adds the host (SELF_HOST).
+# Honors an AGENT_FROM the launcher already set; empty workspace → bare name (flat/unscoped).
+if [ -z "${AGENT_FROM:-}" ]; then
+  if [ -n "$MY_WORKSPACE" ]; then export AGENT_FROM="$MY_WORKSPACE/$MY_NAME"; else export AGENT_FROM="$MY_NAME"; fi
+fi
+
 # Lock the window name so tmux doesn't override it with the process name
 "$NEXUS_TMUX_DIR/substrate.sh" rename "$MY_PANE_ID" "$MY_NAME" 2>/dev/null
 
