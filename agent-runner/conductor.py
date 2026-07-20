@@ -114,6 +114,46 @@ def _load_dotenv():
 
 REVIEWERS = int(os.environ.get("CONDUCTOR_REVIEWERS", POLICY.get("reviewer", {}).get("count", 5)))
 REVIEW_LENSES = ["correctness", "completeness", "requirements-match", "safety/regressions", "edge-cases"]
+
+# ── plan-gate (pre-build adversarial review of the design + plan) ─────────────
+# Personal-box hybrid SDLC flow. The general pipeline already does build + adversarial verify +
+# Trello; this inserts the ONE missing step — an adversary that critiques the design/plan BEFORE
+# any code is written — plus a lightweight tech-design brief. OFF unless conductor.yaml sets
+# `plan_gate.enabled` (absent in the work config → the work-laptop path is byte-for-byte unchanged).
+PLAN_GATE = CFG.get("plan_gate", {}) or {}
+PLAN_GATE_ON = bool(PLAN_GATE.get("enabled"))
+PLAN_GATE_DESIGN = bool(PLAN_GATE.get("design", True))
+PLAN_GATE_REVIEWERS = int(os.environ.get("CONDUCTOR_PLAN_REVIEWERS", PLAN_GATE.get("reviewers", 3)))
+PLAN_GATE_MAX_ROUNDS = int(PLAN_GATE.get("max_rounds", 2))
+PLAN_GATE_ON_EXHAUSTED = PLAN_GATE.get("on_exhausted", "proceed")   # proceed | escalate | stop
+
+
+def _slack_relay(msg: str):
+    """Best-effort ping to the agent bus / #nexus (same mechanism sdlc_report uses)."""
+    try:
+        subprocess.run([os.path.expanduser("~/.tmux/agent-send.sh"), "--relay", msg],
+                       timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def _write_design_md(mid: str, goal: str, design_brief: dict):
+    """Persist the design brief as design.md at the mission root (audit + worker-readable)."""
+    try:
+        root = os.path.join(CONDUCTOR_WORK, mid[:8])
+        os.makedirs(root, exist_ok=True)
+        lines = [f"# Design — {_title(goal)}", "",
+                 f"**Approach:** {design_brief.get('approach', '')}", "", "## Key decisions"]
+        lines += [f"- **{d.get('decision', '')}** — {d.get('why', '')}"
+                  for d in design_brief.get("key_decisions", [])]
+        lines += ["", "## Risks / unknowns"] + [f"- {r}" for r in design_brief.get("risks", [])]
+        lines += ["", "## Test strategy", design_brief.get("test_strategy", "")]
+        with open(os.path.join(root, "design.md"), "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
+
 def _check_cmds():
     env = os.environ.get("CONDUCTOR_CHECK_CMD")   # smoke override; "" disables the gate
     if env is not None:
@@ -312,6 +352,17 @@ async def synthesize(goal: str, worker_result: dict, verdict: dict) -> dict:
         f"You are the Conductor. Write a short result artifact for this completed, verified mission.\n\n"
         f"Goal: {goal}\nResult: {json.dumps(worker_result)}\nVerdict: {json.dumps(verdict)}",
         '{"artifact":"<a concise markdown summary of what was done and how it was verified>"}')
+
+
+async def design(cr: dict) -> dict:
+    """Pre-plan tech-design brief (hybrid plan-gate). Guides plan() + the adversary; not a spec."""
+    return await judge(
+        "You are the Conductor's tech-design node. BEFORE the mission is decomposed or any code is "
+        "written, produce a COMPACT technical design brief: the approach, the key decisions (each "
+        "with a one-line rationale), the main risks/unknowns, and how correctness will be validated. "
+        f"Keep it tight — this guides the plan and the build, it is not a full spec.\n\nMission: {json.dumps(cr)}",
+        '{"approach":"<2-4 sentences>","key_decisions":[{"decision":"","why":""}],'
+        '"risks":["<risk or unknown>"],"test_strategy":"<how correctness is checked>"}')
 
 
 # ── worker (in-process for slice B) ──────────────────────────────────────────
@@ -703,6 +754,90 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
                "check": ({"ran": ran_check, "ok": check_ok} if ran_check else None),
                "reviewers": {"count": n, "passed": passed}, "findings": findings[:25]}
     return verdict, probes
+
+
+# ── plan-gate (pre-build adversarial review) ─────────────────────────────────
+async def review_plan(mid: str, goal: str, design_brief: dict, plan_obj: dict, lens: str) -> dict:
+    """One adversarial reviewer of the design + plan, PRE-build (no code exists yet). Read-only.
+    Mirrors review_one; on this box the `reviewer` profile is absent → a tool-less reasoning
+    reviewer (same graceful degradation as the verify stage)."""
+    profile = PROFILES.get("reviewer", {})
+    mcp = _load_mcp(profile.get("mcp", []))
+    tools = list(profile.get("tools", [])) + [f"mcp__{s}__*" for s in mcp]
+    prompt = (
+        f"You are an ADVERSARIAL PLAN reviewer using the '{lens}' lens. NO code has been written "
+        f"yet — critique the DESIGN and PLAN below and find why, if built as written, the result "
+        f"would be wrong, incomplete, untestable, or unsafe. Be strict: a plausible but "
+        f"underspecified plan FAILS. You MAY read existing repo code (read-only) to judge feasibility.\n\n"
+        f"Goal: {goal}\nDesign: {json.dumps(design_brief)}\nPlan: {json.dumps(plan_obj)}\n\n"
+        'Respond with ONLY JSON: {"pass":true,"findings":[{"severity":"blocker|major|minor","where":"","what":"","fix_hint":""}]}'
+    )
+    opts = ClaudeAgentOptions(
+        model=MODEL, effort=ORCH_EFFORT, cwd=REPO, setting_sources=[],
+        mcp_servers=mcp, allowed_tools=tools, disallowed_tools=list(WRITE_TOOLS),
+        permission_mode="bypassPermissions",
+    )
+    text = []
+    try:
+        async for msg in query(prompt=prompt, options=opts):
+            if isinstance(msg, AssistantMessage):
+                for b in msg.content:
+                    if isinstance(b, TextBlock):
+                        text.append(b.text)
+        return {"lens": lens, "verdict": _extract_json("".join(text))}
+    except Exception as e:
+        return {"lens": lens, "verdict": {"pass": False,
+                "findings": [{"severity": "major", "where": lens, "what": f"plan reviewer failed: {e}"}]}}
+
+
+async def revise_plan(cr: dict, design_brief: dict, plan_obj: dict, findings: list) -> dict:
+    """Regenerate the plan to address adversarial findings (re-decompose if needed)."""
+    return await judge(
+        "You are the Conductor's planner, revising after an adversarial plan review. Address EVERY "
+        "blocker and major finding by fixing the plan (and its design assumptions) — re-decompose if "
+        "needed. Keep the SMALLEST correct set of subtasks; each picks a profile from: "
+        f"{list(PROFILES)}.\n\nMission: {json.dumps(cr)}\nDesign: {json.dumps(design_brief)}\n"
+        f"Current plan: {json.dumps(plan_obj)}\nReview findings: {json.dumps(findings)}",
+        '{"strategy":"<1-2 sentences>","subtasks":[{"id":"s1","goal":"<what to do>",'
+        '"repo":"<repo|null>","profile":"<profile name>","depends_on":[]}],'
+        '"verify":{"mode":"code|report","checks":["tests","exercise","swarm-review"]}}')
+
+
+async def run_plan_gate(db, mid: str, goal: str, cr: dict, design_brief: dict, plan_obj: dict, card_id):
+    """Adversarial pre-build gate: a reviewer fleet critiques the design+plan; revise + re-review
+    up to PLAN_GATE_MAX_ROUNDS. Returns (plan_obj, decision) where decision ∈ {approved, forced,
+    stop}. `forced` = gate never passed but on_exhausted=proceed (build anyway, logged + pinged)."""
+    n = max(1, PLAN_GATE_REVIEWERS)
+    findings, blockers = [], []
+    for rnd in range(PLAN_GATE_MAX_ROUNDS + 1):
+        lenses = [REVIEW_LENSES[i % len(REVIEW_LENSES)] for i in range(n)]
+        reviews = await asyncio.gather(*[review_plan(mid, goal, design_brief, plan_obj, lenses[i])
+                                         for i in range(n)])
+        passed = sum(1 for r in reviews if r["verdict"].get("pass"))
+        findings = [dict(f, lens=r["lens"]) for r in reviews for f in (r["verdict"].get("findings") or [])]
+        blockers = [f for f in findings if f.get("severity") == "blocker"]
+        ok = passed >= (n // 2 + 1) and not blockers
+        db.log_event(mid, "plan_reviewed", {"round": rnd, "reviewers": n, "passed": passed,
+                                            "pass": ok, "findings": findings[:25]})
+        print(f"[conductor] plan-gate round {rnd}: {passed}/{n} pass{' ✓' if ok else ' ✗'}")
+        if ok:
+            db.log_event(mid, "plan_approved", {"round": rnd, "reviewers": n, "passed": passed})
+            return plan_obj, "approved"
+        if rnd < PLAN_GATE_MAX_ROUNDS:
+            print(f"[conductor] plan-gate: revising plan (round {rnd + 1})…")
+            plan_obj = await revise_plan(cr, design_brief, plan_obj, findings)
+    # gate exhausted without a pass
+    if PLAN_GATE_ON_EXHAUSTED == "proceed":
+        db.log_event(mid, "plan_gate_forced", {"reviewers": n, "blockers": len(blockers),
+                                               "findings": findings[:25]})
+        top = "; ".join(f"[{f.get('severity')}] {(f.get('what') or '')[:120]}" for f in findings[:5])
+        trello_comment(db, mid, card_id,
+                       f"⚠ plan-gate did not pass in {PLAN_GATE_MAX_ROUNDS} round(s); proceeding to build. "
+                       f"Top findings: {top}")
+        _slack_relay(f"⚠ Conductor {mid[:8]} plan-gate unresolved after {PLAN_GATE_MAX_ROUNDS} round(s) — "
+                     f"building with {len(blockers)} blocker(s) logged · {_title(goal)}")
+        return plan_obj, "forced"
+    return plan_obj, "stop"
 
 
 # ── execute + verify + re-plan loop ──────────────────────────────────────────
@@ -1111,13 +1246,37 @@ async def run_mission(goal: str, created_by: str = "cli") -> tuple:
         print(f"[conductor] mission {mid[:8]} · type={cr.get('type')} repos={cr.get('repos')}")
         card_id = trello_open(db, mid, goal)   # on-deck (no-op unless reporting.trello.enabled)
 
+        design_brief = {}
+        if PLAN_GATE_ON and PLAN_GATE_DESIGN:
+            print("[conductor] design…")
+            design_brief = await design(cr)
+            db.log_event(mid, "designed", design_brief)
+            _write_design_md(mid, goal, design_brief)
+
         print("[conductor] planning…")
-        p = await plan(cr)
+        p = await plan({**cr, "design": design_brief} if design_brief else cr)
+
+        if PLAN_GATE_ON:
+            print("[conductor] plan-gate (adversarial pre-build review)…")
+            p, gate = await run_plan_gate(db, mid, goal, cr, design_brief, p, card_id)
+            if gate == "stop":
+                trello_move(db, mid, card_id, "failed", goal)
+                db.finish_mission(mid, "failed")
+                db.log_event(mid, "escalated", {"reason": "plan-gate not passed"})
+                _slack_relay(f"⛔ Conductor {mid[:8]} halted at plan-gate · {_title(goal)}")
+                return mid, "failed"
+
+        if design_brief:
+            p["design"] = design_brief
         db.update_mission(mid, plan=p, status="dispatched")
         for st in p.get("subtasks", []):
             db.create_subtask(mid, st["id"], st["goal"], st.get("profile", "one-shot"),
                               repo=st.get("repo"), depends_on=st.get("depends_on", []), effort=WORKER_EFFORT)
         db.log_event(mid, "planned", {"strategy": p.get("strategy"), "subtasks": len(p.get("subtasks", []))})
+        if PLAN_GATE_ON:
+            label = "📋 Plan approved" if gate == "approved" else "📋 Plan (forced past gate)"
+            trello_comment(db, mid, card_id, f"{label} · " + (p.get("strategy", "")[:400])
+                           + f"\n{len(p.get('subtasks', []))} subtask(s).")
         subtasks = db.list_subtasks(mid)
         print(f"[conductor] plan: {p.get('strategy')} · {len(subtasks)} subtask(s)")
         if not subtasks:
