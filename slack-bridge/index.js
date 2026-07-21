@@ -1967,6 +1967,28 @@ const httpServer = http.createServer((req, res) => {
       const pushNatsPresence = async () => {
         try { await natsTransport.presenceUpsert(loadRegistry()); }
         catch (e) { console.error(`[nats] presence upsert failed: ${e.message}`); }
+        // INGEST peers' presence from the KV into presenceMap so addressing resolves REMOTE
+        // targets. Without this, presenceMap (→ knownHosts for parseAddress at :336/:1360/:1539/
+        // :1635) is self-only over NATS — the KV is otherwise read only for /agents — so a bare
+        // `host/name` or `host/ws/name` to a remote host fails the known-host test, the host segment
+        // is misread as a workspace, host defaults to SELF, and the publish lands in OUR OWN subtree
+        // (nexus.a2a.<self>.…) — the peer never receives it. Mirrors the Slack consumePresence path
+        // (:1104): fold each remote host's live agents (instance records) into the map. No Slack
+        // side effects (unlike consumePresence's re-announce nudge).
+        try {
+          const snap = await natsTransport.presenceSnapshot();   // [{host,workspace,name,pane,ts}]
+          const byHost = new Map();
+          for (const e of (snap || [])) {
+            if (!e || !e.host || e.host === SELF_HOST) continue;  // self is upserted above; selfHost is passed separately to parseAddress
+            if (!byHost.has(e.host)) byHost.set(e.host, []);
+            byHost.get(e.host).push({ name: e.name, workspace: e.workspace || '', pane: e.pane || '' });
+          }
+          const nowMs = Date.now(), ts = Math.floor(nowMs / 1000);
+          for (const [host, agents] of byHost) {
+            orch.applyPresence(presenceMap, { host, agents, ts }, { now: nowMs });
+          }
+          orch.expirePresence(presenceMap, { now: nowMs, ttlMs: PRESENCE_TTL_MS });  // age out a departed host (Slack path does this at :1998, gated on PRESENCE_ENABLED)
+        } catch (e) { console.error(`[nats] presence ingest failed: ${e.message}`); }
       };
       await pushNatsPresence();
       setInterval(() => { pushNatsPresence().catch(() => {}); }, PRESENCE_HEARTBEAT_MS);
