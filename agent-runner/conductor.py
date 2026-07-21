@@ -204,6 +204,15 @@ from claude_agent_sdk import (
 
 WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}   # real SDK write tools (MultiEdit isn't one)
 
+# The worker runs in a git worktree PRE-CHECKED-OUT on the mission branch. A worker doing
+# reflexive "good git hygiene" (git checkout -b, switch, branch rename) silently FORKS the
+# mission: its commit rides an invented branch while the conductor commits/pushes/MRs the mission
+# branch it was left on (empty) → two branches, two MRs, the empty one reported (FC-1249). Tell
+# every worker it is already on the right branch and must never touch branch state.
+_WORKER_BRANCH_RULE = (" You are already on the correct git branch in this worktree — commit "
+                       "directly to it; do NOT create, switch, rename, or reset branches "
+                       "(no `git checkout -b`, `git switch -c`, `git branch`).")
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 def _set_sess(name: str):
@@ -476,7 +485,8 @@ async def _run_worker_codex(subtask: dict, profile: dict, effort: str) -> dict:
             body = ""
         instr = (f"{instr}\n\n--- Assigned procedure — follow it to completion "
                  f"(its references/ are alongside {skill_md}) ---\n{body}")
-    instr += ("\n\nYou are a Conductor worker: do exactly this subtask, then stop. Your FINAL message "
+    instr += ("\n\nYou are a Conductor worker: do exactly this subtask, then stop." + _WORKER_BRANCH_RULE
+              + " Your FINAL message "
               "MUST be JSON matching the schema — status=done|error|blocked, summary=what you did, "
               "artifacts=[absolute paths you created/edited], handoff=one line for dependent subtasks "
               "(or null).")
@@ -536,12 +546,13 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
     # the base prompt (setting_sources=[]); both paths share the WORKER_MAX_TURNS budget.
     skill = profile.get("skill")
     skill_md = _skill_md(skill) if skill else None
-    append = "You are a Conductor worker. Do exactly the assigned subtask, then stop."
+    append = "You are a Conductor worker. Do exactly the assigned subtask, then stop." + _WORKER_BRANCH_RULE
     if skill_md:
         if "Read" not in allowed:
             allowed = allowed + ["Read"]
         append = (f"You are a Conductor worker. Your assigned procedure is the skill at {skill_md} — "
-                  f"read it and follow it to completion (its references/ are alongside it), then stop.")
+                  f"read it and follow it to completion (its references/ are alongside it), then stop."
+                  + _WORKER_BRANCH_RULE)
 
     # Workers are autonomous within an approved mission → bypassPermissions.
     # read-only profiles disallow the write tools (Bash-write hardening is slice C+,
@@ -1254,6 +1265,22 @@ def _commit_worktrees(mid, subtasks, goal):
         if r.returncode != 0 and "nothing to commit" not in (r.stdout + r.stderr).lower():
             r = subprocess.run(["git", "-C", ws, "commit", "--no-verify", "-m", msg], capture_output=True, text=True)
             bypassed = r.returncode == 0
+        # Reconcile a worker that forked its own branch (belt for the instruction rule): the
+        # worktree is the source of truth for the WORK. If HEAD is on a different branch than the
+        # mission branch, point the mission branch at the worktree's HEAD so the commit that
+        # actually exists is what we push/MR — not the empty mission branch the worker abandoned.
+        mission_branch = _branch(goal, mid)
+        cur_branch = subprocess.run(["git", "-C", ws, "rev-parse", "--abbrev-ref", "HEAD"],
+                                    capture_output=True, text=True).stdout.strip()
+        forked = bool(cur_branch) and cur_branch != "HEAD" and cur_branch != mission_branch
+        if forked:
+            # `checkout -B` (not `branch -f` + checkout): one atomic step that force-moves the
+            # mission ref to the worker's HEAD AND makes it current, so HEAD == mission branch ==
+            # the worker's commit and every downstream rev-parse/rev-list/push is consistent (no
+            # window where HEAD still points at the fork). The tree is already clean here — the
+            # commit above ran `git add -A && commit` — so -B won't complain about a dirty switch.
+            subprocess.run(["git", "-C", ws, "checkout", "-B", mission_branch, "HEAD"],
+                           capture_output=True, text=True)
         head = subprocess.run(["git", "-C", ws, "rev-parse", "--short", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
         # Does this branch actually differ from the MR target? (commits ahead). A mission that
@@ -1263,8 +1290,9 @@ def _commit_worktrees(mid, subtasks, goal):
         ahead = subprocess.run(["git", "-C", ws, "rev-list", "--count", f"{target}..HEAD"],
                                capture_output=True, text=True).stdout.strip()
         changed = (not ahead.isdigit()) or int(ahead) > 0
-        branches.append({"repo": repo, "branch": _branch(goal, mid), "worktree": ws, "head": head,
-                         "committed": r.returncode == 0, "hooks_bypassed": bypassed, "changed": changed})
+        branches.append({"repo": repo, "branch": mission_branch, "worktree": ws, "head": head,
+                         "committed": r.returncode == 0, "hooks_bypassed": bypassed, "changed": changed,
+                         "forked_from": cur_branch if forked else None})
     return branches
 
 
