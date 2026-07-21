@@ -1274,10 +1274,12 @@ def _commit_worktrees(mid, subtasks, goal):
                                     capture_output=True, text=True).stdout.strip()
         forked = bool(cur_branch) and cur_branch != "HEAD" and cur_branch != mission_branch
         if forked:
-            # -f the mission branch to the worker's HEAD, then check it out so ws is on it.
-            subprocess.run(["git", "-C", ws, "branch", "-f", mission_branch, "HEAD"],
-                           capture_output=True, text=True)
-            subprocess.run(["git", "-C", ws, "checkout", mission_branch],
+            # `checkout -B` (not `branch -f` + checkout): one atomic step that force-moves the
+            # mission ref to the worker's HEAD AND makes it current, so HEAD == mission branch ==
+            # the worker's commit and every downstream rev-parse/rev-list/push is consistent (no
+            # window where HEAD still points at the fork). The tree is already clean here — the
+            # commit above ran `git add -A && commit` — so -B won't complain about a dirty switch.
+            subprocess.run(["git", "-C", ws, "checkout", "-B", mission_branch, "HEAD"],
                            capture_output=True, text=True)
         head = subprocess.run(["git", "-C", ws, "rev-parse", "--short", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
