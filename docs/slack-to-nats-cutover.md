@@ -213,6 +213,11 @@ Bridge returns to the Slack `#nexus-agents` bus + in-memory idle-gate. No data l
 
 - **`nats` npm is deprecated.** The bridge uses the v3 scoped packages: `@nats-io/transport-node`,
   `@nats-io/jetstream`, `@nats-io/kv` (all `^3.4.0`). v3 is functions-not-methods (`jetstream(nc)`).
+- **`npm install` in `slack-bridge/` before flipping.** Those `@nats-io/*` deps are in
+  `package-lock.json` but a `git pull` does **not** install them — a box that installed *before* they
+  were added logs `Cannot find package '@nats-io/transport-node'` and silently stays on Slack (bridge
+  runs, but `transport:nats` + `nats:false`). A full `./install.sh` runs it; `./install.sh --finish-nats`
+  now runs it too. Flipping by hand (editing `.env`)? Run `( cd slack-bridge && npm install )` first.
 - **Non-overlapping subject spaces.** JetStream forbids two streams whose subjects overlap. Anything
   you provision must own a distinct subject prefix, or stream creation fails (`subjects overlap`).
 - **Use the alpine image for healthchecks.** `nats:2.10-alpine` has a shell + `wget`; the distroless

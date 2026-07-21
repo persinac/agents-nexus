@@ -1130,6 +1130,19 @@ finish_nats() {
   chmod 600 "$env_path"
   echo "  -> updated $env_path"
 
+  # Ensure the NATS transport deps are present. The @nats-io/* packages are in package-lock but a
+  # `git pull` does NOT install them — a box that installed BEFORE they were added (then pulled and
+  # is flipping here) would log "Cannot find package '@nats-io/transport-node'" and silently stay on
+  # Slack. A full ./install.sh runs this; --finish-nats (the dedicated flip-to-nats step) must too.
+  if check_cmd npm; then
+    echo "  Installing slack-bridge NATS deps (@nats-io/*)..."
+    ( cd "$REPO_DIR/slack-bridge" && npm install --silent ) \
+      && echo "  -> slack-bridge deps installed" \
+      || echo "  WARNING: npm install failed in slack-bridge — run 'cd slack-bridge && npm install' before the bridge will use NATS"
+  else
+    echo "  WARNING: npm not found — run 'cd slack-bridge && npm install' so the @nats-io deps install"
+  fi
+
   # Restart the bridge so it reconnects to the new broker (same supervisors as --finish-slack).
   if [ "$OS" = "mac" ] && check_cmd launchctl; then
     launchctl kickstart -k "gui/$(id -u)/com.agents-nexus.slack-bridge" 2>/dev/null \
