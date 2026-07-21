@@ -36,6 +36,33 @@ HOST = socket.gethostname().split(".")[0]
 CFG = yaml.safe_load(open(os.path.join(HOME, ".tmux", "conductor.yaml")))
 POLICY = CFG["policy"]
 PROFILES = CFG["profiles"]
+
+# Repo root (agents-nexus dir) — where .env lives. Defined here (early) because the CONDUCTOR_*
+# override constants below read os.environ at import time, so the .env fill MUST happen first or
+# an env-only var (present in .env but not the process env — e.g. a detached herdr-spawned
+# conductor with a stripped env) would be silently missed by every constant.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load_dotenv():
+    """Fill missing env from the repo .env (DATABASE_URL, bus config, tokens, CONDUCTOR_* knobs).
+    Fill-gaps only (setdefault): never override an already-set process-env var. Called at import
+    (before the override constants) AND idempotent, so a detached conductor spawned into a herdr
+    pane with a stripped env still reaches the missions DB + honors .env-only overrides."""
+    try:
+        with open(os.path.join(_REPO_ROOT, ".env")) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k, v)
+    except OSError:
+        pass
+
+
+_load_dotenv()   # BEFORE the constants below (ordering fix) — env-only vars now reach them
+
 # Config is the source of truth; env vars let a smoke test run cheap (haiku/medium)
 # without editing the policy.
 MODEL = os.environ.get("CONDUCTOR_MODEL", POLICY["model"])
@@ -66,7 +93,6 @@ PYEXE = sys.executable
 WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conductor_worker.py")
 SUBSTRATE = os.path.expanduser("~/.tmux/substrate.sh")   # tmux<->herdr seam (NEXUS_SUBSTRATE)
 CONDUCTOR_WORK = os.path.join(HOME, ".tmux", "conductor")   # per-mission worktrees/scratch
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ── sdlc pipeline integration (drives an EXTERNAL sdlc plugin, if installed) ──
 # The Conductor can drive an external sdlc plugin's staged pipeline autonomously, using
@@ -113,20 +139,8 @@ def _skill_md(skill: str):
     return next((p for p in cands if os.path.isfile(p)), None)
 
 
-def _load_dotenv():
-    """Fill missing env from the repo .env (DATABASE_URL, bus config, tokens). Lets a DETACHED
-    conductor — spawned into a herdr pane with a stripped env by `--distribute` — still reach the
-    missions DB. Fill-gaps only: never override an already-set var."""
-    try:
-        with open(os.path.join(_REPO_ROOT, ".env")) as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k, v)
-    except OSError:
-        pass
+# (_load_dotenv is defined + called near the top of the module — before the CONDUCTOR_* override
+# constants — so env-only vars reach them. Kept there to fix the import-time ordering.)
 
 
 REVIEWERS = int(os.environ.get("CONDUCTOR_REVIEWERS", POLICY.get("reviewer", {}).get("count", 5)))
@@ -283,10 +297,18 @@ def _title(goal):
 
 
 def _branch(goal, mid):
-    """A meaningful, CI-safe branch name (no '/'): <ticket>-<slug>, else conductor-<slug>."""
+    """A meaningful, CI-safe branch name (no '/'): <ticket>-<slug>, else conductor-<slug>.
+    When a ticket key is present it already identifies the branch, so the slug is derived from
+    the goal with the ticket key + its trailing prose stripped (avoids ugly names like
+    `fc-1395-branch-off-origin-main-open-a-standalone-non-dra` slugged from goal instructions),
+    kept short (≤24). Falls back to the ticket alone if nothing meaningful remains."""
     src = re.search(r"\b([A-Z][A-Z0-9]+-\d+)\b", goal or "")
-    slug = _slug(_title(goal))
-    return f"{src.group(1).lower()}-{slug}" if src else f"conductor-{slug or mid[:6]}"
+    if src:
+        # goal text minus the ticket key + a following parenthetical of instructions
+        rest = re.sub(r"\(([^)]*)\)", " ", (goal or "").replace(src.group(1), " "))
+        slug = _slug(rest)[:24].strip("-")
+        return f"{src.group(1).lower()}-{slug}" if slug else src.group(1).lower()
+    return f"conductor-{_slug(_title(goal)) or mid[:6]}"
 
 
 def _mission_ws(goal, mid):
@@ -1254,6 +1276,20 @@ def _first_url(text):
 def _open_mr(b, title, description, draft=False):
     subprocess.run(["git", "-C", b["worktree"], "push", "-u", "origin", b["branch"]],
                    capture_output=True, text=True)
+    # Idempotent: reuse an existing open MR for this source branch instead of a second
+    # `glab mr create` (which fails "Failed to create merge request" + drops a recover/mr.json).
+    # This happens when a worker self-opened an MR during the build, and on a partial re-run.
+    existing = subprocess.run(
+        ["glab", "mr", "list", "--source-branch", b["branch"], "--output", "json"],
+        cwd=b["worktree"], capture_output=True, text=True)
+    if existing.returncode == 0:
+        try:
+            mrs = json.loads(existing.stdout or "[]")
+        except (ValueError, TypeError):
+            mrs = []
+        url = next((m.get("web_url") for m in mrs if m.get("web_url")), None)
+        if url:
+            return f"reused existing MR: {url}"
     args = ["glab", "mr", "create", "--source-branch", b["branch"],
             "--target-branch", REPORTING.get("mr", {}).get("target", "main"),
             "--title", title, "--description", description, "--yes"]
@@ -2080,7 +2116,7 @@ async def run_sdlc_mission(goal: str, created_by: str = "cli") -> tuple:
 
 if __name__ == "__main__":
     import anyio
-    _load_dotenv()   # detached launches (herdr pane, stripped env) still reach the missions DB
+    _load_dotenv()   # idempotent re-load (already ran at import); harmless belt-and-suspenders
     args = sys.argv[1:]
     if "--dry-run" in args:
         DRY_RUN = True   # rebinds the module global; report() reads it at call time

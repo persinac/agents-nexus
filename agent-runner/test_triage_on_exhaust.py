@@ -157,6 +157,55 @@ def test_pass_path_untouched():
     assert rc == {"draft": False, "triage": False}       # non-draft, no triage
 
 
+# ── reporting-hardening (bugs surfaced by the FC-1395 / e0bd211e run) ───────────
+def test_open_mr_reuses_existing():
+    """Bug #1: _open_mr must reuse an existing open MR for the branch, not double-create."""
+    import subprocess as _sp
+    calls = []
+    class R:
+        def __init__(s, rc=0, out=""): s.returncode, s.stdout, s.stderr = rc, out, ""
+    def fake_run(args, **kw):
+        calls.append(args)
+        if args[:3] == ["glab", "mr", "list"]:
+            return R(0, '[{"web_url":"https://gitlab.com/x/-/merge_requests/537"}]')
+        return R(0, "created new")
+    restore = _patch(subprocess=types.SimpleNamespace(run=fake_run))
+    try:
+        out = C._open_mr({"worktree": "/tmp/wt", "branch": "fc-1395"}, "t", "d", draft=True)
+        assert "537" in out and "reused" in out, out
+        # must NOT have called `mr create`
+        assert not any(a[:3] == ["glab", "mr", "create"] for a in calls), "double-created!"
+    finally:
+        restore()
+
+
+def test_open_mr_creates_when_none():
+    import types as _t
+    calls = []
+    class R:
+        def __init__(s, rc=0, out=""): s.returncode, s.stdout, s.stderr = rc, out, ""
+    def fake_run(args, **kw):
+        calls.append(args)
+        if args[:3] == ["glab", "mr", "list"]:
+            return R(0, "[]")               # no existing MR
+        return R(0, "https://gitlab.com/x/-/merge_requests/999")
+    restore = _patch(subprocess=_t.SimpleNamespace(run=fake_run))
+    try:
+        out = C._open_mr({"worktree": "/tmp/wt", "branch": "fc-1", "": ""}, "t", "d", draft=True)
+        assert any(a[:3] == ["glab", "mr", "create"] for a in calls), "should create when none exists"
+        assert "--draft" in next(a for a in calls if a[:3] == ["glab", "mr", "create"])
+    finally:
+        restore()
+
+
+def test_branch_slug_prefers_ticket():
+    """Bug #2: a ticket-keyed goal with instruction prose → clean short branch, not slugged prose."""
+    b = C._branch("FC-1395 (branch off origin/main; open a standalone non-draft MR)", "m123456")
+    assert b == "fc-1395" or (b.startswith("fc-1395-") and len(b) <= len("fc-1395-") + 24), b
+    assert "standalone-non-dra" not in b
+    assert C._branch("do a thing", "mabcdef").startswith("conductor-")
+
+
 # ── pytest-free runner (the venv has no pytest) ────────────────────────────────
 if __name__ == "__main__":
     import sys
