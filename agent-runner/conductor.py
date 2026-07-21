@@ -296,6 +296,24 @@ def _title(goal):
     return t.strip()[:80]
 
 
+def _clean_goal(goal):
+    """Strip the `live!` / `dry!` run-mode prefixes from a goal. These are conductor-run.sh
+    conventions (force live / force dry-run) that conductor.py itself never interprets, so if they
+    leak into the mission goal they pollute everything derived from it — most damagingly the branch
+    slug (`fc-1249-live-...` instead of `fc-1249-...`), which split one mission across two branches
+    + two MRs (FC-1249: an empty !539 got reported, the real !538 was invisible). Strip once at the
+    entrypoints so the stored goal, the classifier, and every _branch() call see the same clean text."""
+    g = (goal or "").strip()
+    while True:
+        low = g.lower()
+        if low.startswith("live!"):
+            g = g[5:].lstrip()
+        elif low.startswith("dry!"):
+            g = g[4:].lstrip()
+        else:
+            return g
+
+
 def _branch(goal, mid):
     """A meaningful, CI-safe branch name (no '/'): <ticket>-<slug>, else conductor-<slug>.
     When a ticket key is present it already identifies the branch, so the slug is derived from
@@ -2127,7 +2145,7 @@ if __name__ == "__main__":
         # bucket (orchestrator + workers tile together — the watchable mission view), then return.
         # Honors the caller's substrate (herdr → bucket; tmux → detached window). The detached
         # conductor self-loads .env for the DB; CONDUCTOR_MISSION_WS keeps its workers in-bucket.
-        goal = " ".join(args[1:]).strip()
+        goal = _clean_goal(" ".join(args[1:]))
         if not goal:
             print('usage: conductor.py --distribute "<goal>"'); sys.exit(2)
         label = _mission_ws(goal, "adhoc")               # mission/<slug>, mid-independent
@@ -2153,7 +2171,7 @@ if __name__ == "__main__":
         # Internal entry for the detached conductor: decode the goal from the env + run it.
         import base64
         _g = os.environ.get("CONDUCTOR_GOAL_B64", "")
-        goal = base64.b64decode(_g).decode() if _g else ""
+        goal = _clean_goal(base64.b64decode(_g).decode() if _g else "")
         if not goal:
             print("[conductor] --distribute-run: missing CONDUCTOR_GOAL_B64"); sys.exit(2)
         # A detached pane has a stripped env; route LLM traffic through the local proxy so the
@@ -2211,7 +2229,7 @@ if __name__ == "__main__":
     if args and args[0] == "--sdlc":
         # Drive the sdlc pipeline autonomously (scan.py-routed staged mission). S1 ships the
         # read-only --dry-run preview; staged execution lands in S3.
-        goal = " ".join(args[1:]).strip()
+        goal = _clean_goal(" ".join(args[1:]))
         if not goal:
             print('usage: conductor.py --sdlc [--dry-run] "<goal|ticket>"'); sys.exit(2)
         if DRY_RUN:
@@ -2225,7 +2243,7 @@ if __name__ == "__main__":
             print("usage: conductor.py --resume <mission_id>"); sys.exit(2)
         rid, status = anyio.run(resume_mission, args[1])
     else:
-        goal = " ".join(args).strip()
+        goal = _clean_goal(" ".join(args))
         if not goal:
             print('usage: conductor.py "<goal>"  |  conductor.py --resume <mission_id>'); sys.exit(2)
         rid, status = anyio.run(run_mission, goal)
