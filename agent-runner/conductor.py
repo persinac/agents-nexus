@@ -49,6 +49,12 @@ ESCALATE_AFTER = int(POLICY.get("escalate_after_fails", 2))
 # zero progress. Default 60 for all workers (matches what the skill-attached path already used);
 # override per box via policy.worker_max_turns or CONDUCTOR_WORKER_MAX_TURNS.
 WORKER_MAX_TURNS = int(os.environ.get("CONDUCTOR_WORKER_MAX_TURNS", POLICY.get("worker_max_turns", 60)))
+# Transient-flake retry budget for judgment nodes (judge()): the CLI occasionally exits
+# non-zero after an is_error result (surfaced as a ClaudeSDKError) or returns an empty turn.
+# A one-off flake must not abort a mission — especially synthesize() on the reporting tail of
+# an already-verified mission, which historically crashed the run before the MR was opened.
+JUDGE_MAX_ATTEMPTS = int(os.environ.get("CONDUCTOR_JUDGE_MAX_ATTEMPTS", POLICY.get("judge_max_attempts", 3)))
+JUDGE_RETRY_BACKOFF = float(os.environ.get("CONDUCTOR_JUDGE_RETRY_BACKOFF", POLICY.get("judge_retry_backoff", 2.0)))
 
 PYEXE = sys.executable
 WORKER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "conductor_worker.py")
@@ -173,6 +179,7 @@ from claude_agent_sdk import (
     query, ClaudeAgentOptions,
     PermissionResultAllow, PermissionResultDeny,
     AssistantMessage, ResultMessage, TextBlock, ToolUseBlock,
+    ClaudeSDKError,
 )
 
 WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}   # real SDK write tools (MultiEdit isn't one)
@@ -307,20 +314,34 @@ def ensure_workspace(mid, repo, branch=None):
 
 
 async def judge(instruction: str, schema_hint: str) -> dict:
-    """A judgment node: one-shot opus/max call, structured JSON out."""
+    """A judgment node: one-shot opus/max call, structured JSON out.
+
+    Retries on transient SDK flakes — the CLI can exit non-zero after an is_error
+    result (surfaced as "Claude Code returned an error result: …", a ClaudeSDKError)
+    or return an empty turn with no parseable JSON. A single such flake on a judgment
+    node (classify/plan/design/synthesize) must not abort the whole mission, so we
+    retry a few times with a short backoff before letting the error propagate."""
     prompt = (f"{instruction}\n\nRespond with ONLY a single JSON object (no prose, no code fence) "
               f"matching this shape:\n{schema_hint}")
     opts = ClaudeAgentOptions(
         model=MODEL, effort=ORCH_EFFORT, setting_sources=[],
         permission_mode="bypassPermissions", allowed_tools=[],   # no tools → no turn cap needed
     )
-    text = []
-    async for msg in query(prompt=prompt, options=opts):
-        if isinstance(msg, AssistantMessage):
-            for b in msg.content:
-                if isinstance(b, TextBlock):
-                    text.append(b.text)
-    return _extract_json("".join(text))
+    last_err = None
+    for attempt in range(JUDGE_MAX_ATTEMPTS):
+        try:
+            text = []
+            async for msg in query(prompt=prompt, options=opts):
+                if isinstance(msg, AssistantMessage):
+                    for b in msg.content:
+                        if isinstance(b, TextBlock):
+                            text.append(b.text)
+            return _extract_json("".join(text))
+        except (ClaudeSDKError, ValueError) as e:
+            last_err = e
+            if attempt + 1 < JUDGE_MAX_ATTEMPTS:
+                await asyncio.sleep(JUDGE_RETRY_BACKOFF * (attempt + 1))
+    raise last_err
 
 
 # ── judgment nodes ─────────────────────────────────────────────────────────
@@ -1352,7 +1373,18 @@ async def finalize(db, mid, goal, start_round=0):
     db.update_mission(mid, status="synthesizing")
     summaries = [{"subtask": s["subtask_key"], "summary": (s.get("result") or {}).get("summary", ""),
                   "artifacts": (s.get("result") or {}).get("artifacts", [])} for s in subs]
-    art = await synthesize(goal, {"subtasks": summaries}, verdict)
+    # The mission is already VERIFIED at this point. Synthesizing the writeup is a cosmetic
+    # last step — if the judge flakes out even after its retries, we must NOT throw away passed
+    # work by crashing before report(). Degrade to a plain summary and still open the MR / file
+    # the ticket. (Regression fix: a transient "error result: success" here used to fail the
+    # whole mission after a green verdict, stranding the committed branch with no MR.)
+    try:
+        art = await synthesize(goal, {"subtasks": summaries}, verdict)
+    except Exception as e:
+        fallback = "; ".join(s["summary"] for s in summaries if s.get("summary")) or goal
+        art = {"artifact": f"Mission verified (pass); auto-summary unavailable "
+                           f"({type(e).__name__}). Subtask summaries: {fallback}"[:4000]}
+        db.log_event(mid, "synthesize_degraded", {"error": f"{type(e).__name__}: {e}"})
     db.log_event(mid, "synthesized", {"artifact": (art.get("artifact") or "")[:4000]})
     targets = await report(db, mid, goal, art.get("artifact", ""), subs, verdict)
     db.finish_mission(mid, "done")
