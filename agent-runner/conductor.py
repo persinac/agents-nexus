@@ -986,6 +986,34 @@ def _expandvars_deep(x):
     return x
 
 REPORTING = _expandvars_deep(CFG.get("reporting", {}))
+
+
+def _jira_epic():
+    """The configured parent epic key, or "" when there is none. Guards the two ways
+    "no epic" shows up: an omitted/empty key, and an UNRESOLVED ${VAR} template (env-
+    expansion leaves `${JIRA_EPIC}` verbatim when the var is unset). Either way → no
+    parent, so a tracking Task is created top-level rather than under a bogus key."""
+    e = (REPORTING.get("jira", {}) or {}).get("epic") or ""
+    e = e.strip()
+    return "" if (not e or e.startswith("${") or e.startswith("$")) else e
+
+
+def _epic_clause(src=None):
+    """Reporter-prompt fragment for the parent epic, encoding the precedence:
+      1. INHERIT the source ticket's own epic (keep the tracking Task with its work), else
+      2. the configured DEFAULT epic (reporting.jira.epic / JIRA_EPIC), else
+      3. top-level (no parent).
+    The reporter agent has the atlassian MCP, so 'inherit' is an instruction it resolves.
+    _jira_epic() collapses None/empty/unresolved-${VAR} → "" so we never emit a bogus key."""
+    default = _jira_epic()
+    if src:
+        s = (f"parent epic: use {src}'s parent epic (look it up via the atlassian MCP — the epic "
+             f"it is a child of); ")
+        s += (f"if {src} has no parent epic, use {default!r}" if default
+              else f"if {src} has no parent epic, create this as a top-level issue (no parent)")
+        return s
+    return (f"parent epic={default!r}" if default
+            else "no parent epic (create it as a top-level issue)")
 DRY_RUN = os.environ.get("CONDUCTOR_DRY_RUN") == "1"   # --dry-run: log reporting payloads, don't send
 
 
@@ -1247,7 +1275,7 @@ async def report(db, mid, goal, artifact, subtasks, verdict):
         res = await reporter_agent(
             f"Create a Jira issue and return it. Fields: project key={j['project']!r}, "
             f"issue type={j.get('issue_type', 'Task')!r}, summary={summary!r}, "
-            f"parent epic={j.get('epic')!r}, assignee accountId={j.get('assignee')!r}. "
+            f"{_epic_clause(src)}, assignee accountId={j.get('assignee')!r}. "
             f"Description:\n\n{body}\n\n"
             f"Use the atlassian Jira tools; if a field can't be set on create for this project type, "
             f"set it in a follow-up edit. "
@@ -1256,7 +1284,7 @@ async def report(db, mid, goal, artifact, subtasks, verdict):
         if jira_key:
             db.update_mission(mid, jira_key=jira_key)
             targets.append("jira")
-        db.log_event(mid, "jira", {"key": jira_key, "epic": j.get("epic"), "error": res.get("error")})
+        db.log_event(mid, "jira", {"key": jira_key, "epic": _jira_epic() or None, "error": res.get("error")})
     else:
         db.log_event(mid, "jira_dryrun", {"project": j.get("project"), "summary": goal[:120]})
 
@@ -1733,7 +1761,7 @@ async def sdlc_report(db, mid, goal, ticket, proj, ws_root):
         body_j = body + (f"\n\n**MR:** {mr_url}" if mr_url else "")
         res = await reporter_agent(
             f"Create a Jira issue: project key={j['project']!r}, issue type={j.get('issue_type', 'Task')!r}, "
-            f"summary={summary!r}, parent epic={j.get('epic')!r}, assignee accountId={j.get('assignee')!r}. "
+            f"summary={summary!r}, {_epic_clause(ticket)}, assignee accountId={j.get('assignee')!r}. "
             f"Description:\n\n{body_j}\n\nReturn ONLY JSON: {{\"key\":\"<key>\"}}.", ["atlassian"])
         if res.get("key"):
             db.update_mission(mid, jira_key=res["key"]); targets.append("jira")
