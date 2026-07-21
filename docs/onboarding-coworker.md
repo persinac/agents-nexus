@@ -100,6 +100,55 @@ your overlay's tooling are all live locally.
 
 ---
 
+## MCP servers: off by default, opt in per box
+
+Some Claude Code plugins bundle **MCP servers**. Their tool schemas load into **every** agent
+session and cost context — a couple of chatty servers can add tens of thousands of tokens before
+you type anything. So the fleet's default posture is **no MCP servers auto-load**; you turn on
+only the ones a given box actually needs.
+
+**During install (Step 3.6)** the installer scans **your** installed plugins for bundled MCP
+servers and shows a multi-select with **nothing pre-checked**. The list is generated from
+whatever this box has — there is no fixed set, so what you see depends on which plugins you've
+added. Press ENTER to keep them all off, or toggle the ones you want ON:
+
+```
+  MCP plugins to auto-load (ENTER = none) (enter # to flip, ENTER when done, 'a' selects all):
+    [ ] 1) <plugin>@<marketplace>   [MCP: <server-name>]
+    [ ] 2) <plugin>@<marketplace>   [MCP: <server-name>; also N skills — disabled with it]
+    ...
+```
+
+Each row is one installed plugin that bundles an MCP server; `[MCP: …]` names the server(s) it
+starts, and `also N skills` flags plugins that also ship skills (see the caveat below).
+Non-interactive installs (`--non-interactive`) skip the prompt and leave **all** MCP-bearing
+plugins off.
+
+> **Skills are coupled to the MCP server.** In Claude Code a plugin is a single unit — turning it
+> OFF disables its **skills** too, not just the MCP tools. The list flags how many skills each
+> plugin ships so you don't trade away a whole skill set to save a couple of tools. If you want a
+> plugin's skills you must leave it ON (and accept its MCP tools) — there's no supported way to
+> load one without the other.
+
+Choices are written to `~/.claude/settings.json` (`enabledPlugins`) and persist across sessions.
+**Inspect or change them any time:**
+
+| Want to… | Command |
+|---|---|
+| See what's installed and on/off | `claude plugin list` |
+| See a plugin's tools + projected token cost | `claude plugin details <plugin>` |
+| Turn one ON for this box | `claude plugin enable <plugin> --scope user` |
+| Turn one OFF | `claude plugin disable <plugin> --scope user` |
+| Re-pick from the menu | re-run `./install.sh` (Step 3.6 prompts again) |
+
+After enabling/disabling mid-session, run `/reload-plugins` (or start a new session) to
+connect/disconnect the server.
+
+> The always-on nexus services — **spark** and **agent-memory** — are *not* plugins; they're local
+> SSE services wired in separately, so this prompt never touches them.
+
+---
+
 ## Going multi-host later
 
 Single-host uses a **loopback** broker, so other machines can't reach it. To let boxes A2A across
