@@ -1,4 +1,7 @@
 {
+  "env": {
+    "ENABLE_TOOL_SEARCH": "true"
+  },
   "alwaysThinkingEnabled": true,
   "autoUpdatesChannel": "latest",
   "hooks": {

@@ -195,6 +195,10 @@ const templatePerms = template.permissions?.allow ?? [];
 existing.permissions ??= {};
 existing.permissions.allow = [...new Set([...existingPerms, ...templatePerms])];
 
+// Fill-gaps merge of top-level env keys: adds ENABLE_TOOL_SEARCH (defer MCP tool
+// schemas to save context) without clobbering a value the user already set.
+if (template.env) existing.env = { ...template.env, ...(existing.env ?? {}) };
+
 require('fs').writeFileSync(existingPath, JSON.stringify(existing, null, 2) + '\n');
 EOF
 
