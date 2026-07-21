@@ -468,6 +468,107 @@ multi_select() {
   done
 }
 
+# Discover plugins that bundle an MCP server and let the operator choose which ones
+# auto-load on THIS box. MCP tool schemas load into every Claude session and cost
+# context, so the default posture is: none auto-load — the operator opts specific
+# plugins in. Choices are written to ~/.claude/settings.json (enabledPlugins).
+#
+# NOTE: in Claude Code a plugin's MCP server and its skills are one unit — turning a
+# plugin OFF also disables its skills. Plugins that ship skills are flagged in the list
+# so nobody drops a skill set to save a couple of tools by accident. Re-run the installer
+# to change the selection, or use `claude plugin enable|disable <plugin> --scope user`.
+configure_mcp_defaults() {
+  local settings="$HOME/.claude/settings.json"
+  local installed="$HOME/.claude/plugins/installed_plugins.json"
+  if [ ! -f "$installed" ]; then
+    echo "  No installed-plugins manifest yet — nothing to configure."
+    return 0
+  fi
+
+  # One "pid<TAB>servers<TAB>skillcount" row per MCP-bearing installed plugin.
+  local discovered
+  discovered=$(python3 - "$installed" <<'PY'
+import json, sys, pathlib
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+rows = []
+for pid, installs in (manifest.get("plugins") or {}).items():
+    for inst in installs:
+        root = pathlib.Path(inst.get("installPath", ""))
+        mcp = root / ".mcp.json"
+        if not mcp.is_file():
+            continue
+        try:
+            data = json.loads(mcp.read_text())
+        except Exception:
+            continue
+        # A plugin may nest servers under "mcpServers" or declare them at the top level.
+        servers = data.get("mcpServers") if isinstance(data.get("mcpServers"), dict) else data
+        names = list(servers) if isinstance(servers, dict) else []
+        if not names:
+            continue
+        skills_dir = root / "skills"
+        nskills = sum(1 for _ in skills_dir.iterdir()) if skills_dir.is_dir() else 0
+        rows.append(f"{pid}\t{','.join(names)}\t{nskills}")
+        break
+print("\n".join(sorted(rows)))
+PY
+)
+
+  if [ -z "$discovered" ]; then
+    echo "  No MCP-bearing plugins installed — nothing to configure."
+    return 0
+  fi
+
+  local -a PIDS=()
+  SELECT_LABELS=(); SELECT_DEFAULTS=()
+  local pid servers nskills note
+  while IFS=$'\t' read -r pid servers nskills; do
+    [ -z "$pid" ] && continue
+    PIDS+=("$pid")
+    note="MCP: $servers"
+    [ "${nskills:-0}" -gt 0 ] && note="$note; also $nskills skills — disabled with it"
+    SELECT_LABELS+=("$pid  [$note]")
+    SELECT_DEFAULTS+=("0")   # default OFF: no MCP auto-loads
+  done <<EOF
+$discovered
+EOF
+
+  # Baseline every entry to OFF so a stale SELECT_STATE (e.g. the earlier service
+  # picker) can't leak into the non-interactive path.
+  local i
+  SELECT_STATE=()
+  for ((i=0; i<${#PIDS[@]}; i++)); do SELECT_STATE+=("0"); done
+
+  if ! $INTERACTIVE; then
+    echo "  Non-interactive: no MCP servers will auto-load (all MCP-bearing plugins off)."
+  else
+    echo "  Plugins can bundle MCP servers whose tools load into EVERY Claude session,"
+    echo "  which costs context. Default: none auto-load. Pick any to keep ON for this box."
+    SELECT_TITLE="MCP plugins to auto-load (ENTER = none)"
+    multi_select
+  fi
+
+  # Apply: enabledPlugins[pid] = true if selected else false, for every discovered plugin.
+  local states=""
+  for ((i=0; i<${#PIDS[@]}; i++)); do
+    states="$states ${PIDS[$i]}=${SELECT_STATE[$i]:-0}"
+  done
+  # shellcheck disable=SC2086
+  python3 - "$settings" $states <<'PY'
+import json, sys, pathlib
+p = pathlib.Path(sys.argv[1])
+cfg = json.loads(p.read_text()) if p.is_file() else {}
+ep = cfg.setdefault("enabledPlugins", {})
+for pair in sys.argv[2:]:
+    pid, state = pair.rsplit("=", 1)
+    ep[pid] = (state == "1")
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps(cfg, indent=2) + "\n")
+on = sorted(k for k, v in ep.items() if v)
+print("  enabledPlugins written. Auto-loading MCP plugins: " + (", ".join(on) if on else "none"))
+PY
+}
+
 interactive_setup() {
   echo "── Step 3: Profile + environment ────────────────────────"
 
@@ -1254,6 +1355,13 @@ else
   # non-interactive: install just the default-on (trial) set, prompt nothing
   bash "$PLUGIN_FLOW" --trial --profile "$REPO_DIR/.env" || true
 fi
+echo ""
+
+# ── Step 3.6: MCP auto-load defaults ───────────────────────────
+# Plugins can bundle MCP servers whose tool schemas load into every Claude session
+# (context cost). Default posture: none auto-load; the operator opts specific ones in.
+echo "── Step 3.6: MCP auto-load defaults ─────────────────────"
+configure_mcp_defaults
 echo ""
 
 # ── Step 4: Global Claude skills ───────────────────────────────
