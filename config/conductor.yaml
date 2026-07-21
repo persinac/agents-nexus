@@ -15,6 +15,7 @@ policy:
   escalate_after_fails: 2
   max_replans: 5                    # verify -> re-dispatch loops before escalating to a human
   worker_max_turns: 60              # per-worker turn budget; multi-file build subtasks dead-loop below ~60
+  on_exhausted: escalate            # escalate (stop, work stranded) | partial (draft MR + queue findings)
   verify_command:                   # ground-truth check (first that EXISTS per repo) — the full lint suite, hard gate
     - task lint
     - task lint:all

@@ -49,6 +49,12 @@ ESCALATE_AFTER = int(POLICY.get("escalate_after_fails", 2))
 # zero progress. Default 60 for all workers (matches what the skill-attached path already used);
 # override per box via policy.worker_max_turns or CONDUCTOR_WORKER_MAX_TURNS.
 WORKER_MAX_TURNS = int(os.environ.get("CONDUCTOR_WORKER_MAX_TURNS", POLICY.get("worker_max_turns", 60)))
+# Terminal behavior when a building mission exhausts MAX_REPLANS without passing verify.
+# `escalate` (default) = today's behavior byte-for-byte: mark escalated + stop, work stranded.
+# `partial` = best-effort: open a DRAFT MR for the attempt + file the residual reviewer findings
+# as Claude-Queue tickets, finish `partial`. Preserves the work + enumerates the gaps instead of
+# dead-ending. Opt in per box via policy.on_exhausted or CONDUCTOR_ON_EXHAUSTED.
+ON_EXHAUSTED = os.environ.get("CONDUCTOR_ON_EXHAUSTED", POLICY.get("on_exhausted", "escalate"))
 # Transient-flake retry budget for judgment nodes (judge()): the CLI occasionally exits
 # non-zero after an is_error result (surfaced as a ClaudeSDKError) or returns an empty turn.
 # A one-off flake must not abort a mission — especially synthesize() on the reporting tail of
@@ -1245,19 +1251,139 @@ def _first_url(text):
     return m.group(0) if m else None
 
 
-def _open_mr(b, title, description):
+def _open_mr(b, title, description, draft=False):
     subprocess.run(["git", "-C", b["worktree"], "push", "-u", "origin", b["branch"]],
                    capture_output=True, text=True)
     args = ["glab", "mr", "create", "--source-branch", b["branch"],
             "--target-branch", REPORTING.get("mr", {}).get("target", "main"),
             "--title", title, "--description", description, "--yes"]
-    if REPORTING.get("mr", {}).get("draft"):
+    if draft or REPORTING.get("mr", {}).get("draft"):   # per-call override (partial forces draft)
         args.append("--draft")
     r = subprocess.run(args, cwd=b["worktree"], capture_output=True, text=True)
     return (r.stdout + r.stderr).strip()
 
 
-async def report(db, mid, goal, artifact, subtasks, verdict):
+# Findings the false-positive gate rejects before filing (cheap heuristic, not a full verify):
+# carried from the queue-techdebt skill. A finding whose `what`/`fix_hint` matches is skipped.
+_TRIAGE_REJECT_PATTERNS = [
+    r"except\s+\w+\s*,\s*\w+\s*:",          # py2 `except A, B:` — a SyntaxError under py3.14, not a real bug
+    r"\bexcept .*,.* is a syntax error",
+    r"formatter would revert|linter would revert|auto-?format would (revert|undo)",
+]
+
+
+def _norm_where(where):
+    """Normalize a finding's `where` to a dedupe key: collapse to file:function or file:line so
+    coupled findings from multiple lenses (same locus) fold into one ticket."""
+    w = (where or "").strip().lower()
+    w = re.sub(r"\s+", " ", w)
+    m = re.match(r"([\w./-]+)(?::(\d+)|\b.*?\b(\w+)\(\))?", w)
+    if not m:
+        return w[:80]
+    file, line, fn = m.group(1), m.group(2), m.group(3)
+    return f"{file}:{fn or line or ''}".rstrip(":")
+
+
+def _triage_rejected(f):
+    """True if a finding hits the false-positive gate (skip filing)."""
+    blob = f"{f.get('what', '')} {f.get('fix_hint', '')}".lower()
+    return any(re.search(p, blob) for p in _TRIAGE_REJECT_PATTERNS)
+
+
+async def _file_triage_tickets(db, mid, goal, verdict, src, tracking_key, mr_url, cap=6):
+    """File the residual reviewer findings as child tickets under the Claude Queue epic (FC-1239)
+    via the queue-techdebt contract. Keep blocker+major, dedupe by locus, cap at `cap` (roll the
+    remainder into one 'N more' ticket — never silently drop), and skip false positives. Returns
+    the created keys. DRY_RUN → logs the would-file payloads instead of creating. Reuses
+    reporter_agent (atlassian) — does not re-implement Atlassian calls."""
+    j = REPORTING.get("jira", {})
+    findings = verdict.get("findings") or []
+    # 1. filter severity + false-positive gate
+    kept, rejected = [], 0
+    for f in findings:
+        if f.get("severity") not in ("blocker", "major"):
+            continue
+        if _triage_rejected(f):
+            rejected += 1
+            db.log_event(mid, "triage_rejected", {"where": f.get("where"), "what": (f.get("what") or "")[:120]})
+            continue
+        kept.append(f)
+    # 2. dedupe by normalized locus (coupled multi-lens findings → one ticket)
+    by_where, order = {}, []
+    for f in kept:
+        k = _norm_where(f.get("where"))
+        if k not in by_where:
+            by_where[k] = f
+            order.append(k)
+    deduped = [by_where[k] for k in order]
+    # 3. cap: keep first `cap`, roll the rest into a single "N more" ticket (never drop silently)
+    head, overflow = deduped[:cap], deduped[cap:]
+    if overflow:
+        db.log_event(mid, "triage_capped", {"kept": len(head), "overflow": len(overflow)})
+
+    epic = "FC-1239"   # the Claude Queue tech-debt epic — triage findings route HERE, not the src epic
+    team_id = "bee517c7-f0ef-499f-83ff-5a0ff5446959"   # Finding Care (customfield_10001)
+    assignee = j.get("assignee")
+    refs = (f"\n\n### References\n"
+            f"- Tracking Task: {tracking_key or '(none)'}\n"
+            f"- Draft MR: {mr_url or '(none)'}\n"
+            + (f"- Source ticket: {src}\n" if src else ""))
+
+    def _payload(f):
+        lens = f.get("lens", "review")
+        return {
+            "summary": f"[{lens}] {(f.get('what') or 'finding')[:100]}"[:110],
+            "severity": f.get("severity"),
+            "body": (f"### Problem\n{f.get('what', '')}\n\n"
+                     f"### Where\n{f.get('where', '(unspecified)')}\n\n"
+                     + (f"### Fix\n{f['fix_hint']}\n\n" if f.get("fix_hint") else "")
+                     + refs.lstrip()),
+        }
+
+    payloads = [_payload(f) for f in head]
+    if overflow:
+        more = "\n".join(f"- [{f.get('lens')}] {f.get('what', '')[:90]} — {f.get('where', '')}" for f in overflow)
+        payloads.append({
+            "summary": f"[triage] {len(overflow)} more findings from mission {mid[:8]}"[:110],
+            "severity": "major",
+            "body": f"### Problem\n{len(overflow)} additional blocker/major findings not filed individually:\n\n{more}\n{refs}",
+        })
+
+    if not payloads:
+        db.log_event(mid, "triaged", {"tickets": [], "rejected": rejected, "capped": 0})
+        return []
+
+    if DRY_RUN or not (j.get("enabled") and j.get("project")):
+        db.log_event(mid, "triage_dryrun",
+                     {"would_file": [{"summary": p["summary"], "parent": epic, "severity": p["severity"]} for p in payloads],
+                      "rejected": rejected, "capped": len(overflow)})
+        return []
+
+    keys = []
+    for p in payloads:
+        # Two-call gotcha: Team (customfield_10001) is SILENTLY DROPPED on create → create first,
+        # then editJiraIssue to set it. Encoded in the prompt exactly as the skill documents.
+        res = await reporter_agent(
+            f"Create a Jira issue, then set its Team field in a SECOND call. "
+            f"Step 1 — create: project key={j['project']!r}, issue type='Task', "
+            f"parent epic={epic!r}, assignee accountId={assignee!r}, summary={p['summary']!r}, "
+            f"description (markdown):\n\n{p['body']}\n\n"
+            f"Step 2 — the Team field customfield_10001 is a PLAIN STRING {team_id!r} and is silently "
+            f"dropped on create, so after creating, call editJiraIssue to set customfield_10001={team_id!r}. "
+            'Return ONLY JSON: {"key":"<created issue key>"}.', ["atlassian"])
+        if res.get("key"):
+            keys.append(res["key"])
+        db.log_event(mid, "triage_ticket", {"key": res.get("key"), "summary": p["summary"],
+                                            "severity": p["severity"], "error": res.get("error")})
+
+    db.log_event(mid, "triaged", {"tickets": keys, "rejected": rejected, "capped": len(overflow)})
+    return keys
+
+
+async def report(db, mid, goal, artifact, subtasks, verdict, draft=False, triage=False):
+    """Report a finished mission. `draft` forces a DRAFT MR (partial missions — code failed
+    verification, never signal ready). `triage` files the residual reviewer findings as
+    Claude-Queue tickets after the tracking Task (best-effort exhaustion path)."""
     targets = ["db"]
     m = re.search(r"\b([A-Z][A-Z0-9]+-\d+)\b", goal or "")
     src = m.group(1) if m else None
@@ -1274,14 +1400,22 @@ async def report(db, mid, goal, artifact, subtasks, verdict):
 
     # Build the MR description + title BEFORE opening the MR (can't reference its own URL).
     desc = _report_body(goal, artifact, verdict, branches)
+    if draft:
+        # Honesty banner: a partial mission's code did NOT pass verification. The draft state +
+        # this banner + the queued findings keep it from ever reading as "ready to merge".
+        n_replans = (db.get_mission(mid) or {}).get("replan_count", MAX_REPLANS)
+        desc = (f"> ⚠️ This MR did not pass Conductor verification (exhausted {n_replans} replans). "
+                f"It is a preserved best-effort with the open findings tracked below. Do not merge as-is.\n\n"
+                + desc)
     if src:
         desc += f"\n\n**Source ticket:** {src}"
-    title = f"[Conductor] {src}: {_title(goal)}" if src else f"[Conductor] {_title(goal)}"
+    _mark = "[DRAFT/partial] " if draft else ""
+    title = f"{_mark}[Conductor] {src}: {_title(goal)}" if src else f"{_mark}[Conductor] {_title(goal)}"
 
     mr_url = None
     if REPORTING.get("mr", {}).get("enabled") and not DRY_RUN and changed:
         for b in changed:
-            out = _open_mr(b, title, desc)
+            out = _open_mr(b, title, desc, draft=draft)
             mr_url = mr_url or _first_url(out)
             db.log_event(mid, "mr", {"repo": b["repo"], "branch": b["branch"], "url": _first_url(out), "out": out[:300]})
         targets.append("mr")
@@ -1297,7 +1431,8 @@ async def report(db, mid, goal, artifact, subtasks, verdict):
     j = REPORTING.get("jira", {})
     jira_key = None
     if j.get("enabled") and not DRY_RUN and j.get("project") and not no_changes:
-        summary = f"[Conductor] {src}" if src else f"[Conductor] {goal.splitlines()[0][:80]}"
+        _pfx = "[partial] " if triage else ""
+        summary = f"{_pfx}[Conductor] {src}" if src else f"{_pfx}[Conductor] {goal.splitlines()[0][:80]}"
         res = await reporter_agent(
             f"Create a Jira issue and return it. Fields: project key={j['project']!r}, "
             f"issue type={j.get('issue_type', 'Task')!r}, summary={summary!r}, "
@@ -1313,6 +1448,14 @@ async def report(db, mid, goal, artifact, subtasks, verdict):
         db.log_event(mid, "jira", {"key": jira_key, "epic": _jira_epic() or None, "error": res.get("error")})
     else:
         db.log_event(mid, "jira_dryrun", {"project": j.get("project"), "summary": goal[:120]})
+
+    # Triage (partial missions): file the residual reviewer findings as Claude-Queue tickets so
+    # "fix it later" is an actionable queue, not a stranded DB row. The human reviewing the draft
+    # MR is the router. Runs even under DRY_RUN (logs the would-file payloads).
+    if triage:
+        tkeys = await _file_triage_tickets(db, mid, goal, verdict, src, jira_key, mr_url)
+        if tkeys:
+            targets.append("triage")
 
     # Source ticket — comment + (only when we changed something) transition (ticket-sourced).
     if src and j.get("enabled") and not DRY_RUN and j.get("update_source"):
@@ -1361,32 +1504,48 @@ async def report(db, mid, goal, artifact, subtasks, verdict):
     return targets
 
 
+async def _safe_synthesize(db, mid, goal, subs, verdict, verified=True):
+    """Synthesize the mission writeup, degrading to a plain summary if the judge flakes out
+    (even after retries) rather than crashing before report() and stranding committed work.
+    Shared by the pass path and the best-effort partial path. Returns the artifact string."""
+    db.update_mission(mid, status="synthesizing")
+    summaries = [{"subtask": s["subtask_key"], "summary": (s.get("result") or {}).get("summary", ""),
+                  "artifacts": (s.get("result") or {}).get("artifacts", [])} for s in subs]
+    tag = "verified (pass)" if verified else "did NOT pass verification (best-effort)"
+    try:
+        art = await synthesize(goal, {"subtasks": summaries}, verdict)
+    except Exception as e:
+        fallback = "; ".join(s["summary"] for s in summaries if s.get("summary")) or goal
+        art = {"artifact": f"Mission {tag}; auto-summary unavailable "
+                           f"({type(e).__name__}). Subtask summaries: {fallback}"[:4000]}
+        db.log_event(mid, "synthesize_degraded", {"error": f"{type(e).__name__}: {e}"})
+    db.log_event(mid, "synthesized", {"artifact": (art.get("artifact") or "")[:4000]})
+    return art.get("artifact", "")
+
+
 async def finalize(db, mid, goal, start_round=0):
     """Shared tail for run + resume: DAG/verify/re-plan loop → synthesize → report → finish."""
     verdict, ok = await run_and_verify(db, mid, goal, start_round=start_round)
     subs = db.list_subtasks(mid)
     if not ok:
+        replans = (db.get_mission(mid) or {}).get("replan_count")
+        # Best-effort triage on exhaustion (opt-in): don't dead-end. Preserve the attempt behind
+        # a DRAFT MR + enumerate the residual reviewer findings as Claude-Queue tickets, finish
+        # `partial`. Never emits a false "ready" signal — the draft MR + partial status carry the
+        # honesty. Default `escalate` keeps the historical stop-and-strand behavior.
+        if ON_EXHAUSTED == "partial":
+            art = await _safe_synthesize(db, mid, goal, subs, verdict, verified=False)
+            targets = await report(db, mid, goal, art, subs, verdict, draft=True, triage=True)
+            db.finish_mission(mid, "partial")
+            db.log_event(mid, "partial", {"verdict": verdict, "replans": replans, "targets": targets})
+            print(f"[conductor] PARTIAL after {MAX_REPLANS} re-plans · mission {mid} · reported→{targets}")
+            return mid, "partial"
         db.finish_mission(mid, "escalated")
-        db.log_event(mid, "escalated", {"verdict": verdict, "replans": db.get_mission(mid)["replan_count"]})
+        db.log_event(mid, "escalated", {"verdict": verdict, "replans": replans})
         print(f"[conductor] ESCALATED after {MAX_REPLANS} re-plans · mission {mid}")
         return mid, "escalated"
-    db.update_mission(mid, status="synthesizing")
-    summaries = [{"subtask": s["subtask_key"], "summary": (s.get("result") or {}).get("summary", ""),
-                  "artifacts": (s.get("result") or {}).get("artifacts", [])} for s in subs]
-    # The mission is already VERIFIED at this point. Synthesizing the writeup is a cosmetic
-    # last step — if the judge flakes out even after its retries, we must NOT throw away passed
-    # work by crashing before report(). Degrade to a plain summary and still open the MR / file
-    # the ticket. (Regression fix: a transient "error result: success" here used to fail the
-    # whole mission after a green verdict, stranding the committed branch with no MR.)
-    try:
-        art = await synthesize(goal, {"subtasks": summaries}, verdict)
-    except Exception as e:
-        fallback = "; ".join(s["summary"] for s in summaries if s.get("summary")) or goal
-        art = {"artifact": f"Mission verified (pass); auto-summary unavailable "
-                           f"({type(e).__name__}). Subtask summaries: {fallback}"[:4000]}
-        db.log_event(mid, "synthesize_degraded", {"error": f"{type(e).__name__}: {e}"})
-    db.log_event(mid, "synthesized", {"artifact": (art.get("artifact") or "")[:4000]})
-    targets = await report(db, mid, goal, art.get("artifact", ""), subs, verdict)
+    art = await _safe_synthesize(db, mid, goal, subs, verdict, verified=True)
+    targets = await report(db, mid, goal, art, subs, verdict)
     db.finish_mission(mid, "done")
     print(f"[conductor] DONE · mission {mid} · reported→{targets}")
     return mid, "done"
@@ -1451,7 +1610,12 @@ async def run_mission(goal: str, created_by: str = "cli") -> tuple:
         # Slices C–E: DAG → verify/re-plan loop → synthesize → report.
         trello_move(db, mid, card_id, "in_progress", goal)
         rid, status = await finalize(db, mid, goal)
+        # partial = best-effort preserved behind a draft MR + queued findings; card goes to the
+        # failed/needs-human list (no dedicated 'partial' Trello column), the mission status stays partial.
         trello_move(db, mid, card_id, "done" if status == "done" else "failed", goal)
+        if status == "partial":
+            _slack_relay(f"🟡 Conductor {mid[:8]} PARTIAL · {_title(goal)} · "
+                         f"draft MR + findings queued (see mission {mid[:8]})")
         return rid, status
     except Exception as e:
         print(f"[conductor] ERROR: {type(e).__name__}: {e}")
@@ -1475,7 +1639,7 @@ async def resume_mission(mid_prefix: str) -> tuple:
             print(f"[conductor] no mission matching {mid_prefix!r}")
             return mid_prefix, "unknown"
         mid, goal = m["id"], m["goal"]
-        if m["status"] in ("done", "failed"):
+        if m["status"] in ("done", "failed", "partial"):
             print(f"[conductor] mission {mid[:8]} already {m['status']} — nothing to resume")
             return mid, m["status"]
         if not db.list_subtasks(mid):
@@ -1491,6 +1655,9 @@ async def resume_mission(mid_prefix: str) -> tuple:
         trello_move(db, mid, card_id, "in_progress", goal)
         rid, status = await finalize(db, mid, goal, start_round=int(m["replan_count"] or 0))
         trello_move(db, mid, card_id, "done" if status == "done" else "failed", goal)
+        if status == "partial":
+            _slack_relay(f"🟡 Conductor {mid[:8]} PARTIAL · {_title(goal)} · "
+                         f"draft MR + findings queued (see mission {mid[:8]})")
         return rid, status
     except Exception as e:
         print(f"[conductor] ERROR: {type(e).__name__}: {e}")
