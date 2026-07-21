@@ -149,6 +149,15 @@ const NATS_PASS = process.env.NATS_PASS || '';
 const NATS_A2A_STREAM = process.env.NATS_A2A_STREAM || 'NEXUS_A2A';
 const NATS_A2A_SUBJECT_PREFIX = process.env.NATS_A2A_SUBJECT_PREFIX || 'nexus.a2a';
 const NATS_PRESENCE_KV = process.env.NATS_PRESENCE_KV || 'nexus_presence';
+// Stream/consumer tuning — all configurable so a shared broker can be kept short-TTL + bounded.
+// Defaults mirror nats-transport.js (7d retention, unbounded size, 5m ack lease). On a SHARED
+// broker set NATS_A2A_MAX_AGE_MS short (e.g. 3600000=1h) and cap NATS_A2A_MAX_BYTES so the
+// stream is a good tenant. -1 = unbounded (JetStream convention).
+const NATS_A2A_MAX_AGE_MS = parseInt(process.env.NATS_A2A_MAX_AGE_MS || String(7 * 24 * 60 * 60 * 1000), 10);
+const NATS_A2A_MAX_BYTES = parseInt(process.env.NATS_A2A_MAX_BYTES || '-1', 10);
+const NATS_A2A_MAX_MSG_BYTES = parseInt(process.env.NATS_A2A_MAX_MSG_BYTES || '-1', 10);
+const NATS_A2A_ACK_WAIT_MS = parseInt(process.env.NATS_A2A_ACK_WAIT_MS || String(5 * 60 * 1000), 10);
+const NATS_A2A_MAX_DELIVER = parseInt(process.env.NATS_A2A_MAX_DELIVER || '100', 10);
 let natsTransport = null;   // the NatsTransport instance (set at startup in nats mode)
 let natsReady = false;      // true once connected + subscribed
 
@@ -1926,6 +1935,11 @@ const httpServer = http.createServer((req, res) => {
         subjectPrefix: NATS_A2A_SUBJECT_PREFIX,
         kvBucket: NATS_PRESENCE_KV,
         presenceTtlMs: PRESENCE_TTL_MS,
+        maxAgeMs: NATS_A2A_MAX_AGE_MS,
+        maxBytes: NATS_A2A_MAX_BYTES,
+        maxMsgSize: NATS_A2A_MAX_MSG_BYTES,
+        ackWaitMs: NATS_A2A_ACK_WAIT_MS,
+        maxDeliver: NATS_A2A_MAX_DELIVER,
         credsFile: NATS_CREDS || undefined,
         token: NATS_TOKEN || undefined,
         user: NATS_USER || undefined,

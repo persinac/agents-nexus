@@ -72,6 +72,9 @@ export function createNatsTransport(opts = {}) {
     // Stream retention = the audit window (also the offline-buffer horizon).
     maxAgeMs = 7 * 24 * 60 * 60 * 1000,
     maxBytes = -1,
+    // Per-message size cap (-1 = unbounded). On a shared broker, bound this so one huge
+    // A2A payload can't blow the tenant budget.
+    maxMsgSize = -1,
     // Consumer redelivery lease. ackWaitMs must comfortably exceed how long the
     // idle-gate might hold a message before delivery; the caller may call working()
     // to extend it. maxDeliver bounds a poison message.
@@ -120,8 +123,9 @@ export function createNatsTransport(opts = {}) {
       discard: DiscardPolicy.Old,
       max_age: maxAgeMs * 1_000_000,   // nanoseconds
       max_bytes: maxBytes,
+      max_msg_size: maxMsgSize,
     });
-    logger.log?.(`[nats] stream ${streamName} ensured (subjects=${subjects.join(',')}, max_age=${maxAgeMs}ms)`);
+    logger.log?.(`[nats] stream ${streamName} ensured (subjects=${subjects.join(',')}, max_age=${maxAgeMs}ms, max_bytes=${maxBytes}, max_msg_size=${maxMsgSize})`);
   }
 
   async function ensureKv() {

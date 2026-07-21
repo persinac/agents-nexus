@@ -15,7 +15,10 @@ WorkingDirectory=__AGENTS_NEXUS_DIR__/slack-bridge
 # secret-run resolves the named vars, exports them, then execs node (preserving PID for
 # Type=simple); index.js's .env loader stays as a harmless fallback for anything not declared.
 # DOPPLER_BIN is passed absolute (below) so the doppler backend is found under systemd's PATH.
-ExecStart=__AGENTS_NEXUS_DIR__/scripts/secrets/secret-run.sh --project nexus --config prd SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_NEXUS_CHANNEL SLACK_AGENTS_CHANNEL SLACK_BUS_ENABLED -- __NODE_BIN__ index.js
+# NATS_URL/USER/PASS join the pull for the NATS A2A transport (auth-callout user/pass +
+# broker addr). Unused vars resolve empty and stay UNSET (secret-run never exports ""), so a
+# slack-transport box is unaffected; index.js only reads them when NEXUS_BUS_TRANSPORT=nats.
+ExecStart=__AGENTS_NEXUS_DIR__/scripts/secrets/secret-run.sh --project nexus --config prd SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_NEXUS_CHANNEL SLACK_AGENTS_CHANNEL SLACK_BUS_ENABLED NATS_URL NATS_USER NATS_PASS -- __NODE_BIN__ index.js
 # Restart only on a CRASH (non-zero exit). The bridge boot-guards to a clean
 # exit 0 when SLACK_BOT_TOKEN / SLACK_APP_TOKEN are unset; on-failure (not
 # always) keeps an un-provisioned box from thrashing — mirrors the launchd
