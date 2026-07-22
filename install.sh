@@ -1100,7 +1100,12 @@ finish_slack() {
     ( cd "$REPO_DIR/slack-bridge" && npm install --silent ) || true
   fi
 
-  if [ "$OS" = "mac" ] && check_cmd task; then
+  if [ -z "$bot" ] || [ -z "$app" ]; then
+    # No tokens → bridge isn't enabled; don't install a supervisor that would just
+    # crash-loop. (This is the "finish later" path — empty SLACK_* were written.)
+    echo "  Slack tokens left empty — NOT installing the bridge supervisor."
+    echo "  Add tokens later with ./install.sh --finish-slack; the supervisor installs then."
+  elif [ "$OS" = "mac" ] && check_cmd task; then
     if prompt_yes_no "Install + start the launchd supervisor now?" "y"; then
       ( cd "$REPO_DIR" && task launchd:install:slack-bridge ) || true
     fi

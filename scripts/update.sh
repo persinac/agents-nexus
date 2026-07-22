@@ -48,8 +48,10 @@ PLATFORM_DIR="$REPO_DIR/tmux/$OS"
 # name, volume glob, launchd/systemd unit basename)
 REMOVED_CONTAINERS="nexus-spark nexus-dashboard"
 REMOVED_VOLUME_GLOBS="spark-index"
-REMOVED_UNITS="com.agents-nexus.arbiter com.agents-nexus.guilty-spark.nightly"   # launchd (mac)
-REMOVED_UNITS_SYSTEMD="agents-nexus-arbiter nightly-spark.timer nightly-spark.service"  # systemd (linux)
+# launchd (mac). muninn.sync was overlay-provided (personal overlay) and retired — a box
+# that applied that overlay before it dropped muninn still has the running unit; tear it down.
+REMOVED_UNITS="com.agents-nexus.arbiter com.agents-nexus.guilty-spark.nightly com.agents-nexus.muninn.sync"
+REMOVED_UNITS_SYSTEMD="agents-nexus-arbiter nightly-spark.timer nightly-spark.service muninn-sync.timer muninn-sync.service"  # systemd (linux)
 REMOVED_PROFILES="spark dashboard"   # drop from .env COMPOSE_PROFILES / NEXUS_SERVICES
 
 say() { printf '%s\n' "$*"; }

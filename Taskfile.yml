@@ -407,14 +407,24 @@ tasks:
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
 
   launchd:install:slack-bridge:
-    desc: Install launchd agent to keep the Slack bridge running (KeepAlive)
+    desc: Install launchd agent to keep the Slack bridge running (KeepAlive; requires SLACK_* tokens in .env)
     vars:
       NEXUS_DIR:
         sh: pwd
     cmds:
-      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.slack-bridge.plist > ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
-      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
-      - echo "Installed — slack bridge runs under launchd (logs at /tmp/agents-nexus-slack-bridge.log)"
+      # Gate: only install the supervisor when the bridge is actually enabled — i.e.
+      # SLACK_BOT_TOKEN + SLACK_APP_TOKEN are set (non-empty) in the active .env.
+      # Otherwise the KeepAlive job would just crash-loop a bridge with no tokens.
+      - |
+        env="{{.NEXUS_DIR}}/.env"
+        if ! grep -Eq '^SLACK_BOT_TOKEN=.+' "$env" 2>/dev/null || ! grep -Eq '^SLACK_APP_TOKEN=.+' "$env" 2>/dev/null; then
+          echo "Skipped — Slack bridge not enabled (SLACK_BOT_TOKEN / SLACK_APP_TOKEN missing in .env)."
+          echo "Set them first:  ./install.sh --finish-slack   then re-run this task."
+          exit 0
+        fi
+        sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.slack-bridge.plist > ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
+        launchctl load ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
+        echo "Installed — slack bridge runs under launchd (logs at /tmp/agents-nexus-slack-bridge.log)"
 
   launchd:uninstall:slack-bridge:
     desc: Remove the Slack bridge launchd agent
