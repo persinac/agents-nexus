@@ -305,24 +305,6 @@ def _title(goal):
     return t.strip()[:80]
 
 
-def _clean_goal(goal):
-    """Strip the `live!` / `dry!` run-mode prefixes from a goal. These are conductor-run.sh
-    conventions (force live / force dry-run) that conductor.py itself never interprets, so if they
-    leak into the mission goal they pollute everything derived from it — most damagingly the branch
-    slug (`fc-1249-live-...` instead of `fc-1249-...`), which split one mission across two branches
-    + two MRs (FC-1249: an empty !539 got reported, the real !538 was invisible). Strip once at the
-    entrypoints so the stored goal, the classifier, and every _branch() call see the same clean text."""
-    g = (goal or "").strip()
-    while True:
-        low = g.lower()
-        if low.startswith("live!"):
-            g = g[5:].lstrip()
-        elif low.startswith("dry!"):
-            g = g[4:].lstrip()
-        else:
-            return g
-
-
 def _base_branch(goal):
     """Extract an explicit `base=<ref>` (or `base:<ref>`) directive from a goal — the branch-point
     a mission should stack on instead of the default branch. Deterministic and opt-in: absent the
@@ -1129,7 +1111,21 @@ def _epic_clause(src=None):
         return s
     return (f"parent epic={default!r}" if default
             else "no parent epic (create it as a top-level issue)")
-DRY_RUN = os.environ.get("CONDUCTOR_DRY_RUN") == "1"   # --dry-run: log reporting payloads, don't send
+def _resolve_run_mode():
+    """Resolve the mission run mode. ONE explicit knob, no goal-text prefixes: CONDUCTOR_RUN_MODE
+    (dry|live) with a SANE DEFAULT of 'dry' (reporting is logged, never sent). The --live/--dry-run
+    flags override it at the entrypoint. CONDUCTOR_DRY_RUN=1 is honored as a legacy alias for dry.
+    Because it's an env var, it is inherited by the detached --distribute-run mission (which is why
+    a 'dry' distributed run used to leak REAL Jira tickets — the old flag never crossed that seam)."""
+    m = (os.environ.get("CONDUCTOR_RUN_MODE") or "").strip().lower()
+    if m in ("dry", "live"):
+        return m
+    if os.environ.get("CONDUCTOR_DRY_RUN") == "1":   # legacy alias
+        return "dry"
+    return "dry"   # safe default: an accidental run never files/sends anything
+
+RUN_MODE = _resolve_run_mode()
+DRY_RUN = RUN_MODE != "live"   # log reporting payloads, don't send. report() reads this at call time.
 
 
 # ── Trello lifecycle (optional) — deterministic REST; no MCP/LLM. Creds from env, else a
@@ -2196,42 +2192,56 @@ if __name__ == "__main__":
     import anyio
     _load_dotenv()   # idempotent re-load (already ran at import); harmless belt-and-suspenders
     args = sys.argv[1:]
+    # Run-mode flags override CONDUCTOR_RUN_MODE (the default; see _resolve_run_mode). Precedence:
+    # explicit flag > env > default(dry). --dry-run wins if both flags are passed (fail safe).
+    _mode_override = None
+    if "--live" in args:
+        _mode_override = "live"; args = [a for a in args if a != "--live"]
+    if "--run-mode" in args:
+        _i = args.index("--run-mode")
+        if _i + 1 < len(args):
+            _mode_override = args[_i + 1].strip().lower(); del args[_i:_i + 2]
     if "--dry-run" in args:
-        DRY_RUN = True   # rebinds the module global; report() reads it at call time
-        args = [a for a in args if a != "--dry-run"]
-        print("[conductor] DRY RUN — reporting (branch commit happens; Jira/Confluence/MR are logged, not sent)")
+        _mode_override = "dry"; args = [a for a in args if a != "--dry-run"]
+    if _mode_override in ("dry", "live"):
+        RUN_MODE = _mode_override                 # rebinds the module globals; report() reads DRY_RUN at call time
+        DRY_RUN = RUN_MODE != "live"
+    os.environ["CONDUCTOR_RUN_MODE"] = RUN_MODE    # export so the detached --distribute-run mission inherits it
+    if DRY_RUN:
+        print("[conductor] DRY RUN — branch commit happens; Jira/Confluence/MR are logged, not sent "
+              "(set --live or CONDUCTOR_RUN_MODE=live to send for real)")
     if args and args[0] == "--distribute":
         # Fire-and-forget "distribute": spawn a DETACHED conductor into its own mission/<slug>
         # bucket (orchestrator + workers tile together — the watchable mission view), then return.
         # Honors the caller's substrate (herdr → bucket; tmux → detached window). The detached
-        # conductor self-loads .env for the DB; CONDUCTOR_MISSION_WS keeps its workers in-bucket.
-        goal = _clean_goal(" ".join(args[1:]))
+        # conductor self-loads .env for the DB; CONDUCTOR_MISSION_WS keeps its workers in-bucket,
+        # CONDUCTOR_RUN_MODE carries the run mode across the seam (a dry distribute runs + LOGS, a
+        # live one files for real — the old flag never crossed this seam, so a "dry" distributed
+        # mission ran LIVE and filed real Jira tickets; that was the FC-1513..1519 leak).
+        goal = " ".join(args[1:]).strip()
         if not goal:
-            print('usage: conductor.py --distribute "<goal>"'); sys.exit(2)
+            print('usage: conductor.py --distribute [--live] "<goal>"'); sys.exit(2)
         label = _mission_ws(goal, "adhoc")               # mission/<slug>, mid-independent
         name = "conductor-" + label.split("/", 1)[1]
         # base64 the goal so it survives the substrate seam's word-split (`-- $cmd`) intact —
         # goals routinely carry spaces/parens/quotes. The detached conductor decodes it.
         import base64
         g64 = base64.b64encode(goal.encode()).decode()
-        inner = (f"env CONDUCTOR_MISSION_WS={label} CONDUCTOR_GOAL_B64={g64} "
+        inner = (f"env CONDUCTOR_MISSION_WS={label} CONDUCTOR_GOAL_B64={g64} CONDUCTOR_RUN_MODE={RUN_MODE} "
                  f"{PYEXE} {os.path.abspath(__file__)} --distribute-run")
-        if DRY_RUN:
-            print(f"[conductor] --distribute DRY RUN (nothing spawned)\n"
-                  f"  bucket: {label}\n  agent:  {name}\n  cwd:    {_REPO_ROOT}\n  cmd:    {inner}")
-            sys.exit(0)
         r = subprocess.run([SUBSTRATE, "spawn", name, _REPO_ROOT, inner, "--workspace", label],
                            capture_output=True, text=True)
         if r.returncode != 0:
             print(f"[conductor] dispatch failed: {(r.stderr or r.stdout).strip()}"); sys.exit(1)
-        print(f"[conductor] dispatched detached → bucket {label} (agent {name}); it reports to "
-              f"Jira/MR/Slack on completion.")
+        _rep = "Jira/MR/Slack" if not DRY_RUN else "LOGGED only (dry-run — nothing sent)"
+        print(f"[conductor] dispatched detached ({RUN_MODE}) → bucket {label} (agent {name}); "
+              f"reports {_rep} on completion.")
         sys.exit(0)
     if args and args[0] == "--distribute-run":
         # Internal entry for the detached conductor: decode the goal from the env + run it.
         import base64
         _g = os.environ.get("CONDUCTOR_GOAL_B64", "")
-        goal = _clean_goal(base64.b64decode(_g).decode() if _g else "")
+        goal = (base64.b64decode(_g).decode() if _g else "").strip()
         if not goal:
             print("[conductor] --distribute-run: missing CONDUCTOR_GOAL_B64"); sys.exit(2)
         # A detached pane has a stripped env; route LLM traffic through the local proxy so the
@@ -2289,9 +2299,9 @@ if __name__ == "__main__":
     if args and args[0] == "--sdlc":
         # Drive the sdlc pipeline autonomously (scan.py-routed staged mission). S1 ships the
         # read-only --dry-run preview; staged execution lands in S3.
-        goal = _clean_goal(" ".join(args[1:]))
+        goal = " ".join(args[1:]).strip()
         if not goal:
-            print('usage: conductor.py --sdlc [--dry-run] "<goal|ticket>"'); sys.exit(2)
+            print('usage: conductor.py --sdlc [--live|--dry-run] "<goal|ticket>"'); sys.exit(2)
         if DRY_RUN:
             sdlc_dry_run(goal); sys.exit(0)
         os.environ.setdefault("ANTHROPIC_BASE_URL", "http://localhost:4000")   # trace via proxy
@@ -2303,7 +2313,7 @@ if __name__ == "__main__":
             print("usage: conductor.py --resume <mission_id>"); sys.exit(2)
         rid, status = anyio.run(resume_mission, args[1])
     else:
-        goal = _clean_goal(" ".join(args))
+        goal = " ".join(args).strip()
         if not goal:
             print('usage: conductor.py "<goal>"  |  conductor.py --resume <mission_id>'); sys.exit(2)
         rid, status = anyio.run(run_mission, goal)

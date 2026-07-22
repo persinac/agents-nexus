@@ -206,25 +206,6 @@ def test_branch_slug_prefers_ticket():
     assert C._branch("do a thing", "mabcdef").startswith("conductor-")
 
 
-def test_clean_goal_strips_run_mode_prefixes():
-    """FC-1249 regression: `live!`/`dry!` prefixes must be stripped so they never reach _branch
-    (they split one mission into two branches + two MRs — an empty !539 got reported)."""
-    assert C._clean_goal("live! Complete FC-1249 in svc-chatbot") == "Complete FC-1249 in svc-chatbot"
-    assert C._clean_goal("dry! foo") == "foo"
-    assert C._clean_goal("dry! live! foo") == "foo"       # stacked
-    assert C._clean_goal("  LIVE!  foo ") == "foo"        # case + whitespace
-    assert C._clean_goal("normal goal") == "normal goal"  # no prefix untouched
-
-
-def test_live_prefix_does_not_split_branch():
-    """The live!-prefixed and bare forms of the same goal must yield the SAME branch (the FC-1249
-    root cause: the polluted `fc-1249-live-...` branch != the clean `fc-1249-...` branch)."""
-    raw = "live! Complete FC-1249 in the svc-chatbot repo (branch off origin/main; open a MR)"
-    bare = "Complete FC-1249 in the svc-chatbot repo (branch off origin/main; open a MR)"
-    assert C._branch(C._clean_goal(raw), "m1") == C._branch(C._clean_goal(bare), "m1")
-    assert "live" not in C._branch(C._clean_goal(raw), "m1")
-
-
 # ── pytest-free runner (the venv has no pytest) ────────────────────────────────
 if __name__ == "__main__":
     import sys
