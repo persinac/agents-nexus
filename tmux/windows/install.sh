@@ -110,4 +110,4 @@ fi
 
 echo ""
 echo "Done. Open a new terminal or run: source ~/.bashrc"
-echo "Then type 'work' to start tmux."
+echo "Then run 'herdr' to start the agent fleet."

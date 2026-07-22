@@ -1421,7 +1421,7 @@ if [ -n "${active:-}" ]; then
 fi
 echo "  Quick start:"
 echo "    1. Open a new terminal (or source your shell config)"
-echo "    2. Type 'work' to start the tmux agent session"
+echo "    2. Run 'herdr' to start the agent fleet"
 echo "    3. ctrl+a N to spawn an agent in a repo"
 if ! $SKIP_UI; then
   echo "    4. cd dashboard/ui && npm run dev  (for the dashboard)"
