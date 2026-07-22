@@ -102,6 +102,48 @@ else
 fi
 say ""
 
+# ── 2b. Picker/spawn model (prefer your Claude default; rewrites per-machine env.sh) ──
+# Older installs PINNED CLAUDE_MODEL=claude-opus-4-8 (200k window) in ~/.tmux/env.sh — a
+# machine-specific file install.sh only ever APPENDS to, so that pin never changes on its
+# own, and open-claude.sh passes it as --model, OVERRIDING whatever model your settings.json
+# / CLI default is. Clearing it (empty value → open-claude.sh omits --model) makes picker +
+# spawned agents fall through to your Claude default — e.g. the opus[1m] 1M window a vanilla
+# `claude` already uses — with no pinned id and no entitlement assumption. env.sh is per-box,
+# so we ASK, and only with a TTY attached; a headless run (update via cron) leaves it as-is.
+say "2b. Picker model (env.sh CLAUDE_MODEL)…"
+ENV_SH="$HOME/.tmux/env.sh"
+if [ -f "$ENV_SH" ] && grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_MODEL=.*claude-' "$ENV_SH"; then
+  if [ "$DRY_RUN" = "1" ]; then
+    say "  [dry-run] would offer to clear the pinned CLAUDE_MODEL so agents use your Claude default"
+  elif [ -r /dev/tty ]; then
+    printf '  Picker/spawned agents currently PIN a model, overriding your Claude default. Use your Claude default instead? [Y/n] ' > /dev/tty
+    read -r _ans < /dev/tty || _ans=""
+    cp "$ENV_SH" "$ENV_SH.pre-model.bak"
+    case "$_ans" in
+      [nN]*)
+        printf '  Model id to pin (e.g. claude-opus-4-8[1m] = 1M window, claude-opus-4-8 = 200k): ' > /dev/tty
+        read -r _model < /dev/tty || _model=""
+        if [ -n "$_model" ]; then
+          { grep -vE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_MODEL=' "$ENV_SH.pre-model.bak"; \
+            echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-$_model}\""; } > "$ENV_SH"
+          say "  pinned CLAUDE_MODEL=$_model (backup: env.sh.pre-model.bak)"; changed=1
+        else
+          mv "$ENV_SH.pre-model.bak" "$ENV_SH"; say "  no model entered — left CLAUDE_MODEL unchanged"
+        fi ;;
+      *)
+        # Empty value (keeps the ${CLAUDE_MODEL:-} env-override seam) → no --model → Claude default.
+        { grep -vE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_MODEL=' "$ENV_SH.pre-model.bak"; \
+          echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-}\""; } > "$ENV_SH"
+        say "  cleared CLAUDE_MODEL — agents now use your Claude default (backup: env.sh.pre-model.bak)"; changed=1 ;;
+    esac
+  else
+    say "  - no TTY (headless run) — leaving CLAUDE_MODEL as-is; run update.sh interactively to change"
+  fi
+else
+  say "  - CLAUDE_MODEL not pinned (already uses your Claude default) — nothing to do"
+fi
+say ""
+
 # ── 3. Re-sync herdr plugin keybindings ───────────────────────────────────────
 # Plugin chords are APPENDED into ~/.config/herdr/config.toml at install time; a
 # changed keys.toml (new panels/chords) does NOT propagate on pull. Re-run the

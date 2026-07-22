@@ -50,6 +50,14 @@ export NEXUS_INJECT_MEMORY="${NEXUS_INJECT_MEMORY:-1}"            # 'Prior Knowl
 export NEXUS_MEMORY_MAX_TOKENS="${NEXUS_MEMORY_MAX_TOKENS:-2000}"  # token budget for the memory recall block
 export NEXUS_INJECT_CACHE="${NEXUS_INJECT_CACHE:-1}"             # resume-from-interrupted-session cache, <24h (0 = omit)
 export NEXUS_INJECT_REGISTRY="${NEXUS_INJECT_REGISTRY:-1}"        # Agent Communication + live peer list (0 = omit)
+# Context delivery mode for the opening-prompt context blocks:
+#   pointer (default) — lean spawn: skip the eager checkpoint + prior-knowledge + peers dump and
+#                       inject a short "here's how to load it on demand" note instead (saves ~spawn tokens).
+#   full              — eager dump: paste recent checkpoints, prior-knowledge recall, AND the full
+#                       Agent-Communication/peers roster into the opening prompt (the pre-lean behavior).
+# Seed/background agents still get a bus pointer in either mode so they can discover peers on demand.
+# Set to 'full' in env.sh on a box that wants the old eager dump back.
+export NEXUS_CONTEXT_MODE="${NEXUS_CONTEXT_MODE:-pointer}"
 
 # ── Conductor run mode (explicit; NEVER encoded in the goal text) ────────────
 # dry (default, safe — reporting is LOGGED, not sent) | live (files Jira/MR/Confluence for real).

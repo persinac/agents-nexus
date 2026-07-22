@@ -79,7 +79,9 @@ EXTRA_REPO_DIRS="\${EXTRA_REPO_DIRS:-}"
 VAULT_DIR="\${VAULT_DIR:-$HOME/vault}"
 CHECKPOINT_DIR="\${CHECKPOINT_DIR:-$HOME/vault/Checkpoints}"
 ANTHROPIC_BASE_URL="\${ANTHROPIC_BASE_URL:-http://localhost:4000}"
-CLAUDE_MODEL="\${CLAUDE_MODEL:-claude-opus-4-8}"
+# Empty = don't pass --model; agents inherit your Claude default (settings.json / CLI),
+# e.g. opus[1m]'s 1M window. Set an explicit id here only to override that per box.
+CLAUDE_MODEL="\${CLAUDE_MODEL:-}"
 CLAUDE_EFFORT="\${CLAUDE_EFFORT:-xhigh}"
 # Inter-agent Slack bus (A2A): when 1, agent-send.sh routes non-local targets
 # through the bridge (:8788/send). EXPORTED so it reaches agent-send.sh (an
@@ -117,7 +119,7 @@ else
     echo "Added ANTHROPIC_BASE_URL to ~/.tmux/env.sh"
   }
   grep -q "CLAUDE_MODEL" "$ENV_FILE" || {
-    echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-8}\"" >> "$ENV_FILE"
+    echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-}\"" >> "$ENV_FILE"
     echo "Added CLAUDE_MODEL to ~/.tmux/env.sh"
   }
   grep -q "CLAUDE_EFFORT" "$ENV_FILE" || {

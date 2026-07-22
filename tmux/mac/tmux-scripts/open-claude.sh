@@ -123,7 +123,7 @@ fi
 # Gated by NEXUS_INJECT_CHECKPOINTS (0 = omit); lookback by NEXUS_CHECKPOINT_DAYS;
 # total size capped by NEXUS_CHECKPOINT_MAX_KB (0 = unlimited). See env.defaults.sh.
 context=""
-if [ "${NEXUS_INJECT_CHECKPOINTS:-1}" = "1" ]; then
+if [ "${NEXUS_INJECT_CHECKPOINTS:-1}" = "1" ] && [ "${NEXUS_CONTEXT_MODE:-full}" != "pointer" ]; then
   _ckpt_days="${NEXUS_CHECKPOINT_DAYS:-3}"
   # BSD date (Mac): -v-Nd; GNU date (Linux): -d 'N days ago'
   cutoff=$(date -v-"${_ckpt_days}"d +%Y-%m-%d 2>/dev/null || date -d "${_ckpt_days} days ago" +%Y-%m-%d)
@@ -173,7 +173,7 @@ if command -v curl >/dev/null 2>&1; then
   esac
 fi
 registry_section=""
-if [ "${NEXUS_INJECT_REGISTRY:-1}" = "1" ] && [ -x "$REGISTRY_SCRIPT" ]; then
+if [ "${NEXUS_INJECT_REGISTRY:-1}" = "1" ] && [ "${NEXUS_CONTEXT_MODE:-full}" != "pointer" ] && [ -x "$REGISTRY_SCRIPT" ]; then
   peers_output=$("$REGISTRY_SCRIPT" peers --exclude "$MY_PANE_ID" 2>/dev/null || true)
   if [ "$bus_on" = "1" ]; then
     comms_body="**To message another agent, DEFAULT to the Slack agent bus (\`#nexus-agents\`).** Address the recipient by NAME — post once and the orchestrator delivers it idle-gated, buffered, and audited (and it reaches agents on other hosts):
@@ -207,8 +207,32 @@ fi
 
 # ── Query prior knowledge from memory store ────────────────────────────────
 memory_section=""
-if [ "${NEXUS_INJECT_MEMORY:-1}" = "1" ] && [ -x "$NEXUS_TMUX_DIR/memory-recall.py" ]; then
+if [ "${NEXUS_INJECT_MEMORY:-1}" = "1" ] && [ "${NEXUS_CONTEXT_MODE:-full}" != "pointer" ] && [ -x "$NEXUS_TMUX_DIR/memory-recall.py" ]; then
   memory_section=$("$MEMORY_PYTHON" "$NEXUS_TMUX_DIR/memory-recall.py" "$project_slug" --max-tokens "${NEXUS_MEMORY_MAX_TOKENS:-2000}" 2>/dev/null || true)
+fi
+
+# ── Pointer mode: a lean "load context on demand" note replacing the eager dump ─
+# In pointer mode the checkpoint + memory + peers blocks above are skipped entirely
+# (no filesystem/DB/registry reads at spawn). Instead the agent gets a short pointer
+# telling it HOW to pull each on demand when a task actually needs it. Gated by the
+# same INJECT flags so turning a block off also removes its pointer line.
+pointer_section=""
+if [ "${NEXUS_CONTEXT_MODE:-full}" = "pointer" ]; then
+  _pl=""
+  if [ "${NEXUS_INJECT_CHECKPOINTS:-1}" = "1" ]; then
+    _pl="${_pl}- Recent checkpoints: read the newest \`${CHECKPOINT_SRC}/*-${project_slug}-checkpoint.md\` files (or run your checkpoint skill) for what recent sessions did."$'\n'
+  fi
+  if [ "${NEXUS_INJECT_MEMORY:-1}" = "1" ]; then
+    _pl="${_pl}- Prior knowledge: query the agent-memory MCP (\`search_similar\`/\`query_notes\`, project \`${project_slug}\`) before non-trivial work."$'\n'
+  fi
+  if [ "${NEXUS_INJECT_REGISTRY:-1}" = "1" ] && [ -x "$REGISTRY_SCRIPT" ]; then
+    _pl="${_pl}- Peers / messaging: you are agent **${MY_NAME}** on **${MY_HOST}** in a multi-agent system. Run \`$REGISTRY_SCRIPT peers --exclude ${MY_PANE_ID}\` for the live roster, then message by NAME with \`$SEND_SCRIPT --via-slack <name> <message>\` (Slack bus; durable, cross-host) or \`$SEND_SCRIPT <slot_or_name> <message>\` (same-host tmux ping)."$'\n'
+  fi
+  if [ -n "$_pl" ]; then
+    pointer_section="## Context (load on demand)
+This spawn is lean — recent checkpoints, prior-knowledge notes, and the peer roster were NOT pasted in. Pull only what a task needs:
+${_pl}"
+  fi
 fi
 
 # ── Orchestrator seed / restore (Slack-spawned and restored agents) ────────
@@ -271,7 +295,7 @@ else
 fi
 
 # ── Launch claude with assembled context ───────────────────────────────────
-if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" ] || [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ]; then
+if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" ] || [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ] || [ -n "$pointer_section" ]; then
   prompt=""
   # Seed first: it is the actual task this agent was launched to do.
   if [ -n "$seed_section" ]; then
@@ -292,6 +316,10 @@ if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" 
   if [ -n "$memory_section" ]; then
     [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
     prompt="${prompt}${memory_section}"
+  fi
+  if [ -n "$pointer_section" ]; then
+    [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
+    prompt="${prompt}${pointer_section}"
   fi
   if [ -n "$registry_section" ]; then
     [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
