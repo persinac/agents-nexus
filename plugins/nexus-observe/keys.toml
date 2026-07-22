@@ -15,3 +15,9 @@ command = "nexus.observe.apm"
 key = "prefix+shift+f"
 type = "plugin_action"
 command = "nexus.observe.memory-search"
+
+[[keys.command]]
+# prefix+shift+o ("ops/observe") — free across base config + all plugins.
+key = "prefix+shift+o"
+type = "plugin_action"
+command = "nexus.observe.command-center"
