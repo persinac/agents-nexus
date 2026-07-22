@@ -12,7 +12,7 @@ see Prereqs if `origin` still points at the old private one): `git pull` then
 `open-claude.sh`, and (if `herdr` is installed) deploys the herdr config + pickers +
 `workspace-categories.txt`. Then only: **Step 1** (install herdr), **Step 5** (install
 `substrated.service` from `systemd/optional/` + set the local `NEXUS_SUBSTRATE=herdr` flip on
-arbiter/bus/reaper), and **Step 6** (verify). Steps 2–4 below are the detail of what the pull
+bus/reaper), and **Step 6** (verify). Steps 2–4 below are the detail of what the pull
 already did.
 
 ## The good news: most of it ports for free
@@ -36,7 +36,7 @@ Linux-specific work is narrow (below).
   Org/personal specifics (conductor reporting, private catalog, etc.) come from a private
   **overlay**, applied separately — `./install.sh --overlay <your-overlay-url>` (see
   `overlay.example/README.md`), NOT from the core repo.
-- The nexus stack already running under systemd (`slack-bridge.service`, `arbiter.service`,
+- The nexus stack already running under systemd (`slack-bridge.service`,
   the tmux `agents` session) — this doc adds herdr alongside it.
 - Repo-root `.env` present (DATABASE_URL, SLACK_*, tokens) — same as mac.
 
@@ -114,14 +114,14 @@ NODE_BIN="$(readlink -f "$(command -v node)")"
 sed -e "s|__HOME__|$HOME|g" -e "s|__AGENTS_NEXUS_DIR__|$PWD|g" -e "s|__NODE_BIN__|$NODE_BIN|g" \
   tmux/linux/systemd/optional/substrated.service > ~/.config/systemd/user/substrated.service
 ```
-**Substrate flip — no longer required.** herdr is the repo default now, so arbiter /
+**Substrate flip — no longer required.** herdr is the repo default now, so
 slack-bridge / overseer-reap all come up on herdr with no unit env. You only need
 `SUBSTRATED_PORT` if it differs from the 8422 default; set `Environment=NEXUS_SUBSTRATE=tmux`
 on a unit *only* to pin that service to the legacy tmux backend. Then:
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now substrated.service
-systemctl --user restart arbiter.service slack-bridge.service
+systemctl --user restart slack-bridge.service
 # overseer-reap is opt-in + destructive — enable deliberately, and dry-run first:
 REAP_DRY_RUN=1 NEXUS_SUBSTRATE=herdr SUBSTRATED_PORT=8422 bash scripts/overseer-reap.sh
 ```
@@ -213,7 +213,7 @@ Hard-won notes from cutting live boxes over to herdr. Each is a one-line fix onc
    safe on the backup branch.
 
 7. **The docker knowledge stack is orthogonal to the cutover.** herdr swaps only the orchestration
-   layer — the memory / search / langfuse / ollama / dashboard containers keep running throughout,
+   layer — the memory / search / langfuse / ollama containers keep running throughout,
    and their named volumes (`<project>_*`, project = repo dir basename) survive a repo rename or a
    re-clone at the same path. Don't tear them down to migrate.
 
@@ -238,7 +238,7 @@ exactly this fallback). No repo change needed.
 | `workspace-categories.txt` symlink | ✅ **Auto** — `install.sh` (when `herdr` present) |
 | `substrated.service` (events.subscribe push daemon) | ✅ **Committed** in `systemd/optional/` — install deliberately (Step 5); `restart` on update to reload the daemon code |
 | `herdr-recover.{service,timer}` (restart resilience) | ✅ **Committed** in `systemd/optional/` — opt-in (Step 5); on this box auto-respawns the whole fleet from checkpoints after a herdr/OS restart. `docs/herdr-recover.md` |
-| `NEXUS_SUBSTRATE=herdr` flip on arbiter/bus/reaper | **Local** (Step 5) — per-machine, kept out of the repo |
+| `NEXUS_SUBSTRATE=herdr` flip on bus/reaper | **Local** (Step 5) — per-machine, kept out of the repo |
 | herdr install + headless server unit | **Install** (Step 1, 5) |
 | Conductor missions (`conductor.py` is shared) | **Free** — a `--distribute` mission registers + `@orchestrator`-tags its detached orchestrator and registers + `@cohort`-tags each worker (all via the shared `substrate register`/`deregister` verbs, self-cleaning on exit), and reaches the missions DB via `conductor_db`'s `.env` fallback; no dependence on `open-claude.sh` |
 

@@ -113,8 +113,6 @@ probe() {  # $1 label, $2 url, $3 required|optional
     note "$1" "no response"
   fi
 }
-probe "arbiter :8420"        "http://127.0.0.1:8420/"        optional
-probe "dashboard :8421"      "http://127.0.0.1:8421/"        optional
 probe "ollama :11434"        "http://127.0.0.1:11434/"       optional
 
 # --- dependencies the bridge/classifier quietly need ---

@@ -18,8 +18,7 @@ The installer:
 2. Copies platform tmux configs to `~/.tmux/` and `~/.tmux.conf`.
 3. Walks an **interactive profile setup** — profile name, compose flavor, per-service selection (which containers run), per-service config, host integrations, optional stack startup.
 4. Symlinks global Claude skills from `skills/` into `~/.claude/skills/`.
-5. Installs dashboard npm deps (skippable with `--no-ui`).
-6. Validates that `uv`, `python3`, and `~/.claude/claude_code_config.json` look healthy.
+5. Validates that `uv`, `python3`, and `~/.claude/claude_code_config.json` look healthy.
 
 ## Flags
 
@@ -31,8 +30,7 @@ The installer:
 | `--finish-langfuse` | Re-prompt for `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` against the active profile and recreate the `proxy` container. Use this after creating an API key in the Langfuse UI (see [Two-phase Langfuse setup](#two-phase-langfuse-setup)). |
 | `--finish-slack` | Re-prompt for `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_NEXUS_CHANNEL` against the active profile, `npm install` the bridge, and (macOS) offer to install the launchd supervisor. Use this after creating the Slack app (see [Slack bridge setup](#slack-bridge-setup) and [`docs/slack-bridge.md`](docs/slack-bridge.md)). |
 | `--finish-nats` | Set `NATS_URL` + auth (`NATS_CREDS` / `NATS_TOKEN`) for the NATS A2A transport against the active profile and restart the bridge. This is the **cross-machine** step: point every box at the one shared broker. See [A2A bus transport](#a2a-bus-transport) and [`docs/slack-bridge.md`](docs/slack-bridge.md#nats-transport). |
-| `--non-interactive` | Skip the entire profile-setup step. Runs deps + tmux configs + skills + dashboard (matches the pre-rewrite installer behavior). Safe for CI / scripted re-runs. |
-| `--no-ui` | Skip the dashboard `npm install` step. |
+| `--non-interactive` | Skip the entire profile-setup step. Runs deps + tmux configs + skills (matches the pre-rewrite installer behavior). Safe for CI / scripted re-runs. |
 | `-h`, `--help` | Print usage. |
 
 ## Interactive flow, step by step
@@ -58,7 +56,6 @@ A numbered TUI lists every Docker service — type a number to toggle, `a` to se
 | ollama | `ollama` | both | — |
 | postgres | `postgres` | work only | — |
 | mnemon | `mnemon` | both | `ollama` (+ `postgres` on work) |
-| dashboard | `dashboard` | both | — |
 | langfuse | `langfuse` | both | — (6-container stack) |
 
 Pick a subset for a focused box — e.g. **proxy + langfuse** = an observability-only node, nothing else built or run.
@@ -111,7 +108,7 @@ Decline if you want to inspect `.env.<profile>` first or you're on a box without
 
 ## Service selection & `COMPOSE_PROFILES`
 
-Every stack service has a compose profile (`proxy`, `ollama`, `postgres`, `mnemon`, `dashboard`, `langfuse`). The installer writes the chosen set to `COMPOSE_PROFILES` in the profile `.env`; Docker Compose reads it natively, so `docker compose up`, `task up`, and `task docker:up` all honor it with no extra flags.
+Every stack service has a compose profile (`proxy`, `ollama`, `postgres`, `mnemon`, `langfuse`). The installer writes the chosen set to `COMPOSE_PROFILES` in the profile `.env`; Docker Compose reads it natively, so `docker compose up`, `task up`, and `task docker:up` all honor it with no extra flags.
 
 - **Inspect the active set:** `task stack:profiles`
 - **Change it:** `task stack:profiles -- proxy,langfuse` (rewrites the active profile's `.env`)
@@ -122,7 +119,7 @@ Every stack service has a compose profile (`proxy`, `ollama`, `postgres`, `mnemo
 Profiles created **before** this change have no `COMPOSE_PROFILES`, so a bare `docker compose up` would start **nothing**. Fix it either way (idempotent):
 
 - **Installer path** — `./install.sh --switch <profile>` backfills the prior always-on set automatically. The same backfill runs when you re-point an existing profile during a normal `./install.sh`.
-- **One-liner** — `task stack:profiles -- proxy,ollama,mnemon,dashboard` (add `,postgres` on the work flavor; add `,langfuse` if that box runs Langfuse).
+- **One-liner** — `task stack:profiles -- proxy,ollama,mnemon` (add `,postgres` on the work flavor; add `,langfuse` if that box runs Langfuse).
 
 ## Two-phase Langfuse setup
 
@@ -174,7 +171,7 @@ ls -la .env                      # -> .env.<active>
 ./install.sh --non-interactive
 ```
 
-Runs deps + tmux configs + skills + dashboard only. Skips the entire profile-setup step. Useful for:
+Runs deps + tmux configs + skills only. Skips the entire profile-setup step. Useful for:
 
 - CI / Dockerfile bootstraps where prompts can't be answered
 - Re-running the system-deps + skills steps after a `git pull` without touching your env
@@ -215,7 +212,7 @@ Native Windows is **not** a supported fleet host — the `tmux/windows/` tree is
    ```powershell
    wsl --install -d Ubuntu
    ```
-2. **Enable systemd** — the fleet's background pieces (`substrated`, `arbiter`, `slack-bridge`, the timers) are `systemctl --user` units, so the distro must run systemd. Add to `/etc/wsl.conf` inside the distro:
+2. **Enable systemd** — the fleet's background pieces (`substrated`, `slack-bridge`, the timers) are `systemctl --user` units, so the distro must run systemd. Add to `/etc/wsl.conf` inside the distro:
    ```ini
    [boot]
    systemd=true
@@ -244,9 +241,8 @@ See [`docs/herdr-linux-setup.md`](docs/herdr-linux-setup.md) for the herdr subst
 | `ERROR: --switch requires a profile name` | Pass the name: `./install.sh --switch personal`. |
 | `ERROR: .env.<name> does not exist` (from `--switch`) | Run `./install.sh --profile <name>` first to create it. |
 | `ERROR: no active profile` (from `--finish-langfuse`) | You haven't created a profile yet. Run `./install.sh` first. |
-| `WARNING: dashboard/ui/package.json not found, skipping` | Older checkout. `git pull` to get the renamed dashboard layout, then re-run. |
 | `docker compose ... up -d` fails with port collisions | Edit the `*_PORT` lines in `.env.<profile>` and re-run `docker compose up -d`. |
-| `docker compose up -d` starts **no** containers | The active `.env` has no `COMPOSE_PROFILES` (pre-rewrite profile). Backfill it: `./install.sh --switch <profile>` or `task stack:profiles -- proxy,ollama,mnemon,dashboard`. |
+| `docker compose up -d` starts **no** containers | The active `.env` has no `COMPOSE_PROFILES` (pre-rewrite profile). Backfill it: `./install.sh --switch <profile>` or `task stack:profiles -- proxy,ollama,mnemon`. |
 | `ANTHROPIC_API_BASE` "variable is not set" error on `up` | The `proxy` profile is active but the var is unset. Add `ANTHROPIC_API_BASE=https://api.anthropic.com` (or your gateway) to `.env`, or drop `proxy` from `COMPOSE_PROFILES`. |
 | Profile env edits not taking effect | The proxy and most services pick env up at container creation, not restart. Run `docker compose up -d --force-recreate <service>` after editing. |
 

@@ -29,22 +29,6 @@ ExecStop=/usr/bin/docker compose down
 WantedBy=multi-user.target
 EOF
 
-sudo tee /etc/systemd/system/agents-nexus-arbiter.service << EOF
-[Unit]
-Description=agents-nexus arbiter (tmux to dashboard bridge)
-After=agents-nexus.service
-
-[Service]
-User=${NEXUS_USER}
-WorkingDirectory=${NEXUS_DIR}/arbiter
-ExecStart=/usr/bin/node index.js
-Restart=on-failure
-Environment=PORT=8420
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
 sudo tee /etc/systemd/system/agents-nexus-flush.service << EOF
 [Unit]
 Description=Flush agent memory events
@@ -69,7 +53,7 @@ WantedBy=timers.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable agents-nexus agents-nexus-arbiter agents-nexus-flush.timer
+sudo systemctl enable agents-nexus agents-nexus-flush.timer
 sudo systemctl start agents-nexus-flush.timer
 
 echo "Done. All units enabled."

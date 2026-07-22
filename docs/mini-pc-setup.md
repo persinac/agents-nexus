@@ -13,10 +13,10 @@ at a Digital Ocean instance, so only compute moves to the box. Client machines
 | 1. OS & Base Setup | :white_check_mark: Done — Ubuntu 25.04, hostname `nexus`, SSH, static IP `192.168.4.94` |
 | 2. Install Dependencies | :white_check_mark: Done — Docker, fnm/Node, uv, Task, Claude Code, Tailscale (`100.75.154.84`), gh, Caddy |
 | 3. Clone & Configure | :white_check_mark: Done — repos cloned via `clone-from-manifest.py` into categorized dirs (personal/example-org/example-repo/community) |
-| 4. Docker Stack | :white_check_mark: Done — Ollama, mnemon-flush, dashboard all healthy |
+| 4. Docker Stack | :white_check_mark: Done — Ollama, mnemon-flush all healthy |
 | 5. Langfuse Observability | :white_check_mark: Done — all 6 containers healthy, account + project created, API keys wired into .env |
 | 6. Caddy Reverse Proxy | :white_check_mark: Done — path-based routing at `http://100.75.154.84` |
-| 7. Autostart (systemd) | :white_check_mark: Done — Docker stack, arbiter, flush timer all enabled |
+| 7. Autostart (systemd) | :white_check_mark: Done — Docker stack, flush timer all enabled |
 | 8. tmux Layer | :white_check_mark: Done — Linux install script, hooks, bashrc functions, systemd user units |
 | 9. API Key Rotation | :white_check_mark: Ready — infrastructure in place (`usekey`/`whichkey`/`keys`), activate when needed |
 | 10. Client Machine Setup | :white_check_mark: Done — SSH config, MCP servers (agent-memory over SSH) in `~/.claude.json` |
@@ -35,16 +35,13 @@ mini PC — GEEKOM A7 MAX (Ubuntu Server 25.04)
 ├── docker compose
 │   ├── nexus-ollama      :11434       # embeddings
 │   ├── nexus-mnemon-flush             # event drain daemon
-│   ├── nexus-dashboard   :8421        # pixel office UI (nginx)
 │   └── [langfuse profile] :3000       # optional observability
-├── arbiter               :8420        # native — needs local tmux socket
 ├── mnemon MCP            (stdio)      # native — Claude Code on same box
 └── tmux                               # agent sessions live here
 
 client machines (mac / windows laptop / gaming PC)
 ├── SSH → mini PC tmux
-├── Claude Code (MCP config → mini PC Tailscale IP)
-└── browser → http://100.75.154.84:8421  (dashboard)
+└── Claude Code (MCP config → mini PC Tailscale IP)
 ```
 
 ---
@@ -88,7 +85,7 @@ newgrp docker
 sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin
 ```
 
-### 2.4 Node.js (for arbiter + settings merge script)
+### 2.4 Node.js (for the settings merge script)
 
 ```bash
 curl -fsSL https://fnm.vercel.app/install | bash
@@ -173,8 +170,8 @@ bash ~/repos/agents-nexus/scripts/clone-reference-repos.sh ~/repos/reference
 ## Phase 4 — Docker Stack
 
 ```bash
-task install          # symlinks tmux conf + scripts, installs dashboard/arbiter/mnemon deps
-task docker:up        # starts Ollama, mnemon-flush, dashboard
+task install          # symlinks tmux conf + scripts, installs mnemon deps
+task docker:up        # starts Ollama, mnemon-flush
 task docker:init      # pulls nomic-embed-text into Ollama (~270 MB, one-time)
 task mnemon:migrate   # ensure DB schema is current (hits DO Postgres)
 ```
@@ -183,7 +180,6 @@ task mnemon:migrate   # ensure DB schema is current (hits DO Postgres)
 
 ```bash
 task docker:status              # all containers healthy
-curl localhost:8421             # dashboard serves HTML
 curl localhost:11434/api/tags   # ollama has nomic-embed-text
 ```
 
@@ -284,24 +280,14 @@ Create `/etc/caddy/Caddyfile`:
 # Or use a hostname if you set one in Tailscale DNS.
 
 http://100.75.154.84 {
-    # Pixel dashboard
-    handle /dashboard* {
-        reverse_proxy localhost:8421
-    }
-
-    # Arbiter WebSocket bridge
-    handle /arbiter* {
-        reverse_proxy localhost:8420
-    }
-
     # Langfuse (if running)
     handle /langfuse* {
         reverse_proxy localhost:3000
     }
 
-    # Default → dashboard
+    # Default → langfuse
     handle {
-        reverse_proxy localhost:8421
+        reverse_proxy localhost:3000
     }
 }
 ```
@@ -312,7 +298,7 @@ sudo systemctl reload caddy
 ```
 
 > TODO: evaluate whether each service gets its own subdomain via Tailscale
-> MagicDNS (arbiter.nexus, dashboard.nexus, etc.) vs path-based routing above.
+> MagicDNS (langfuse.nexus, etc.) vs path-based routing above.
 > Subdomains are cleaner for MCP SSE connections.
 
 ---
@@ -341,35 +327,15 @@ ExecStop=/usr/local/bin/docker compose down
 WantedBy=multi-user.target
 ```
 
-### Arbiter
-
-`/etc/systemd/system/agents-nexus-arbiter.service`:
-
-```ini
-[Unit]
-Description=agents-nexus arbiter (tmux to dashboard bridge)
-After=agents-nexus.service
-
-[Service]
-User=<your-user>
-WorkingDirectory=/home/<user>/repos/agents-nexus/arbiter
-ExecStart=/usr/bin/node index.js
-Restart=on-failure
-Environment=PORT=8420
-
-[Install]
-WantedBy=multi-user.target
-```
-
 ### Agents-nexus stack (native services via task)
 
-User-level unit for arbiter + mnemon via `task up`:
+User-level unit for mnemon via `task up`:
 
 `~/.config/systemd/user/agents-nexus-stack.service`:
 
 ```ini
 [Unit]
-Description=agents-nexus stack (arbiter + mnemon)
+Description=agents-nexus stack (mnemon)
 After=network.target docker.service
 
 [Service]
@@ -404,7 +370,7 @@ WantedBy=timers.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now agents-nexus agents-nexus-arbiter agents-nexus-flush.timer
+sudo systemctl enable --now agents-nexus agents-nexus-flush.timer
 ```
 
 ---
@@ -616,7 +582,6 @@ work               # (inside SSH session) attach to agents tmux session
 # all hotkeys work exactly as local
 ```
 
-Open `http://100.75.154.84:8421` in local browser for the pixel dashboard.
 Open `http://100.75.154.84:3000` for Langfuse (or `/langfuse` via Caddy).
 
 ---
@@ -677,7 +642,7 @@ sudo update-grub
 
 | What | How | Benefit |
 |------|-----|---------|
-| Docker stack (Ollama, dashboard, mnemon-flush) | Runs 24/7 via systemd | No start/stop when gaming |
+| Docker stack (Ollama, mnemon-flush) | Runs 24/7 via systemd | No start/stop when gaming |
 | Tmux agent orchestration | SSH in, run `work` | Agents run even when PC is off |
 | Scheduled agents | `claude /schedule` or cron triggers | Nightly PR reviews, health checks fire reliably |
 | Centralized MCP servers | mnemon as an SSH-tunneled server | Any device connects to same memory |
@@ -697,12 +662,12 @@ sudo update-grub
 ## Open Questions / TODOs
 
 - [ ] Evaluate Tailscale MagicDNS subdomains vs Caddy path routing
-      (e.g. `dashboard.nexus.ts.net` instead of `<ip>:8421`)
+      (e.g. `langfuse.nexus.ts.net` instead of `<ip>:3000`)
 - [ ] SSH over MCP for mnemon vs converting mnemon to SSE transport
       (SSE would remove the SSH dependency but needs more work in mnemon)
 - [ ] `install.sh` root script — detect Linux and delegate to tmux/linux/install.sh
 - [ ] Git clone strategy for repos on mini PC (bare clone + fetch, or full clones)
       Repos: example-org, example-repo, and personal projects only — no work repos
 - [x] Disk sizing — 1TB NVMe, plenty for personal repos + Langfuse volumes
-- [ ] Auth on caddy — at minimum HTTP basic auth in front of dashboard + arbiter
+- [ ] Auth on caddy — at minimum HTTP basic auth in front of Langfuse
       before exposing via Tailscale (Tailscale ACLs may be sufficient)

@@ -23,10 +23,10 @@ See [`INSTALL.md`](INSTALL.md) for the full installer reference (every flag, eve
 | Component | What it does |
 |-----------|-------------|
 | **multiplexer layer** | Orchestration shell (herdr by default, tmux supported) — spawn agents, monitor status, relay commands without context switches |
-| **arbiter** | WebSocket bridge — streams live tmux + transcript state to the dashboard |
-| **dashboard** | Pixel art office visualization of all active agents |
 | **mnemon** | Agent memory — persist notes and events to Postgres, query via MCP in any session |
 | **Langfuse** | Optional observability stack — traces every memory operation (start with `task langfuse:up`) |
+
+> Live fleet visualization (command-center) and notes-search now live in the [herdr `nexus-observe`](plugins/nexus-observe/) plugin.
 
 ## Architecture
 
@@ -38,9 +38,6 @@ graph TB
               hooks["hooks\nPreToolUse / Stop / Notification"]
           end
 
-          arbiter["arbiter\nWebSocket bridge\n:8420"]
-          browser["Browser\nlocalhost:8421"]
-
           subgraph claude["Claude Code (each agent)"]
               mcp_mnemon["MCP: mnemon\n(stdio)"]
           end
@@ -50,7 +47,6 @@ graph TB
           ollama["Ollama\n:11434"]
           postgres[("Postgres + pgvector\n:5432")]
           mnemon_flush["mnemon-flush\n(cron daemon)"]
-          dashboard["dashboard\nnginx :8421"]
       end
 
       jsonl["~/.tmux/\nmemory-events.jsonl"]
@@ -64,17 +60,6 @@ graph TB
       mcp_mnemon -->|"create_note\nquery_notes\nsearch_similar"| postgres
       mcp_mnemon -->|"embeddings"| ollama
 
-      %% arbiter ↔ tmux + transcripts
-      agents -->|"JSONL transcripts\n~/.claude/projects/"| arbiter
-      tmux -->|"tmux list-windows\n(exec)"| arbiter
-
-      %% arbiter → dashboard browser
-      arbiter -->|"WebSocket\nagent events"| browser
-      dashboard -->|"serves static UI"| browser
-
-      %% arbiter → mnemon scripts (subprocess)
-      arbiter -->|"memory-stats.py\nmemory-recall.py\n(subprocess)"| postgres
-
       style docker fill:#dbe4ff,stroke:#4a9eed
       style host fill:#d3f9d8,stroke:#22c55e
       style tmux fill:#e5dbff,stroke:#8b5cf6
@@ -82,7 +67,7 @@ graph TB
 
 ## Knowledge Stack (Docker)
 
-Ollama, Postgres, the mnemon flush daemon, and the pixel dashboard all run as Docker services. **Postgres runs locally in Docker by default** (the `work` compose flavor bundles a `pgvector` container and generates its secret); to use a cloud/managed instance instead, point `DATABASE_URL` at it and skip the local `postgres` profile. The arbiter and mnemon MCP server run natively (arbiter needs the local tmux socket; mnemon is stdio-based).
+Ollama, Postgres, and the mnemon flush daemon all run as Docker services. **Postgres runs locally in Docker by default** (the `work` compose flavor bundles a `pgvector` container and generates its secret); to use a cloud/managed instance instead, point `DATABASE_URL` at it and skip the local `postgres` profile. The mnemon MCP server runs natively (it is stdio-based).
 
 ### Prerequisites
 
@@ -105,7 +90,7 @@ task mnemon:migrate
 # 3. Pull the embedding model into Ollama (once; ~270 MB)
 task docker:init
 
-# 4. Start native services (arbiter + mnemon MCP) in the background
+# 4. Start native services (mnemon MCP) in the background
 task up
 
 # 5. Wire autostart so the stack comes up after every reboot
@@ -133,10 +118,10 @@ Add mnemon to `~/.claude.json`:
 ### Stack lifecycle
 
 ```bash
-task up                     # start docker stack + arbiter + mnemon in background
-task kill                   # stop arbiter and mnemon
+task up                     # start docker stack + mnemon in background
+task kill                   # stop mnemon
 task restart                # kill + up
-task logs                   # tail arbiter and mnemon logs
+task logs                   # tail mnemon log
 
 task docker:up              # start docker services only
 task docker:down            # stop docker services (volumes preserved)
@@ -176,8 +161,6 @@ LANGFUSE_SECRET_KEY=sk-lf-...
 |---------|------|-------|
 | Ollama | 11434 | Embedding model |
 | mnemon MCP | 8330 | Agent-memory MCP (SSE) |
-| Dashboard UI | 8421 | Pixel office UI (nginx) |
-| Arbiter | 8420 | WebSocket bridge (native) |
 | Langfuse | 3000 | Observability UI (optional) |
 
 ---
@@ -186,7 +169,7 @@ LANGFUSE_SECRET_KEY=sk-lf-...
 
 ### Install
 
-One command — detects your OS, installs system deps, runs the interactive profile setup, links configs, and sets up the dashboard:
+One command — detects your OS, installs system deps, runs the interactive profile setup, and links configs:
 
 ```bash
 cd ~/repos/agents-nexus
@@ -223,7 +206,7 @@ work query      # attach/create "query" session
 | Command / Hotkey | Action |
 |---|---|
 | `v 2` | Quick peek at agent 2 (status summary + last output) |
-| `ctrl+a → A` | APM dashboard popup |
+| `ctrl+a → A` | APM stats popup |
 | `agents` | List all registered agents with slot, name, and directory |
 | Status bar | Grey = idle, Green = running, Yellow = stuck (>10min), Red = needs input |
 
@@ -285,7 +268,7 @@ Agents can use `/msg <slot> <message>` without you telling them which slot to ta
 
 The status bar shows a rolling 60-second count: `42a/7h` = 42 agent actions, 7 human actions.
 
-`ctrl+a → A` opens the full dashboard with today's totals, avg response time, and active agent count.
+`ctrl+a → A` opens the full stats popup with today's totals, avg response time, and active agent count.
 
 ### What gets tracked
 
@@ -316,13 +299,11 @@ The `claude-settings.json` configures two hooks:
 ```
 agents-nexus/
 ├── install.sh               # unified installer (detects OS)
-├── Taskfile.yml             # task runner (docker, mnemon, arbiter, launchd)
-├── docker-compose.yml       # knowledge stack (ollama, postgres, mnemon-flush, dashboard) + optional Langfuse profile
+├── Taskfile.yml             # task runner (docker, mnemon, launchd)
+├── docker-compose.yml       # knowledge stack (ollama, postgres, mnemon-flush) + optional Langfuse profile
 ├── .env.example             # environment variable template
 ├── CLAUDE.md.template       # scaffold template for per-repo CLAUDE.md
 ├── IDEAS.md                 # roadmap & feature ideas
-├── arbiter/                 # WebSocket bridge (tmux state → dashboard)
-├── dashboard/               # pixel art office UI (React + Vite)
 ├── mnemon/                  # agent memory system (MCP server + Postgres)
 │   └── migrations/          # database schema
 ├── docker/                  # Dockerfiles + postgres init SQL

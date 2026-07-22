@@ -27,12 +27,11 @@ It connects over **Socket Mode**, so there is **no public URL / tunnel** to set 
 ```
 
 - **Delivery** reuses `~/.tmux/agent-send.sh` (slot/name resolution + `tmux
-  send-keys`), the same primitive `agent-registry.sh` and the arbiter use.
+  send-keys`), the same primitive `agent-registry.sh` uses.
 - **Agent names** come from `~/.tmux/registry/<pane>` (`NAME`/`SLOT`). The thread
   map stores the **name** and re-resolves to a slot at delivery time, so it
   survives slot renumbering.
-- The bridge is a standalone process (own crash domain) — independent of the
-  arbiter / dashboard.
+- The bridge is a standalone process (own crash domain).
 
 ## Routing rules (precedence)
 
@@ -76,8 +75,8 @@ posted back to Slack (the channel/DM the request came from) — never to the ter
 
 `status` / `who` are **read-only and always available** — they do **not** require
 `SLACK_SPAWN_ENABLED`. The bridge computes them itself from the agent registry and
-each window's hook-maintained `@waiting` state (the same signal the arbiter and
-reaper read), so they answer instantly and work even when an agent is busy or
+each window's hook-maintained `@waiting` state (the same signal the reaper
+reads), so they answer instantly and work even when an agent is busy or
 wedged — no round-trip to the agent. The same data is exposed as JSON at
 `GET /status` on the localhost port for CLI checks.
 
@@ -254,7 +253,7 @@ and for the bridge's own deliveries (`SLACK_A2A_NUDGE=0`).
 ### Idle-gated delivery (`SLACK_BUS_DEFER`, default on)
 
 Every bus delivery is gated on the recipient's `@waiting` window-option (the
-hook-maintained state the arbiter + reaper also read): the bridge injects with
+hook-maintained state the reaper also reads): the bridge injects with
 `send-keys` only when the agent is **idle at the prompt** (`@waiting=2`). When it's
 **working** (`0`/unset) or at a **permission prompt** (`1`), the message is held in a
 per-pane queue and flushed when the agent next goes idle — one message per idle window,

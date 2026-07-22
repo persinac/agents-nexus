@@ -1,10 +1,9 @@
 name: agents-nexus
 
-# Knowledge stack: Ollama, mnemon flush daemon, dashboard UI.
+# Knowledge stack: Ollama, mnemon flush daemon, mnemon MCP server.
 # This (personal) flavor has no Postgres container — set DATABASE_URL in .env to a
 # Postgres you provide (local install or cloud/managed). The `work` flavor instead
 # bundles a local pgvector container by default.
-# Arbiter runs as a systemd user service (needs host tmux socket)
 #
 # First-time setup:
 #   cp .env.example .env && $EDITOR .env
@@ -88,19 +87,6 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
-
-  # ── Dashboard ────────────────────────────────────────────────────────────
-
-  # Pixel office UI — connects to arbiter at ws://localhost:8420
-  dashboard:
-    profiles: ["dashboard"]
-    build:
-      context: .
-      dockerfile: docker/dashboard.Dockerfile
-    container_name: nexus-dashboard
-    restart: always
-    ports:
-      - "${DASHBOARD_PORT:-8421}:80"
 
   # ── LLM Gateway ──────────────────────────────────────────────────────────
 

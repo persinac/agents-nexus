@@ -1,6 +1,6 @@
 {
   "com.agents-nexus.agent-memory.flush": "Flushes buffered tmux + agent events to the agent-memory DB",
-  "com.agents-nexus.docker": "Starts the agents-nexus Docker stack at login (proxy, langfuse, mnemon, dashboard)",
+  "com.agents-nexus.docker": "Starts the agents-nexus Docker stack at login (proxy, langfuse, mnemon)",
   "com.agents-nexus.gl-reviews": "Writes the GitLab review queue into today's Obsidian daily note",
   "com.agents-nexus.gl-reviews-prune": "Prunes stale reviewer assignments from open GitLab MRs",
   "com.agents-nexus.langfuse-cost-snapshot": "Daily: snapshots Langfuse cost/usage into Postgres so spend history survives the 10-day trace TTL",

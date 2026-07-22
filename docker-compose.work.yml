@@ -175,26 +175,6 @@ services:
       retries: 12
       start_period: 5s
 
-  # ── Dashboard ────────────────────────────────────────────────────────────
-
-  dashboard:
-    profiles: ["dashboard"]
-    build:
-      context: .
-      dockerfile: docker/dashboard.Dockerfile
-    container_name: nexus-dashboard
-    restart: always
-    ports:
-      - "${DASHBOARD_PORT:-8421}:80"
-    healthcheck:
-      # 127.0.0.1, not localhost — musl resolver in alpine prefers ::1 and
-      # nginx only listens on IPv4.
-      test: ["CMD", "wget", "-O", "/dev/null", "-q", "http://127.0.0.1/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-
   # ── LLM Gateway ──────────────────────────────────────────────────────────
 
   # Transparent proxy — passes all headers (including Claude Code OAuth) to

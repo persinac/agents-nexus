@@ -4,7 +4,7 @@ The **Conductor** turns a *task* into a *verified result*. It's the hybrid from 
 discussion: a **deterministic spine** (routing, provisioning, dispatch, state, I/O)
 with a few **scoped judgment nodes** (Claude calls that emit structured output the
 spine acts on). It sits on top of the nervous system already built (Slack bus,
-mnemon, proxy/Langfuse, dashboard) and the SDK runner (the worker node).
+mnemon, proxy/Langfuse) and the SDK runner (the worker node).
 
 > Name is a placeholder — chosen to disambiguate from `slack-bridge/orchestrator.js`
 > (which does bus presence/delivery, a different job).
