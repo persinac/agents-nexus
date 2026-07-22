@@ -323,6 +323,15 @@ def _clean_goal(goal):
             return g
 
 
+def _base_branch(goal):
+    """Extract an explicit `base=<ref>` (or `base:<ref>`) directive from a goal — the branch-point
+    a mission should stack on instead of the default branch. Deterministic and opt-in: absent the
+    token this returns None and missions branch off origin/main exactly as before. The leading
+    word-boundary guard means a token like `database=...` never matches. See ensure_workspace()."""
+    m = re.search(r"\bbase[=:]([A-Za-z0-9._/-]+)", goal or "")
+    return m.group(1) if m else None
+
+
 def _branch(goal, mid):
     """A meaningful, CI-safe branch name (no '/'): <ticket>-<slug>, else conductor-<slug>.
     When a ticket key is present it already identifies the branch, so the slug is derived from
@@ -345,20 +354,43 @@ def _mission_ws(goal, mid):
     return f"mission/{_branch(goal, mid)}"
 
 
-def ensure_workspace(mid, repo, branch=None):
+def _resolve_base(rp, base):
+    """Resolve a requested base ref in `rp`, preferring the remote-tracking form so a mission
+    stacks on the pushed branch rather than a possibly-stale local one. Returns the first of
+    (origin/<base>, <base>) that git can verify, else None."""
+    for ref in (f"origin/{base}", base):
+        if subprocess.run(["git", "-C", rp, "rev-parse", "--verify", ref],
+                          capture_output=True).returncode == 0:
+            return ref
+    return None
+
+
+def ensure_workspace(mid, repo, branch=None, base=None):
     """Create the worktree/scratch (Conductor-side; the worker just uses the path).
-    Returns (cwd, branch|None). The branch is the mission's building output → the MR."""
+    Returns (cwd, branch|None). The branch is the mission's building output → the MR.
+
+    `base` optionally pins the branch-point to a specific ref (e.g. an unmerged feature branch a
+    mission must stack on, surfaced from the goal via `_base_branch()`). It is FAIL-CLOSED: if the
+    ref can't be resolved we raise instead of silently branching off the default branch — a silent
+    main fallback is exactly the misroute this override exists to prevent."""
     ws = workspace(mid, repo)
     if repo and _is_git(_repo_dir(repo)):
         rp = _repo_dir(repo)
         branch = branch or f"conductor-{mid[:8]}"
         if not os.path.isdir(ws):
             os.makedirs(os.path.dirname(ws), exist_ok=True)
-            # branch off the default branch, not whatever's checked out in the main tree
-            base = next((r for r in ("origin/main", "origin/master", "main", "master")
-                         if subprocess.run(["git", "-C", rp, "rev-parse", "--verify", r],
-                                            capture_output=True).returncode == 0), "")
-            add = ["git", "-C", rp, "worktree", "add", "-b", branch, ws] + ([base] if base else [])
+            if base:
+                start = _resolve_base(rp, base)
+                if not start:
+                    raise RuntimeError(
+                        f"ensure_workspace: base '{base}' not found in {rp} "
+                        f"(tried origin/{base}, {base}) — push the branch or fix the goal's base= directive")
+            else:
+                # branch off the default branch, not whatever's checked out in the main tree
+                start = next((r for r in ("origin/main", "origin/master", "main", "master")
+                              if subprocess.run(["git", "-C", rp, "rev-parse", "--verify", r],
+                                                 capture_output=True).returncode == 0), "")
+            add = ["git", "-C", rp, "worktree", "add", "-b", branch, ws] + ([start] if start else [])
             r = subprocess.run(add, capture_output=True, text=True)
             if r.returncode != 0:   # branch already exists (retry round) → attach it
                 subprocess.run(["git", "-C", rp, "worktree", "add", ws, branch],
@@ -697,7 +729,7 @@ async def execute_dag(db, mid: str):
                     for d in deps)
                 base = s["goal"].split("\n\n[Upstream context]")[0]
                 db.update_subtask(s["id"], goal=f"{base}\n\n[Upstream context]\n{ctx}")
-            ws, branch = ensure_workspace(mid, s.get("repo"), _branch(goal, mid))
+            ws, branch = ensure_workspace(mid, s.get("repo"), _branch(goal, mid), base=_base_branch(goal))
             db.log_event(mid, "workspace", {"repo": s.get("repo"), "cwd": ws, "branch": branch}, subtask_id=s["id"])
             via = spawn_worker(mid, db.get_subtask(s["id"]),
                                ws_label=os.environ.get("CONDUCTOR_MISSION_WS") or _mission_ws(goal, mid))
