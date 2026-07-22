@@ -4,11 +4,12 @@
 # Bound to <prefix>+C in tmux/mac/tmux.conf. Symlinked per host as ~/.tmux/conductor-run.sh
 # (same convention as agent-send.sh / log-action.sh).
 #
-# SAFETY: the tmux.conf is shared between the personal box and the work laptop, so this binding
-# fires on both. A mission is LIVE only on the personal box (hostname `nexus`); on any other host
-# it forces --dry-run unless the goal is prefixed with the literal token `live!`. On the box you
-# can force a dry-run with a `dry!` prefix. This keeps an accidental keystroke on the work laptop
-# from starting a real Jira/GitLab mission.
+# SAFETY: run-mode is EXPLICIT and env-first — never encoded in the goal text. The default is
+# dry-run (reporting logged, not sent) on EVERY host; a box that should run live sets
+# CONDUCTOR_RUN_MODE=live in ~/.tmux/env.sh (the personal `nexus` box does). Per-run you can override
+# with --live / --dry-run on the conductor.py invocation. This keeps an accidental keystroke on the
+# work laptop from starting a real Jira/GitLab mission, and keeps run-mode tokens out of the goal
+# (a leaked `live!` used to pollute the branch slug and split a mission across two branches/MRs).
 set -uo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
@@ -22,16 +23,10 @@ if [ -z "$goal" ]; then
 fi
 
 host="$(hostname -s 2>/dev/null || hostname)"
-mode_flag=""
-if [ "$host" = "nexus" ]; then
-  :                                        # personal box: LIVE by default
-elif [ "${goal%% *}" = "live!" ]; then
-  goal="${goal#live! }"                    # other host: explicit opt-in to live
-else
-  mode_flag="--dry-run"                    # other host: safe default
-fi
-if [ "${goal%% *}" = "dry!" ]; then mode_flag="--dry-run"; goal="${goal#dry! }"; fi
-if [ "${goal%% *}" = "live!" ]; then goal="${goal#live! }"; fi   # allow live! on the box too (no-op flag)
+# Run-mode: explicit + env-first. Default dry (safe); a live box sets CONDUCTOR_RUN_MODE=live in
+# ~/.tmux/env.sh. No run-mode tokens in the goal — conductor.py gets it via the --run-mode flag.
+mode="${CONDUCTOR_RUN_MODE:-dry}"
+case "$mode" in live|dry) ;; *) mode="dry" ;; esac
 
 # Distribute (default): detach the mission into its own mission/<slug> herdr workspace
 # — orchestrator + workers tile together (the watchable view), reports to Slack on done.
@@ -52,14 +47,14 @@ cd "$REPO/agent-runner" 2>/dev/null || { echo "cannot cd to $REPO/agent-runner";
 echo "▶ Conductor mission"
 echo "  host:  $host"
 echo "  repo:  $REPO"
-echo "  mode:  ${mode_flag:-LIVE}"
+echo "  mode:  $mode"
 echo "  dispatch: $([ -n "$dist_flag" ] && echo 'distributed → own mission workspace' || echo 'foreground → this pane')"
 echo "  goal:  $goal"
 echo "────────────────────────────────────────────────────────────"
 if [ -x .venv/bin/python ]; then
-  .venv/bin/python conductor.py $dist_flag $mode_flag "$goal"
+  .venv/bin/python conductor.py $dist_flag --run-mode "$mode" "$goal"
 else
-  task conductor -- $dist_flag $mode_flag "$goal"
+  task conductor -- $dist_flag --run-mode "$mode" "$goal"
 fi
 rc=$?
 echo "────────────────────────────────────────────────────────────"

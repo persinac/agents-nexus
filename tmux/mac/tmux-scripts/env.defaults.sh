@@ -51,6 +51,14 @@ export NEXUS_MEMORY_MAX_TOKENS="${NEXUS_MEMORY_MAX_TOKENS:-2000}"  # token budge
 export NEXUS_INJECT_CACHE="${NEXUS_INJECT_CACHE:-1}"             # resume-from-interrupted-session cache, <24h (0 = omit)
 export NEXUS_INJECT_REGISTRY="${NEXUS_INJECT_REGISTRY:-1}"        # Agent Communication + live peer list (0 = omit)
 
+# ── Conductor run mode (explicit; NEVER encoded in the goal text) ────────────
+# dry (default, safe — reporting is LOGGED, not sent) | live (files Jira/MR/Confluence for real).
+# conductor-run.sh reads this; conductor.py honors it and exports it to detached/distributed
+# missions. A box that should run LIVE missions sets this to 'live' in env.sh (e.g. the personal
+# `nexus` box); every other box stays dry so an accidental keystroke never files a real ticket.
+# Per-run override: `conductor.py --live` / `--dry-run`.
+export CONDUCTOR_RUN_MODE="${CONDUCTOR_RUN_MODE:-dry}"
+
 # ── Anthropic routing (the real degrade fix) ─────────────────────────────────
 # Route through a local LiteLLM gateway ONLY when it actually answers, so Langfuse
 # gets the trace. When there's no gateway (a teammate's box), leave ANTHROPIC_BASE_URL
