@@ -1282,6 +1282,73 @@ def _report_body(goal, artifact, verdict, branches):
     return body
 
 
+# Cheap model for non-judgment presentation tasks (MR naming). A summary of a diff doesn't need the
+# orchestrator's reasoning model, so this runs on Haiku to keep it fast + cheap. Overridable so a
+# smoke run can pin it. See _name_mr().
+NAMING_MODEL = os.environ.get("CONDUCTOR_NAMING_MODEL", "claude-haiku-4-5-20251001")
+_MR_DIFF_BUDGET = 60_000   # chars of diff fed to the namer; git diff is truncated to this
+
+
+def _mr_diff(worktree, target="main"):
+    """The mission's diff vs its merge-base with the target branch — the ground truth for naming.
+    Truncated to a budget so a large MR doesn't blow the namer's context; stat always leads so the
+    file list survives truncation."""
+    base = _resolve_base(worktree, target) or f"origin/{target}"
+    stat = subprocess.run(["git", "-C", worktree, "diff", "--stat", f"{base}...HEAD"],
+                          capture_output=True, text=True).stdout
+    patch = subprocess.run(["git", "-C", worktree, "diff", f"{base}...HEAD"],
+                           capture_output=True, text=True).stdout
+    joined = f"{stat}\n\n{patch}"
+    return joined[:_MR_DIFF_BUDGET]
+
+
+async def _name_mr(goal, worktree, target="main"):
+    """Generate a reviewer-facing MR {title, branch, description} by summarizing the DIFF on a cheap
+    model (Haiku), NOT by slugging the goal prose. Returns a dict or None on any failure — callers
+    fall back to the deterministic _title()/_branch()/_report_body() path, so this is purely additive
+    and never blocks reporting.
+
+    - title: conventional-commit style, <=72 chars, describes the change.
+    - branch: kebab-case, lowercase, NO '/' (Garner CI breaks on slashes in branch names), <=40 chars.
+    - description: short What/Why/Testing markdown, reviewer-facing (no goal dump, no local paths).
+    """
+    diff = _mr_diff(worktree, target)
+    if not diff.strip():
+        return None
+    prompt = (
+        "You are naming a GitLab merge request from a code diff. Summarize the ACTUAL change — "
+        "never the task instructions. Return ONLY a JSON object.\n\n"
+        f"Original task (context only, do NOT parrot its wording):\n{(goal or '')[:800]}\n\n"
+        f"Diff (git diff --stat + patch, truncated):\n{diff}\n\n"
+        'Shape: {"title":"<conventional-commit, <=72 chars, describes the change>",'
+        '"branch":"<kebab-case, lowercase, NO forward slashes, <=40 chars>",'
+        '"description":"<markdown: ## What / ## Why / ## Testing; reviewer-facing; no task-instruction '
+        'text, no absolute file paths>"}'
+    )
+    opts = ClaudeAgentOptions(
+        model=NAMING_MODEL, effort="low", setting_sources=[],
+        permission_mode="bypassPermissions", allowed_tools=[],
+    )
+    try:
+        text = []
+        async for msg in query(prompt=prompt, options=opts):
+            if isinstance(msg, AssistantMessage):
+                for b in msg.content:
+                    if isinstance(b, TextBlock):
+                        text.append(b.text)
+        out = _extract_json("".join(text))
+    except (ClaudeSDKError, ValueError):
+        return None
+    title = (out.get("title") or "").strip()[:72]
+    # Sanitize the branch defensively — the namer is instructed to avoid '/', but CI-breaking on a
+    # stray slash is not worth trusting the model for. Reuse the deterministic slugger.
+    branch = _slug((out.get("branch") or "").replace("/", "-"))[:40].strip("-")
+    desc = (out.get("description") or "").strip()
+    if not (title and branch and desc):
+        return None
+    return {"title": title, "branch": branch, "description": desc}
+
+
 def _commit_worktrees(mid, subtasks, goal):
     """Commit each building subtask's worktree onto the mission branch (local). The
     branch is the deliverable; pushing/MR is gated separately. Pre-commit hooks that
@@ -1356,13 +1423,18 @@ def _first_url(text):
 
 
 def _open_mr(b, title, description, draft=False):
-    subprocess.run(["git", "-C", b["worktree"], "push", "-u", "origin", b["branch"]],
+    # The MR head branch: the clean diff-derived name (b["mr_branch"]) when the namer supplied one,
+    # else the internal working branch. Pushing the working branch's commits to the clean ref means
+    # the MR shows a sensible source-branch name instead of the goal-slugged working-branch name.
+    src_branch = b.get("mr_branch") or b["branch"]
+    subprocess.run(["git", "-C", b["worktree"], "push", "-u", "origin",
+                    f"{b['branch']}:refs/heads/{src_branch}"],
                    capture_output=True, text=True)
     # Idempotent: reuse an existing open MR for this source branch instead of a second
     # `glab mr create` (which fails "Failed to create merge request" + drops a recover/mr.json).
     # This happens when a worker self-opened an MR during the build, and on a partial re-run.
     existing = subprocess.run(
-        ["glab", "mr", "list", "--source-branch", b["branch"], "--output", "json"],
+        ["glab", "mr", "list", "--source-branch", src_branch, "--output", "json"],
         cwd=b["worktree"], capture_output=True, text=True)
     if existing.returncode == 0:
         try:
@@ -1372,7 +1444,7 @@ def _open_mr(b, title, description, draft=False):
         url = next((m.get("web_url") for m in mrs if m.get("web_url")), None)
         if url:
             return f"reused existing MR: {url}"
-    args = ["glab", "mr", "create", "--source-branch", b["branch"],
+    args = ["glab", "mr", "create", "--source-branch", src_branch,
             "--target-branch", REPORTING.get("mr", {}).get("target", "main"),
             "--title", title, "--description", description, "--yes"]
     if draft or REPORTING.get("mr", {}).get("draft"):   # per-call override (partial forces draft)
@@ -1516,8 +1588,19 @@ async def report(db, mid, goal, artifact, subtasks, verdict, draft=False, triage
         db.log_event(mid, "committed", {"branches": [
             {k: b[k] for k in ("repo", "branch", "head", "committed", "hooks_bypassed", "changed")} for b in branches]})
 
+    # Diff-derived names (cheap Haiku pass) so the MR reads from the CHANGE, not the goal prose that
+    # produced ugly `[Conductor] branch off origin/main; the MR must target main` titles/branches.
+    # Purely additive: any failure returns None and we fall back to the deterministic path below.
+    naming = None
+    _target = REPORTING.get("mr", {}).get("target", "main")
+    if changed and not DRY_RUN and REPORTING.get("mr", {}).get("enabled"):
+        try:
+            naming = await _name_mr(goal, changed[0]["worktree"], _target)
+        except Exception:   # naming is best-effort; never let it break reporting
+            naming = None
+
     # Build the MR description + title BEFORE opening the MR (can't reference its own URL).
-    desc = _report_body(goal, artifact, verdict, branches)
+    desc = naming["description"] if naming else _report_body(goal, artifact, verdict, branches)
     if draft:
         # Honesty banner: a partial mission's code did NOT pass verification. The draft state +
         # this banner + the queued findings keep it from ever reading as "ready to merge".
@@ -1528,11 +1611,20 @@ async def report(db, mid, goal, artifact, subtasks, verdict, draft=False, triage
     if src:
         desc += f"\n\n**Source ticket:** {src}"
     _mark = "[DRAFT/partial] " if draft else ""
-    title = f"{_mark}[Conductor] {src}: {_title(goal)}" if src else f"{_mark}[Conductor] {_title(goal)}"
+    if naming:
+        # Namer already describes the change; keep the ticket key for traceability but drop the
+        # goal-slugged _title(goal).
+        title = f"{_mark}{src + ': ' if src else ''}{naming['title']}"
+    else:
+        title = f"{_mark}[Conductor] {src}: {_title(goal)}" if src else f"{_mark}[Conductor] {_title(goal)}"
 
     mr_url = None
     if REPORTING.get("mr", {}).get("enabled") and not DRY_RUN and changed:
         for b in changed:
+            # Prefer the clean diff-derived branch name for the MR head (the internal working branch
+            # was slugged from goal prose at dispatch). _open_mr pushes b["branch"] to this ref.
+            if naming and naming.get("branch") and naming["branch"] != b["branch"]:
+                b = {**b, "mr_branch": naming["branch"]}
             out = _open_mr(b, title, desc, draft=draft)
             mr_url = mr_url or _first_url(out)
             db.log_event(mid, "mr", {"repo": b["repo"], "branch": b["branch"], "url": _first_url(out), "out": out[:300]})
