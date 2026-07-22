@@ -31,6 +31,10 @@ STATS_PY=""
 for c in "$NEXUS_TMUX_DIR/memory-stats.py" "$NEXUS_DIR/tmux/mac/tmux-scripts/memory-stats.py"; do
   [ -f "$c" ] && { STATS_PY="$c"; break; }
 done
+# Timer purpose map (mac): launchd/descriptions.json → "com.agents-nexus.<unit>": "purpose".
+DESCRIPTIONS_JSON="$NEXUS_DIR/launchd/descriptions.json"
+# Per-job launchd status helper (schedule + last-run + ok/FAIL + purpose). Sibling of this script.
+TIMERS_PY="$(dirname "$0")/timers-status.py"
 REFRESH="${NEXUS_CC_REFRESH:-5}"
 
 dot() { [ "$1" = "1" ] && printf '●' || printf '○'; }   # ● up / ○ down
@@ -94,28 +98,33 @@ print('  memory: %s notes (%s embedded) · %s events/24h' % (d.get('notes_total'
   fi
   printf '────────────────────────────────────────────────────────────\n'
 
-  # ── timers (launchd / systemd) ─────────────────────────────────
+  # ── timers / scheduled jobs — schedule · last-run · ok/FAIL · purpose ───
   printf 'TIMERS\n'
   case "$(uname -s)" in
     Darwin)
-      local d="$HOME/Library/LaunchAgents"
-      if [ -d "$d" ]; then
-        local found=0
-        for p in "$d"/com.agents-nexus.*.plist; do
-          [ -f "$p" ] || continue
-          found=1
-          local label; label=$(basename "$p" .plist | sed 's/^com\.agents-nexus\.//')
-          launchctl list 2>/dev/null | grep -q "com.agents-nexus.$label" \
-            && printf '  %s %s\n' "$(dot 1)" "$label" \
-            || printf '  %s %s (not loaded)\n' "$(dot 0)" "$label"
-        done
-        [ "$found" = "0" ] && printf '  (none installed)\n'
+      # timers-status.py reads each plist (schedule), launchctl list (loaded + last exit),
+      # the log mtime (last run), and descriptions.json (purpose) — one formatted line each.
+      if [ -f "$TIMERS_PY" ]; then
+        "$PYTHON" "$TIMERS_PY" "$DESCRIPTIONS_JSON" 2>/dev/null || printf '  (timers unavailable)\n'
       else
-        printf '  (no LaunchAgents dir)\n'
+        printf '  (timers-status.py missing)\n'
       fi ;;
     *)
-      local t; t=$(systemctl --user list-timers --no-pager --no-legend 2>/dev/null | grep -a 'nexus\|agents-nexus' | head -10)
-      [ -n "$t" ] && printf '%s\n' "$t" | sed 's/^/  /' || printf '  (no user timers)\n' ;;
+      # systemd (linux): next-run + last-run from list-timers, result + Description via show.
+      local any=0 line unit next left last desc result
+      while IFS= read -r line; do
+        unit=$(printf '%s' "$line" | awk '{for(i=1;i<=NF;i++) if($i ~ /\.timer$/){print $i; break}}')
+        [ -n "$unit" ] || continue
+        any=1
+        desc=$(systemctl --user show "$unit" -p Description --value 2>/dev/null)
+        last=$(systemctl --user show "$unit" -p LastTriggerUSec --value 2>/dev/null)
+        # the timer's paired service carries the exit result
+        local svc="${unit%.timer}.service"
+        result=$(systemctl --user show "$svc" -p Result --value 2>/dev/null)
+        local rmark="ok"; [ -n "$result" ] && [ "$result" != "success" ] && rmark="FAIL($result)"
+        printf '  %s %-26s last:%s %s  — %s\n' "$(dot 1)" "$unit" "${last:-?}" "$rmark" "$desc"
+      done < <(systemctl --user list-timers --all --no-pager --no-legend 2>/dev/null | grep -a 'nexus\|agents-nexus')
+      [ "$any" = "0" ] && printf '  (no user timers)\n' ;;
   esac
 }
 
