@@ -165,6 +165,42 @@ ls -la .env                      # -> .env.<active>
 
 `--switch` only re-points the symlink and the `.nexus-profile` file. It does not touch the contents of either profile and does not reinstall deps.
 
+## Staying up to date
+
+If you installed on an earlier revision, a plain `git pull` is **not enough** — the pull
+refreshes repo files, but the *installed copies* drift (the `~/.tmux` symlinks,
+`~/.claude/settings.json`, the herdr base config + per-plugin keybindings, launchd/systemd
+units), and services that were later **removed** (spark, the dashboard, arbiter) keep
+running until torn down. Run the updater:
+
+```bash
+bash scripts/update.sh            # pull + reconcile installed copies + tear down removed services
+bash scripts/update.sh --dry-run  # show what WOULD change; touch nothing
+bash scripts/update.sh --no-pull  # reconcile the current checkout without pulling
+```
+
+It is **idempotent** and non-destructive to your data (kept-service DB volumes are
+untouched). It: pulls (fast-forward only; skips if you have uncommitted changes), re-runs
+the platform install (symlinks + `settings.json` merge incl. the MCP tool-search env +
+`claude_code_config.json` + units), re-syncs the herdr plugin keybinding blocks (a changed
+`keys.toml` doesn't propagate on pull), stops/removes any lingering spark/dashboard/arbiter
+containers + volumes + launchd/systemd units, and prunes those from your `.env` profiles
+(backup at `.env.pre-update.bak`).
+
+After it runs: **relaunch your agents** so they pick up the new `settings.json` env + hooks
+(running sessions keep the old env until restarted). New herdr chords are live immediately —
+`prefix+shift+f` (memory search), `prefix+shift+o` (command center).
+
+**Overlays are refreshed separately.** `update.sh` reconciles the *public core* only — it
+does **not** re-fetch a private overlay (that's a separate repo with its own auth +
+versioning). It detects any applied overlay and prints the re-apply command; if your team's
+overlay changed upstream, run it:
+
+```bash
+scripts/overlay-apply.sh <its-git-url>     # re-clones + re-layers (source is shown by update.sh, or --status)
+scripts/overlay-apply.sh --status          # list applied overlays + their sources
+```
+
 ## Non-interactive mode
 
 ```bash
