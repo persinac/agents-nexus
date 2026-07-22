@@ -23,6 +23,12 @@ title = "Memory search"
 placement = "split"
 command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/memory-search-panel.sh\""]
 
+[[panes]]
+id = "command-center"
+title = "Command center"
+placement = "split"
+command = ["/bin/bash", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/command-center-panel.sh\""]
+
 [[actions]]
 id = "memory"
 title = "Memory health panel"
@@ -40,3 +46,9 @@ id = "memory-search"
 title = "Memory search panel"
 contexts = ["workspace"]
 command = ["/bin/sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin nexus.observe --entrypoint memory-search --direction right"]
+
+[[actions]]
+id = "command-center"
+title = "Command center panel"
+contexts = ["workspace"]
+command = ["/bin/sh", "-c", "\"$HERDR_BIN_PATH\" plugin pane open --plugin nexus.observe --entrypoint command-center --direction right"]

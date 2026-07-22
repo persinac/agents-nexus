@@ -9,6 +9,8 @@ dashboards.
   totals; refreshes every ~2s)
 - `prefix+shift+f` — keyword search ("find") over the agent-memory notes store
   (interactive prompt; ports the dashboard "search notes" feature)
+- `prefix+shift+o` — command center ("ops"): refreshing fleet health + agents +
+  services + timers (ports the dashboard command-center grid)
 
 ## Install (opt-in)
 
@@ -34,6 +36,11 @@ Links the plugin **and** appends the two chords to `~/.config/herdr/config.toml`
   (embedding-free; the semantic path stays in the dashboard / `agent_memory.cli search`).
   Type a term; prefix with `p:<project>` or `all:` to scope; `:q` to quit. Self-loads
   `DATABASE_URL` from the repo `.env` the same way the MCP server does.
+- **Command center** (`bin/command-center-panel.sh`): a refreshing TUI (default 5s,
+  `NEXUS_CC_REFRESH` to override) porting the dashboard command-center grid — health dots
+  (docker / substrate / DB), the live agent roster (`substrate.sh query`), running nexus
+  containers (`docker ps`), and installed timers (launchd / systemd). Read-only; composes
+  the existing fleet primitives, no arbiter dependency. Ctrl-C / pane-close to exit.
 
 All open as a right split (`--direction right`); close with your herdr pane-close key.
 
