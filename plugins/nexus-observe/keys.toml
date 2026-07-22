@@ -9,3 +9,9 @@ command = "nexus.observe.memory"
 key = "prefix+shift+a"
 type = "plugin_action"
 command = "nexus.observe.apm"
+
+[[keys.command]]
+# prefix+shift+f ("find") — shift+s is taken by nexus-fleet, shift+m/a by our own panels.
+key = "prefix+shift+f"
+type = "plugin_action"
+command = "nexus.observe.memory-search"
