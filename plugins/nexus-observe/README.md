@@ -39,8 +39,11 @@ Links the plugin **and** appends the two chords to `~/.config/herdr/config.toml`
 - **Command center** (`bin/command-center-panel.sh`): a refreshing TUI (default 5s,
   `NEXUS_CC_REFRESH` to override) porting the dashboard command-center grid — health dots
   (docker / substrate / DB), the live agent roster (`substrate.sh query`), running nexus
-  containers (`docker ps`), and installed timers (launchd / systemd). Read-only; composes
-  the existing fleet primitives, no arbiter dependency. Ctrl-C / pane-close to exit.
+  containers (`docker ps`), and the scheduled jobs. The TIMERS section (via
+  `bin/timers-status.py` on macOS) shows each job's **schedule, last-run time, last-run
+  ok/FAIL, and purpose** (purpose from `launchd/descriptions.json`; on Linux, from each
+  unit's `Description=`). Read-only; composes the existing fleet primitives, no arbiter
+  dependency. Ctrl-C / pane-close to exit.
 
 All open as a right split (`--direction right`); close with your herdr pane-close key.
 
