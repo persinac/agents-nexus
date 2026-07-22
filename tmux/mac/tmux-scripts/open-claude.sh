@@ -119,22 +119,36 @@ if [ -n "$MY_PANE_ID" ] && [ -n "$MY_SLOT" ]; then
   [ -x "$NEXUS_TMUX_DIR/memory-hook.py" ] && "$NEXUS_TMUX_DIR/memory-hook.py" session_start "$MY_PANE_ID" "$REPO_PATH" &
 fi
 
-# BSD date (Mac): -v-3d; GNU date (Linux): -d '3 days ago'
-cutoff=$(date -v-3d +%Y-%m-%d 2>/dev/null || date -d '3 days ago' +%Y-%m-%d)
-
-# Collect matching checkpoint files from the past 3 days, sorted oldest→newest
+# ── Recent checkpoint notes ────────────────────────────────────────────────
+# Gated by NEXUS_INJECT_CHECKPOINTS (0 = omit); lookback by NEXUS_CHECKPOINT_DAYS;
+# total size capped by NEXUS_CHECKPOINT_MAX_KB (0 = unlimited). See env.defaults.sh.
 context=""
-while IFS= read -r f; do
-  date_part=$(basename "$f" | cut -c1-10)
-  if [[ "$date_part" > "$cutoff" || "$date_part" = "$cutoff" ]]; then
-    context+="$(cat "$f")"$'\n\n'
+if [ "${NEXUS_INJECT_CHECKPOINTS:-1}" = "1" ]; then
+  _ckpt_days="${NEXUS_CHECKPOINT_DAYS:-3}"
+  # BSD date (Mac): -v-Nd; GNU date (Linux): -d 'N days ago'
+  cutoff=$(date -v-"${_ckpt_days}"d +%Y-%m-%d 2>/dev/null || date -d "${_ckpt_days} days ago" +%Y-%m-%d)
+  # Collect matching checkpoint files within the window, sorted oldest→newest
+  while IFS= read -r f; do
+    date_part=$(basename "$f" | cut -c1-10)
+    if [[ "$date_part" > "$cutoff" || "$date_part" = "$cutoff" ]]; then
+      context+="$(cat "$f")"$'\n\n'
+    fi
+  done < <(ls -1 "$CHECKPOINT_SRC"/*-${project_slug}-checkpoint.md 2>/dev/null | sort)
+  # Optional size cap — keep the NEWEST bytes (files are oldest→newest, so the
+  # freshest checkpoint is at the tail and matters most). 0 disables the cap.
+  _ckpt_max_kb="${NEXUS_CHECKPOINT_MAX_KB:-0}"
+  if [ "$_ckpt_max_kb" -gt 0 ] 2>/dev/null; then
+    _ckpt_max_bytes=$(( _ckpt_max_kb * 1024 ))
+    if [ "${#context}" -gt "$_ckpt_max_bytes" ]; then
+      context="[older checkpoint context trimmed to ${_ckpt_max_kb}KB via NEXUS_CHECKPOINT_MAX_KB]"$'\n\n'"${context: -$_ckpt_max_bytes}"
+    fi
   fi
-done < <(ls -1 "$CHECKPOINT_SRC"/*-${project_slug}-checkpoint.md 2>/dev/null | sort)
+fi
 
 # ── Auto-cache recovery (previous session context) ───────────────────────
 CACHE_FILE="$NEXUS_TMUX_DIR/cache/${project_slug}.md"
 cache_section=""
-if [ -f "$CACHE_FILE" ]; then
+if [ "${NEXUS_INJECT_CACHE:-1}" = "1" ] && [ -f "$CACHE_FILE" ]; then
   cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE" 2>/dev/null || stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) ))
   if [ "$cache_age" -lt 86400 ]; then
     cache_section=$(cat "$CACHE_FILE")
@@ -159,7 +173,7 @@ if command -v curl >/dev/null 2>&1; then
   esac
 fi
 registry_section=""
-if [ -x "$REGISTRY_SCRIPT" ]; then
+if [ "${NEXUS_INJECT_REGISTRY:-1}" = "1" ] && [ -x "$REGISTRY_SCRIPT" ]; then
   peers_output=$("$REGISTRY_SCRIPT" peers --exclude "$MY_PANE_ID" 2>/dev/null || true)
   if [ "$bus_on" = "1" ]; then
     comms_body="**To message another agent, DEFAULT to the Slack agent bus (\`#nexus-agents\`).** Address the recipient by NAME — post once and the orchestrator delivers it idle-gated, buffered, and audited (and it reaches agents on other hosts):
@@ -193,8 +207,8 @@ fi
 
 # ── Query prior knowledge from memory store ────────────────────────────────
 memory_section=""
-if [ -x "$NEXUS_TMUX_DIR/memory-recall.py" ]; then
-  memory_section=$("$MEMORY_PYTHON" "$NEXUS_TMUX_DIR/memory-recall.py" "$project_slug" 2>/dev/null || true)
+if [ "${NEXUS_INJECT_MEMORY:-1}" = "1" ] && [ -x "$NEXUS_TMUX_DIR/memory-recall.py" ]; then
+  memory_section=$("$MEMORY_PYTHON" "$NEXUS_TMUX_DIR/memory-recall.py" "$project_slug" --max-tokens "${NEXUS_MEMORY_MAX_TOKENS:-2000}" 2>/dev/null || true)
 fi
 
 # ── Orchestrator seed / restore (Slack-spawned and restored agents) ────────

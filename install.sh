@@ -1364,6 +1364,24 @@ echo "── Step 3.6: MCP auto-load defaults ───────────�
 configure_mcp_defaults
 echo ""
 
+# ── Step 3.7: Agent spawn context ──────────────────────────────
+# open-claude.sh injects situational context into every new agent's opening
+# prompt. These env vars (defaults live in the fleet env.defaults.sh; override
+# per-box in ~/.tmux/env.sh) control how much loads — trim them if fresh agents
+# start with too much context.
+echo "── Step 3.7: Agent spawn context ────────────────────────"
+echo "  open-claude.sh injects context into each new agent's opening prompt."
+echo "  Tune what loads via these env vars (set in ~/.tmux/env.sh to override):"
+echo "    NEXUS_INJECT_CHECKPOINTS  (default 1)     recent checkpoint notes for the repo"
+echo "    NEXUS_CHECKPOINT_DAYS     (default 3)     how many days of checkpoints to include"
+echo "    NEXUS_CHECKPOINT_MAX_KB   (default 0)     cap the checkpoint block size, KB (0 = no cap)"
+echo "    NEXUS_INJECT_MEMORY       (default 1)     'Prior Knowledge' recall from the memory store"
+echo "    NEXUS_MEMORY_MAX_TOKENS   (default 2000)  token budget for the memory recall block"
+echo "    NEXUS_INJECT_CACHE        (default 1)     resume-from-interrupted-session cache (<24h)"
+echo "    NEXUS_INJECT_REGISTRY     (default 1)     Agent Communication + live peer list"
+echo "  Set any INJECT toggle to 0 to omit that block. Less context = faster, cheaper spawns."
+echo ""
+
 # ── Step 4: Global Claude skills ───────────────────────────────
 echo "── Step 4: Global Claude skills ─────────────────────────"
 setup_skills

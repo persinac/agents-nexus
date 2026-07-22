@@ -38,6 +38,19 @@ export SENDMESSAGE_BUS_ENABLED="${SENDMESSAGE_BUS_ENABLED:-1}"
 export SLACK_BUS_ENABLED="${SLACK_BUS_ENABLED:-0}"
 export SLACK_A2A_SAMEHOST="${SLACK_A2A_SAMEHOST:-local}"
 
+# ── Agent spawn context (open-claude.sh opening-prompt injection) ────────────
+# open-claude.sh assembles a new agent's opening prompt from several context
+# blocks. These knobs control which blocks load and how big they are — trim them
+# to shrink the context a fresh agent starts with (faster, cheaper spawns).
+# Override any of them in env.sh (sourced after this file).
+export NEXUS_INJECT_CHECKPOINTS="${NEXUS_INJECT_CHECKPOINTS:-1}"   # recent checkpoint notes for the repo (0 = omit)
+export NEXUS_CHECKPOINT_DAYS="${NEXUS_CHECKPOINT_DAYS:-3}"         # how many days of checkpoints to include
+export NEXUS_CHECKPOINT_MAX_KB="${NEXUS_CHECKPOINT_MAX_KB:-0}"     # cap the checkpoint block size in KB (0 = unlimited)
+export NEXUS_INJECT_MEMORY="${NEXUS_INJECT_MEMORY:-1}"            # 'Prior Knowledge' recall from the memory store (0 = omit)
+export NEXUS_MEMORY_MAX_TOKENS="${NEXUS_MEMORY_MAX_TOKENS:-2000}"  # token budget for the memory recall block
+export NEXUS_INJECT_CACHE="${NEXUS_INJECT_CACHE:-1}"             # resume-from-interrupted-session cache, <24h (0 = omit)
+export NEXUS_INJECT_REGISTRY="${NEXUS_INJECT_REGISTRY:-1}"        # Agent Communication + live peer list (0 = omit)
+
 # ── Anthropic routing (the real degrade fix) ─────────────────────────────────
 # Route through a local LiteLLM gateway ONLY when it actually answers, so Langfuse
 # gets the trace. When there's no gateway (a teammate's box), leave ANTHROPIC_BASE_URL
