@@ -86,7 +86,9 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "REPO_DIR=\"\${REPO_DIR:-$REPO_DIR_DEFAULT}\"" > "$ENV_FILE"
   echo "NOTES_DIR=\"\${NOTES_DIR:-\$HOME/notes}\"" >> "$ENV_FILE"
   echo "AGENTS_NEXUS_DIR=\"\${AGENTS_NEXUS_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}\"" >> "$ENV_FILE"
-  echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-8}\"" >> "$ENV_FILE"
+  # Empty = don't pass --model; agents inherit your Claude default (settings.json / CLI),
+  # e.g. opus[1m]'s 1M window. Set an explicit id here only to override that per box.
+  echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-}\"" >> "$ENV_FILE"
   echo "CLAUDE_EFFORT=\"\${CLAUDE_EFFORT:-xhigh}\"" >> "$ENV_FILE"
   # Inter-agent Slack bus (A2A). EXPORTED so agent-send.sh (an agent subprocess)
   # sees them. SLACK_BUS_ENABLED: attempt the bus for a non-local name (opt-in,
@@ -120,9 +122,9 @@ else
     echo "CHECKPOINT_DIR=\"\${CHECKPOINT_DIR:-\$HOME/vault/Checkpoints}\"" >> "$ENV_FILE"
     echo "Added CHECKPOINT_DIR to ~/.tmux/env.sh"
   fi
-  # Add CLAUDE_MODEL if missing
+  # Add CLAUDE_MODEL if missing (empty = inherit your Claude default; see create branch above)
   if ! grep -q "CLAUDE_MODEL" "$ENV_FILE"; then
-    echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-claude-opus-4-8}\"" >> "$ENV_FILE"
+    echo "CLAUDE_MODEL=\"\${CLAUDE_MODEL:-}\"" >> "$ENV_FILE"
     echo "Added CLAUDE_MODEL to ~/.tmux/env.sh"
   fi
   # Add CLAUDE_EFFORT if missing
