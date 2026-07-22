@@ -7,6 +7,8 @@ dashboards.
 - `prefix+shift+m` — live memory-system health (Postgres/CNS stats; refreshes)
 - `prefix+shift+a` — APM / fleet stats (your APM, agent APM, active agents, today's
   totals; refreshes every ~2s)
+- `prefix+shift+f` — keyword search ("find") over the agent-memory notes store
+  (interactive prompt; ports the dashboard "search notes" feature)
 
 ## Install (opt-in)
 
@@ -27,8 +29,13 @@ Links the plugin **and** appends the two chords to `~/.config/herdr/config.toml`
 - **Fleet APM** (`bin/apm-panel.sh` loops `stats.sh`): APM counters, active-agent count
   (via the substrate seam — herdr or tmux), and today's totals, from
   `$NEXUS_TMUX_DIR/apm.log`.
+- **Memory search** (`bin/memory-search-panel.sh` → `memory-search.py`, rendered by
+  `bin/memory-search-render.py`): an interactive keyword search over `agents.memory_nodes`
+  (embedding-free; the semantic path stays in the dashboard / `agent_memory.cli search`).
+  Type a term; prefix with `p:<project>` or `all:` to scope; `:q` to quit. Self-loads
+  `DATABASE_URL` from the repo `.env` the same way the MCP server does.
 
-Both open as a right split (`--direction right`); close with your herdr pane-close key.
+All open as a right split (`--direction right`); close with your herdr pane-close key.
 
 ## Rollback
 
