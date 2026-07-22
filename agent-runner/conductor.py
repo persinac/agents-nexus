@@ -319,14 +319,22 @@ def _branch(goal, mid):
     When a ticket key is present it already identifies the branch, so the slug is derived from
     the goal with the ticket key + its trailing prose stripped (avoids ugly names like
     `fc-1395-branch-off-origin-main-open-a-standalone-non-dra` slugged from goal instructions),
-    kept short (≤24). Falls back to the ticket alone if nothing meaningful remains."""
+    kept short (≤24). Falls back to the ticket alone if nothing meaningful remains.
+
+    With NO ticket key, the slug is derived from the goal the SAME way — instruction
+    parentheticals stripped, capped ≤24 — so a prose goal ("branch off origin/main; the MR
+    must target main") yields `conductor-branch-off-origin-main` rather than the full sentence.
+    Falls back to the mission id when nothing meaningful remains."""
     src = re.search(r"\b([A-Z][A-Z0-9]+-\d+)\b", goal or "")
     if src:
         # goal text minus the ticket key + a following parenthetical of instructions
         rest = re.sub(r"\(([^)]*)\)", " ", (goal or "").replace(src.group(1), " "))
         slug = _slug(rest)[:24].strip("-")
         return f"{src.group(1).lower()}-{slug}" if slug else src.group(1).lower()
-    return f"conductor-{_slug(_title(goal)) or mid[:6]}"
+    # No ticket: same treatment — drop parentheticals, cap the slug ≤24 (was uncapped ≤48).
+    rest = re.sub(r"\(([^)]*)\)", " ", goal or "")
+    slug = _slug(rest)[:24].strip("-")
+    return f"conductor-{slug or mid[:6]}"
 
 
 def _mission_ws(goal, mid):
