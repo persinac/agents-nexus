@@ -68,32 +68,9 @@ OnUnitActiveSec=120
 WantedBy=timers.target
 EOF
 
-sudo tee /etc/systemd/system/spark-nightly.service << EOF
-[Unit]
-Description=Spark nightly reindex
-
-[Service]
-Type=oneshot
-User=${NEXUS_USER}
-WorkingDirectory=${NEXUS_DIR}
-ExecStart=/bin/bash -c 'task spark:reclaim'
-EOF
-
-sudo tee /etc/systemd/system/spark-nightly.timer << 'EOF'
-[Unit]
-Description=Spark nightly reindex at 2am
-
-[Timer]
-OnCalendar=*-*-* 02:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-
 sudo systemctl daemon-reload
-sudo systemctl enable agents-nexus agents-nexus-arbiter agents-nexus-flush.timer spark-nightly.timer
-sudo systemctl start agents-nexus-flush.timer spark-nightly.timer
+sudo systemctl enable agents-nexus agents-nexus-arbiter agents-nexus-flush.timer
+sudo systemctl start agents-nexus-flush.timer
 
 echo "Done. All units enabled."
 echo "Docker stack is already running — will auto-start on next reboot."

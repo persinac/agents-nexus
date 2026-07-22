@@ -762,63 +762,17 @@ const httpServer = http.createServer((req, res) => {
   }
 
   if (url.pathname === '/api/system/installations') {
+    // Spark (the repo installations index) was removed; nothing to enumerate.
+    // Kept as an empty-200 so the dashboard's InstallationsView degrades cleanly.
     corsJson();
-    try {
-      // Spark's installations.json lives in the spark-index Docker volume,
-      // unreadable from the host — but reachable via docker exec (same pattern
-      // as /api/system/services shelling out to docker).
-      const out = execSync(
-        'docker exec nexus-spark cat /app/data/the-index/installations.json',
-        { encoding: 'utf8', timeout: 10000, maxBuffer: 4 * 1024 * 1024 },
-      );
-      const meta = JSON.parse(out);
-      const now = Date.now();
-      const rows = Object.entries(meta).map(([relPath, rec]) => {
-        const indexedAt = rec.indexed_at || '';
-        const t = indexedAt ? Date.parse(indexedAt) : NaN;
-        const ageSeconds = Number.isNaN(t) ? null : Math.floor((now - t) / 1000);
-        return {
-          relPath,
-          name: relPath.split('/').pop(),
-          indexedAt,
-          lastRemoteTs: rec.last_remote_ts || 0,
-          ageSeconds,
-        };
-      });
-      res.end(JSON.stringify(rows));
-    } catch {
-      res.end('[]');
-    }
+    res.end('[]');
     return;
   }
 
   if (url.pathname === '/api/system/spark-index') {
+    // Spark was removed. Empty-200 so the dashboard's spark-index widget degrades cleanly.
     corsJson();
-    const PY = "import json,lancedb\n" +
-      "from spark.config import SparkConfig\n" +
-      "c=SparkConfig.load()\n" +
-      "o={'embedder':c.embedder}\n" +
-      "o['model']='BAAI/bge-small-en-v1.5' if c.embedder=='fastembed' else c.embedding_model\n" +
-      "try:\n" +
-      "    t=lancedb.connect(str(c.index_path)).open_table('the_index')\n" +
-      "    vf=[f for f in t.schema if f.name=='vector'][0]\n" +
-      "    o['dim']=getattr(vf.type,'list_size',None)\n" +
-      "    o['chunks']=t.count_rows()\n" +
-      "except Exception as e:\n" +
-      "    o['error']=str(e)\n" +
-      "print(json.dumps(o))";
-    try {
-      const out = execFileSync(
-        'docker',
-        ['exec', 'nexus-spark', 'uv', 'run', 'python', '-c', PY],
-        { encoding: 'utf8', timeout: 20000, maxBuffer: 1024 * 1024 },
-      );
-      // uv may emit noise on stderr; stdout's last non-empty line is our JSON.
-      const line = out.trim().split('\n').filter((l) => l.trim().startsWith('{')).pop() || '{}';
-      res.end(line);
-    } catch {
-      res.end('{}');
-    }
+    res.end('{}');
     return;
   }
 

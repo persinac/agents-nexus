@@ -186,7 +186,7 @@ tasks:
       - docker compose down
 
   docker:restart:
-    desc: Restart a single service (e.g. task docker:restart -- spark)
+    desc: Restart a single service (e.g. task docker:restart -- mnemon)
     cmds:
       - docker compose restart {{.CLI_ARGS}}
 
@@ -245,30 +245,6 @@ tasks:
     desc: Bring up just proxy + langfuse ad-hoc (does not change the saved profile)
     cmds:
       - COMPOSE_PROFILES=proxy,langfuse docker compose -f "${NEXUS_COMPOSE_FILE:-docker-compose.yml}" up -d
-
-  # =============================================================================
-  # Spark (semantic repo search)
-  # =============================================================================
-
-  spark:pipeline:
-    desc: Run the full Spark nightly pipeline (reclaim + synthesize)
-    cmds:
-      - bash spark/scripts/spark-pipeline.sh {{.CLI_ARGS}}
-
-  spark:reclaim:
-    desc: Full index rebuild (runs inside the spark container)
-    cmds:
-      - docker compose exec spark uv run spark reclaim {{.CLI_ARGS}}
-
-  spark:activate:
-    desc: Re-index a single repo (e.g. task spark:activate -- my-repo)
-    cmds:
-      - docker compose exec spark uv run spark activate {{.CLI_ARGS}}
-
-  spark:status:
-    desc: Show index stats
-    cmds:
-      - docker compose exec spark uv run spark status
 
   # =============================================================================
   # Langfuse (optional observability — task langfuse:up to start)
@@ -395,11 +371,10 @@ tasks:
       - bash scripts/vault-commit.sh {{.CLI_ARGS}}
 
   nightly:all:
-    desc: Run the full nightly pipeline (repo sync → vault commit → spark)
+    desc: Run the full nightly pipeline (repo sync → vault commit)
     cmds:
       - task: nightly:sync
       - task: nightly:vault-commit
-      - task: spark:pipeline
 
   # =============================================================================
   # Obsidian jobs
@@ -566,22 +541,6 @@ tasks:
     desc: Apply the proposed permission rules from ~/.tmux/permission-suggestions.json to ~/.claude/settings.json
     cmds:
       - python3 scripts/permission-suggest.py --apply
-
-  launchd:install:guilty-spark-nightly:
-    desc: Install launchd agent to run the guilty-spark pipeline (reclaim + synthesize) nightly at 2am
-    vars:
-      NEXUS_DIR:
-        sh: pwd
-    cmds:
-      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.guilty-spark.nightly.plist > ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist
-      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist
-      - echo "Installed — guilty-spark nightly runs at 2am (logs at /tmp/agents-nexus-guilty-spark-nightly.log)"
-
-  launchd:uninstall:guilty-spark-nightly:
-    desc: Remove the guilty-spark nightly launchd agent
-    cmds:
-      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist || true
-      - rm -f ~/Library/LaunchAgents/com.agents-nexus.guilty-spark.nightly.plist
 
   launchd:install:all:
     desc: Install every com.agents-nexus.* launchd job in launchd/*.plist

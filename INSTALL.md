@@ -57,7 +57,6 @@ A numbered TUI lists every Docker service — type a number to toggle, `a` to se
 | proxy | `proxy` | both | — (prompts `ANTHROPIC_API_BASE`) |
 | ollama | `ollama` | both | — |
 | postgres | `postgres` | work only | — |
-| spark | `spark` | both | `ollama` |
 | mnemon | `mnemon` | both | `ollama` (+ `postgres` on work) |
 | dashboard | `dashboard` | both | — |
 | langfuse | `langfuse` | both | — (6-container stack) |
@@ -66,7 +65,7 @@ Pick a subset for a focused box — e.g. **proxy + langfuse** = an observability
 
 ### 4. Per-service configuration
 
-You're only prompted for what the selected services need (the dependency closure runs first, so picking `spark`/`mnemon` auto-enables `ollama`/`postgres`):
+You're only prompted for what the selected services need (the dependency closure runs first, so picking `mnemon` auto-enables `ollama` — and `postgres` on the work flavor):
 
 | Selected | Prompt | Default | Notes |
 |----------|--------|---------|-------|
@@ -74,11 +73,9 @@ You're only prompted for what the selected services need (the dependency closure
 | `postgres` *(work)* | `POSTGRES_PASSWORD` | auto `openssl rand -hex 16` | Or paste your own. Builds the local `DATABASE_URL`. |
 | `mnemon` *(personal)* | `DATABASE_URL` | `postgresql://agents:changeme@localhost:5432/agents?sslmode=disable` | Bring your own Postgres connection string. |
 | `mnemon` | `HOST_TMUX_DIR` | `~/.tmux` | Where mnemon reads tmux event logs. `~` expanded. |
-| `spark` | `REPOS_PATH` | `~/repos` | Directory spark indexes. `~` expanded. |
-| `spark` | GitLab re-indexing? | no | If yes: asks `GITLAB_URL`, `GITLAB_TOKEN`; generates `SPARK_WEBHOOK_SECRET`. |
-| `spark` *(work)* | GitHub integration? | no | If yes: asks `GITHUB_URL`, `GITHUB_TOKEN`. |
-| `spark` | Cloudflare tunnel? | no | If yes: asks `CLOUDFLARE_TUNNEL_TOKEN` (exposes spark publicly). |
 | `langfuse` | — | — | 6 stack secrets generated; pub/secret API keys handled later via `--finish-langfuse`. |
+
+`REPOS_PATH` (default `~/repos`, your repos directory) is written to every profile `.env`.
 
 ### 5. Integrations (host services)
 
@@ -114,7 +111,7 @@ Decline if you want to inspect `.env.<profile>` first or you're on a box without
 
 ## Service selection & `COMPOSE_PROFILES`
 
-Every stack service has a compose profile (`proxy`, `ollama`, `postgres`, `spark`, `mnemon`, `dashboard`, `langfuse`). The installer writes the chosen set to `COMPOSE_PROFILES` in the profile `.env`; Docker Compose reads it natively, so `docker compose up`, `task up`, and `task docker:up` all honor it with no extra flags.
+Every stack service has a compose profile (`proxy`, `ollama`, `postgres`, `mnemon`, `dashboard`, `langfuse`). The installer writes the chosen set to `COMPOSE_PROFILES` in the profile `.env`; Docker Compose reads it natively, so `docker compose up`, `task up`, and `task docker:up` all honor it with no extra flags.
 
 - **Inspect the active set:** `task stack:profiles`
 - **Change it:** `task stack:profiles -- proxy,langfuse` (rewrites the active profile's `.env`)
@@ -125,7 +122,7 @@ Every stack service has a compose profile (`proxy`, `ollama`, `postgres`, `spark
 Profiles created **before** this change have no `COMPOSE_PROFILES`, so a bare `docker compose up` would start **nothing**. Fix it either way (idempotent):
 
 - **Installer path** — `./install.sh --switch <profile>` backfills the prior always-on set automatically. The same backfill runs when you re-point an existing profile during a normal `./install.sh`.
-- **One-liner** — `task stack:profiles -- proxy,ollama,spark,mnemon,dashboard` (add `,postgres` on the work flavor; add `,langfuse` if that box runs Langfuse).
+- **One-liner** — `task stack:profiles -- proxy,ollama,mnemon,dashboard` (add `,postgres` on the work flavor; add `,langfuse` if that box runs Langfuse).
 
 ## Two-phase Langfuse setup
 
@@ -210,7 +207,7 @@ If `.env` doesn't exist yet, the stack won't start cleanly — generate a profil
 
 Native Windows is **not** a supported fleet host — the `tmux/windows/` tree is the legacy, pre-herdr MSYS2 path (no herdr config, no `substrate.sh`, no `substrated` service). The supported way to run the full fleet on Windows hardware is **WSL2**, where the box is just Linux and the entire [Linux](#linux-notes) path applies verbatim (herdr installs via the same `curl`, `substrated` runs as a `systemctl --user` unit, the picker works).
 
-> **Already have a Linux fleet host?** You may not need any of this. herdr supports remote attach — `herdr --remote <nexus-host>` from Windows Terminal drives the fleet running on that box, and you point Claude Code at the `spark` / `agent-memory` MCP endpoints over the SSH/Cloudflare tunnel. Treat Windows as a thin client and skip the install below.
+> **Already have a Linux fleet host?** You may not need any of this. herdr supports remote attach — `herdr --remote <nexus-host>` from Windows Terminal drives the fleet running on that box, and you point Claude Code at the `agent-memory` MCP endpoint over the SSH/Cloudflare tunnel. Treat Windows as a thin client and skip the install below.
 
 ### Steps
 
@@ -249,7 +246,7 @@ See [`docs/herdr-linux-setup.md`](docs/herdr-linux-setup.md) for the herdr subst
 | `ERROR: no active profile` (from `--finish-langfuse`) | You haven't created a profile yet. Run `./install.sh` first. |
 | `WARNING: dashboard/ui/package.json not found, skipping` | Older checkout. `git pull` to get the renamed dashboard layout, then re-run. |
 | `docker compose ... up -d` fails with port collisions | Edit the `*_PORT` lines in `.env.<profile>` and re-run `docker compose up -d`. |
-| `docker compose up -d` starts **no** containers | The active `.env` has no `COMPOSE_PROFILES` (pre-rewrite profile). Backfill it: `./install.sh --switch <profile>` or `task stack:profiles -- proxy,ollama,spark,mnemon,dashboard`. |
+| `docker compose up -d` starts **no** containers | The active `.env` has no `COMPOSE_PROFILES` (pre-rewrite profile). Backfill it: `./install.sh --switch <profile>` or `task stack:profiles -- proxy,ollama,mnemon,dashboard`. |
 | `ANTHROPIC_API_BASE` "variable is not set" error on `up` | The `proxy` profile is active but the var is unset. Add `ANTHROPIC_API_BASE=https://api.anthropic.com` (or your gateway) to `.env`, or drop `proxy` from `COMPOSE_PROFILES`. |
 | Profile env edits not taking effect | The proxy and most services pick env up at container creation, not restart. Run `docker compose up -d --force-recreate <service>` after editing. |
 

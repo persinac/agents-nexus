@@ -10,7 +10,7 @@ Unifies the three spike validations into the real loop:
 
 Hybrid: this runs INSIDE a tmux pane and renders its stream, so `tmux attach` still
 works and it self-registers in ~/.tmux/registry (so the dashboard/peers still see it).
-Memory (mnemon) + spark MCP are passed explicitly — hermetic (setting_sources=[]),
+Memory (mnemon) MCP is passed explicitly — hermetic (setting_sources=[]),
 so no settings.json env clobber and no legacy shell hooks.
 
 Usage:
@@ -46,7 +46,7 @@ CLASSIFY_PY = os.path.join(HOME, ".tmux", ".classify-venv", "bin", "python")
 CLASSIFY_SCRIPT = os.path.join(HOME, ".tmux", "notify-classify.py")
 # Trusted local MCP servers + internal tools auto-allow, mirroring the fleet's
 # settings.json permissions.allow (the CLI never prompts for these).
-AUTO_ALLOW_MCP = ("mcp__agent-memory__", "mcp__spark__")
+AUTO_ALLOW_MCP = ("mcp__agent-memory__",)
 AUTO_ALLOW_EXACT = frozenset({"TodoWrite"})
 
 
@@ -93,7 +93,7 @@ async def classify_tool(name: str, inp: dict):
 
 
 def load_mcp_servers(all_mcp: bool) -> dict:
-    """agent-memory (+ optionally atlassian/datadog/…) from ~/.claude.json; spark from .mcp.json."""
+    """agent-memory (+ optionally atlassian/datadog/…) from ~/.claude.json; project servers from .mcp.json."""
     keep = None if all_mcp else {"agent-memory"}
     servers = {}
     try:
@@ -105,7 +105,7 @@ def load_mcp_servers(all_mcp: bool) -> dict:
         print(f"[runner] warn: could not read ~/.claude.json mcpServers: {e}")
     try:
         proj = json.load(open(os.path.join(REPO, ".mcp.json"))).get("mcpServers", {}) or {}
-        servers.update(proj)              # spark (+ any project servers)
+        servers.update(proj)              # any project servers
     except Exception:
         pass
     return servers
@@ -217,7 +217,7 @@ async def main() -> int:
     ap.add_argument("--name", default=os.environ.get("PROJECT_SLUG") or Path(os.getcwd()).name)
     ap.add_argument("--model", default=os.environ.get("CLAUDE_MODEL", "claude-opus-4-8"))
     ap.add_argument("--cwd", default=os.getcwd())
-    ap.add_argument("--all-mcp", action="store_true", help="load all user MCP servers, not just memory+spark")
+    ap.add_argument("--all-mcp", action="store_true", help="load all user MCP servers, not just memory")
     ap.add_argument("--approval-timeout", type=float, default=120.0)
     ap.add_argument("--exit-on-idle", action="store_true", help="exit when stdin closes and nothing is queued (for tests)")
     args = ap.parse_args()

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Does a hermetic SDK session keep memory (mnemon) + spark MCP — and still proxy?
+"""Does a hermetic SDK session keep memory (mnemon) MCP — and still proxy?
 
 The SDK is hermetic by default (setting_sources=[] loads NO filesystem config), so
 you don't inherit MCP/plugins/hooks unless you opt in. This proves the "explicit"
-path: pass the exact server configs (agent-memory from ~/.claude.json, spark from
-.mcp.json) via mcp_servers and confirm they connect — no shell hooks, no env clobber.
+path: pass the exact server config (agent-memory from ~/.claude.json) via
+mcp_servers and confirm it connects — no shell hooks, no env clobber.
 """
 import os
 SESSION = "spike-mcp-probe"
@@ -21,7 +21,6 @@ MCP = {
         "args": ["-m", "agent_memory.server.mcp_server"],
         "env": {"PYTHONPATH": f"{REPO}/mnemon"},
     },
-    "spark": {"type": "sse", "url": "http://localhost:8343/sse"},
 }
 
 
@@ -30,7 +29,7 @@ async def main():
         model="claude-haiku-4-5-20251001",
         setting_sources=[],                 # hermetic — nothing from disk
         mcp_servers=MCP,                     # ...except what we hand it
-        allowed_tools=["mcp__agent-memory__search_similar", "mcp__spark__spark"],
+        allowed_tools=["mcp__agent-memory__search_similar"],
         permission_mode="bypassPermissions",
         max_turns=1,
         cwd=REPO,

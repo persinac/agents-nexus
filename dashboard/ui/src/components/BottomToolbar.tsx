@@ -319,7 +319,7 @@ export function BottomToolbar({
                 background: hovered === 'installations' ? 'var(--pixel-btn-hover-bg)' : btnBase.background,
               }
         }
-        title="Spark installations index"
+        title="Installations"
       >
         Index
       </button>

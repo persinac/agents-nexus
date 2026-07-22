@@ -64,7 +64,6 @@ Then press `ctrl+a shift+n` and pick a repo — an agent should spawn in a new p
 |---------|:-----:|---------|
 | Spawn/manage/observe agents, context injection, picker | ✅ | (included) |
 | Persistent cross-session **memory** (Postgres/mnemon) | ❌ | the Docker stack — `INSTALL.md` |
-| Semantic **codebase search** (spark) | ❌ | the Docker stack — `INSTALL.md` |
 | Pixel **dashboard** | ❌ | the Docker stack — `INSTALL.md` |
 | **Slack bus** (A2A + control from Slack) | ❌ | `./install.sh --finish-slack` |
 

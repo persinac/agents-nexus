@@ -95,7 +95,7 @@ Then launch an agent from the **herdr repo picker** and confirm your repos list 
 picker is empty, your repo root isn't where the launcher looks — set `REPO_DIR` in `~/.tmux/env.sh`
 to the directory that holds your checkouts.
 
-You're running. Same-box agents message each other by name via the bus; the conductor, spark, and
+You're running. Same-box agents message each other by name via the bus; the conductor and
 your overlay's tooling are all live locally.
 
 ---
@@ -144,8 +144,8 @@ Choices are written to `~/.claude/settings.json` (`enabledPlugins`) and persist 
 After enabling/disabling mid-session, run `/reload-plugins` (or start a new session) to
 connect/disconnect the server.
 
-> The always-on nexus services — **spark** and **agent-memory** — are *not* plugins; they're local
-> SSE services wired in separately, so this prompt never touches them.
+> The always-on nexus service — **agent-memory** — is *not* a plugin; it's a local
+> SSE service wired in separately, so this prompt never touches it.
 
 ---
 

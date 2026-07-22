@@ -125,18 +125,6 @@ export async function fetchInstallations(): Promise<InstallationInfo[]> {
   return (await fetchJson<InstallationInfo[]>('/api/system/installations')) ?? [];
 }
 
-export interface SparkIndexInfo {
-  embedder?: string;
-  model?: string;
-  dim?: number;
-  chunks?: number;
-  error?: string;
-}
-
-export async function fetchSparkIndexInfo(): Promise<SparkIndexInfo | null> {
-  return fetchJson<SparkIndexInfo>('/api/system/spark-index');
-}
-
 export interface CostDay {
   day: string;
   model: string;
