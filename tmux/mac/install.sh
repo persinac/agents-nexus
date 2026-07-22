@@ -225,10 +225,6 @@ setup_mcp_config() {
 
   local config_file="$HOME/.claude/claude_code_config.json"
 
-  # Auto-detect spark binary
-  local spark_cmd
-  spark_cmd=$(command -v spark 2>/dev/null || echo "/usr/local/bin/spark")
-
   # Auto-detect agent-memory dir by searching common locations
   local agent_memory_dir=""
   local search_paths=(
@@ -259,7 +255,6 @@ setup_mcp_config() {
 
   local tmp_file="${config_file}.new"
   sed \
-    -e "s|__SPARK_CMD__|$spark_cmd|g" \
     -e "s|__AGENT_MEMORY_PYTHON__|$agent_memory_python|g" \
     -e "s|__AGENT_MEMORY_DIR__|$agent_memory_dir|g" \
     "$template" > "$tmp_file"

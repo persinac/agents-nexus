@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { fetchInstallations, fetchSparkIndexInfo, type InstallationInfo, type SparkIndexInfo } from '../hooks/useCommandCenterData.js';
+import { fetchInstallations, type InstallationInfo } from '../hooks/useCommandCenterData.js';
 
 const GREEN = '#89d185';
 const AMBER = '#d9a441';
@@ -46,13 +46,11 @@ export function InstallationsView({ onClose }: Props) {
   const [sortCol, setSortCol] = useState<SortCol>('ageSeconds');
   const [sortDesc, setSortDesc] = useState(true);
   const [filter, setFilter] = useState('');
-  const [indexInfo, setIndexInfo] = useState<SparkIndexInfo | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [data, info] = await Promise.all([fetchInstallations(), fetchSparkIndexInfo()]);
+    const data = await fetchInstallations();
     setRows(data);
-    setIndexInfo(info);
     setLoading(false);
   }, []);
 
@@ -115,18 +113,6 @@ export function InstallationsView({ onClose }: Props) {
         <span style={{ fontSize: 22, color: 'var(--pixel-accent)', fontWeight: 'bold' }}>
           INSTALLATIONS ({total})
         </span>
-        {indexInfo && (
-          <span style={{ marginLeft: 12, fontSize: 13, color: DIM }}>
-            {indexInfo.error
-              ? indexInfo.error
-              : [
-                  indexInfo.embedder,
-                  indexInfo.model,
-                  indexInfo.dim != null ? `dim ${indexInfo.dim}` : null,
-                  indexInfo.chunks != null ? `${indexInfo.chunks.toLocaleString()} chunks` : null,
-                ].filter(Boolean).join(' · ')}
-          </span>
-        )}
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}

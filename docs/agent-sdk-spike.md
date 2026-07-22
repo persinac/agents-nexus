@@ -152,7 +152,7 @@ dashboard stream rendering, Windows, worktree picker.
 `agent-runner/runner.py`: long-lived `ClaudeSDKClient` in a tmux pane, renders its
 stream, self-registers in `~/.tmux/registry/<pane>` (`RUNTIME=sdk` + `INBOX=<path>`),
 merges keyboard stdin + inbox file into one turn-boundary-gated queue, gates tools via
-`can_use_tool`, MCP (memory+spark) passed explicitly, `system_prompt` preset+append
+`can_use_tool`, MCP (memory) passed explicitly, `system_prompt` preset+append
 preserves CLAUDE.md. Smoke-tested green.
 
 **Inbound bus delivery (the bridge→SDK re-wire):** `agent-send.sh` `deliver_local` now

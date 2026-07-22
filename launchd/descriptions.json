@@ -1,9 +1,8 @@
 {
   "com.agents-nexus.agent-memory.flush": "Flushes buffered tmux + agent events to the agent-memory DB",
-  "com.agents-nexus.docker": "Starts the agents-nexus Docker stack at login (proxy, langfuse, mnemon, spark, dashboard)",
+  "com.agents-nexus.docker": "Starts the agents-nexus Docker stack at login (proxy, langfuse, mnemon, dashboard)",
   "com.agents-nexus.gl-reviews": "Writes the GitLab review queue into today's Obsidian daily note",
   "com.agents-nexus.gl-reviews-prune": "Prunes stale reviewer assignments from open GitLab MRs",
-  "com.agents-nexus.guilty-spark.nightly": "Nightly: incremental Spark re-index (sync) + decision synthesis from recent MRs",
   "com.agents-nexus.langfuse-cost-snapshot": "Daily: snapshots Langfuse cost/usage into Postgres so spend history survives the 10-day trace TTL",
   "com.agents-nexus.muninn.sync": "Syncs reMarkable rM1 handwritten pages into the Obsidian vault",
   "com.agents-nexus.obs-decay": "Weekly review: surfaces stale Obsidian notes for the user to action",

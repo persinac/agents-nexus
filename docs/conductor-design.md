@@ -4,7 +4,7 @@ The **Conductor** turns a *task* into a *verified result*. It's the hybrid from 
 discussion: a **deterministic spine** (routing, provisioning, dispatch, state, I/O)
 with a few **scoped judgment nodes** (Claude calls that emit structured output the
 spine acts on). It sits on top of the nervous system already built (Slack bus,
-mnemon, spark, proxy/Langfuse, dashboard) and the SDK runner (the worker node).
+mnemon, proxy/Langfuse, dashboard) and the SDK runner (the worker node).
 
 > Name is a placeholder — chosen to disambiguate from `slack-bridge/orchestrator.js`
 > (which does bus presence/delivery, a different job).
@@ -131,7 +131,7 @@ type Profile = {
   model: string                    // claude-opus-4-8 | claude-sonnet-5 | claude-haiku-4-5-...
   effort: "low" | "medium" | "high" | "xhigh"
   tools: string[]                  // allowed built-in tools
-  mcp: string[]                    // ["agent-memory","spark","snowflake",...]
+  mcp: string[]                    // ["agent-memory","snowflake",...]
   permission: "read-only" | "standard" | "autonomous"   // → can_use_tool policy
   skill?: string                   // optional: this profile runs a skill-mission
   verify: VerifySpec
@@ -140,13 +140,13 @@ type Profile = {
 
 | Profile | model / effort | tools + mcp | permission | skill | verify |
 |---|---|---|---|---|---|
-| `backend-build` | opus / high | Bash,Edit,Read,Grep,Glob + memory,spark | standard | — | code: tests, exercise, swarm-review |
+| `backend-build` | opus / high | Bash,Edit,Read,Grep,Glob + memory | standard | — | code: tests, exercise, swarm-review |
 | `frontend-build` | opus / high | + dev-server exercise | standard | — | code: tests, exercise, swarm-review |
-| `investigation` | opus / high | Read,Grep,Bash + snowflake,datadog,memory,spark | read-only | `incident-postmortem` | report: fact-check, sourcing |
-| `data-analysis` | sonnet / high | Read,Bash + snowflake,spark | read-only | `member-provider-investigation` | report: sourcing, reconcile |
+| `investigation` | opus / high | Read,Grep,Bash + snowflake,datadog,memory | read-only | `incident-postmortem` | report: fact-check, sourcing |
+| `data-analysis` | sonnet / high | Read,Bash + snowflake | read-only | `member-provider-investigation` | report: sourcing, reconcile |
 | `reviewer` | opus / high | Read,Grep,Bash | read-only | `swarm-review-mr` | (is the verify stage) |
-| `techdebt` | opus / high | Bash,Edit,Read + memory,spark | standard | `pull-techdebt` | code: tests, swarm-review |
-| `one-shot` | sonnet / standard | Bash,Edit,Read,Grep,Glob + memory,spark | standard | — | code: tests |
+| `techdebt` | opus / high | Bash,Edit,Read + memory | standard | `pull-techdebt` | code: tests, swarm-review |
+| `one-shot` | sonnet / standard | Bash,Edit,Read,Grep,Glob + memory | standard | — | code: tests |
 
 **Skills you already have that ARE missions/profiles:** `pull-techdebt` (building),
 `incident-postmortem` / `member-provider-investigation` (investigation/analysis),
@@ -206,7 +206,7 @@ The conductor was written on the work laptop; it runs on the personal box too (c
   sessions straight to Anthropic (subscription OAuth) + Langfuse. Proven via
   `agent-runner/spike_proxy_test.py` (single haiku turn → `PROXY_OK`).
 - **Config:** `config/conductor.personal.yaml` (the org reporting **off** — Jira/Confluence/MR;
-  `state.jira: false`; only the `agent-memory`+`spark` profiles —
+  `state.jira: false`; only the `agent-memory` profiles —
   `backend-build`/`frontend-build`/`one-shot`; the box has neither snowflake/datadog MCP nor
   the work skills). Symlink `~/.tmux/conductor.yaml → config/conductor.personal.yaml` on this host.
 - **Trello replaces Jira as the tracker here.** `reporting.trello.enabled` walks a mission's

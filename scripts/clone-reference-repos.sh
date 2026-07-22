@@ -46,4 +46,4 @@ for url in "${REPOS[@]}"; do
 done
 
 echo ""
-echo "Done. $DEST ready for Spark indexing."
+echo "Done. $DEST ready."

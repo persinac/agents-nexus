@@ -31,47 +31,47 @@ policy:
 profiles:
   backend-build:
     tools: [Bash, Edit, Write, Read, Grep, Glob]
-    mcp: [agent-memory, spark]
+    mcp: [agent-memory]
     permission: standard
     verify: { mode: code, checks: [tests, exercise, swarm-review] }
 
   frontend-build:
     tools: [Bash, Edit, Write, Read, Grep, Glob]
-    mcp: [agent-memory, spark]
+    mcp: [agent-memory]
     permission: standard
     verify: { mode: code, checks: [tests, exercise, swarm-review] }
 
   techdebt:
     skill: pull-techdebt            # existing skill = the mission procedure
     tools: [Bash, Edit, Write, Read, Grep, Glob]
-    mcp: [agent-memory, spark]
+    mcp: [agent-memory]
     permission: standard
     verify: { mode: code, checks: [tests, swarm-review] }
 
   investigation:
     skill: incident-postmortem
     tools: [Read, Grep, Bash]
-    mcp: [agent-memory, spark, snowflake, datadog]
+    mcp: [agent-memory, snowflake, datadog]
     permission: read-only
     verify: { mode: report, checks: [fact-check, sourcing] }
 
   data-analysis:
     skill: member-provider-investigation
     tools: [Read, Bash]
-    mcp: [agent-memory, spark, snowflake]
+    mcp: [agent-memory, snowflake]
     permission: read-only
     verify: { mode: report, checks: [sourcing, reconcile] }
 
   reviewer:
     skill: swarm-review-mr          # the crew; spawned `policy.reviewer.count` wide
     tools: [Read, Grep, Bash]
-    mcp: [agent-memory, spark]
+    mcp: [agent-memory]
     permission: read-only
     verify: { mode: none }          # this profile IS the verify stage
 
   one-shot:
     tools: [Bash, Edit, Write, Read, Grep, Glob]
-    mcp: [agent-memory, spark]
+    mcp: [agent-memory]
     permission: standard
     verify: { mode: code, checks: [tests] }
 

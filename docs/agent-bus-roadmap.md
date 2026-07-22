@@ -106,7 +106,7 @@ caller awaits (fifo/file poll).
   traffic, pending requests) beside `/agents` + `/health`.
 - Arbiter adds `/api/system/bus` (mirrors `/api/system/agents` — fetch the bridge
   endpoint or read the outbox JSONL); the dashboard gets a **Bus** tab (mirrors the
-  Memory/Spark views), with a sender→recipient force-graph reusing `MemoryGraphView`.
+  Memory view), with a sender→recipient force-graph reusing `MemoryGraphView`.
 
 **Touch points:** `index.js` (`/bus`), `arbiter/index.js` (`/api/system/bus`), dashboard webview.
 **Decisions:** poll vs SSE; read bridge endpoint vs outbox file.
@@ -118,9 +118,8 @@ caller awaits (fifo/file poll).
 **Goal:** inter-agent exchanges become queryable fleet history.
 
 **Approach:** on delivery/ack the bridge best-effort `create_note`s to the agent-memory
-MCP (mnemon SSE `:8330`, same MCP-over-SSE client shape as `spark-resolve.py`), linking
-both agent names + repos. Throttled/summarized (e.g. only `--ask`/`--reply` + non-trivial
-messages) so it doesn't flood the store.
+MCP (mnemon SSE `:8330`), linking both agent names + repos. Throttled/summarized (e.g.
+only `--ask`/`--reply` + non-trivial messages) so it doesn't flood the store.
 
 **Touch points:** `index.js` (post-delivery hook → mnemon client helper).
 **Decisions:** ingest all vs RPC-only vs flagged; sync vs batched; dedup.

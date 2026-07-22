@@ -345,10 +345,8 @@ validate_setup() {
     all_ok=false
   else
     echo "  [ok] ~/.claude/claude_code_config.json"
-    local spark_cmd agent_python
-    spark_cmd=$(node -e "const c=require('$mcp_config');process.stdout.write(c.mcpServers?.['guilty-spark']?.command??'')" 2>/dev/null)
+    local agent_python
     agent_python=$(node -e "const c=require('$mcp_config');process.stdout.write(c.mcpServers?.['agent-memory']?.command??'')" 2>/dev/null)
-    [ -n "$spark_cmd"    ] && { [ -f "$spark_cmd"    ] && echo "  [ok] spark: $spark_cmd"          || echo "  !! spark binary not found: $spark_cmd"; }
     [ -n "$agent_python" ] && { [ -f "$agent_python" ] && echo "  [ok] agent-memory: $agent_python" || echo "  !! agent-memory python not found: $agent_python"; }
   fi
 
@@ -399,8 +397,8 @@ backfill_compose_profiles() {
   local flavor="personal"
   grep -q '^NEXUS_COMPOSE_FILE=docker-compose.work.yml' "$env_path" && flavor="work"
 
-  local profiles="proxy,ollama,spark,mnemon,dashboard"
-  [ "$flavor" = "work" ] && profiles="proxy,ollama,postgres,spark,mnemon,dashboard"
+  local profiles="proxy,ollama,mnemon,dashboard"
+  [ "$flavor" = "work" ] && profiles="proxy,ollama,postgres,mnemon,dashboard"
   # langfuse only if this profile actually configured it (avoid surprise-starting 6 containers).
   grep -q '^LANGFUSE_DB_PASSWORD=.' "$env_path" && profiles="$profiles,langfuse"
 
@@ -628,40 +626,37 @@ interactive_setup() {
   echo "  (all default-on except Langfuse — pick a subset for e.g. an observability-only box)"
   SELECT_TITLE="Toggle services"
   if [ "$flavor" = "work" ]; then
-    SELECT_KEYS=(proxy ollama postgres spark mnemon dashboard langfuse)
+    SELECT_KEYS=(proxy ollama postgres mnemon dashboard langfuse)
     SELECT_LABELS=(
       "proxy      — Anthropic API gateway + Langfuse tap"
       "ollama     — local embedding model host"
       "postgres   — bundled local Postgres (agent memory store)"
-      "spark      — semantic index over your repos"
       "mnemon     — agent memory: event flush + MCP server"
       "dashboard  — command-center web UI"
       "langfuse   — self-hosted trace/observability stack (6 containers)"
     )
-    SELECT_DEFAULTS=(1 1 1 1 1 1 0)
+    SELECT_DEFAULTS=(1 1 1 1 1 0)
   else
-    SELECT_KEYS=(proxy ollama spark mnemon dashboard langfuse)
+    SELECT_KEYS=(proxy ollama mnemon dashboard langfuse)
     SELECT_LABELS=(
       "proxy      — Anthropic API gateway + Langfuse tap"
       "ollama     — local embedding model host"
-      "spark      — semantic index over your repos"
       "mnemon     — agent memory: event flush + MCP server (needs external Postgres)"
       "dashboard  — command-center web UI"
       "langfuse   — self-hosted trace/observability stack (6 containers)"
     )
-    SELECT_DEFAULTS=(1 1 1 1 1 0)
+    SELECT_DEFAULTS=(1 1 1 1 0)
   fi
   multi_select
 
   # Map the toggle state back to per-service booleans (index-shift safe).
-  local sel_proxy=0 sel_ollama=0 sel_postgres=0 sel_spark=0 sel_mnemon=0 sel_dashboard=0 sel_langfuse=0
+  local sel_proxy=0 sel_ollama=0 sel_postgres=0 sel_mnemon=0 sel_dashboard=0 sel_langfuse=0
   local _i
   for ((_i=0; _i<${#SELECT_KEYS[@]}; _i++)); do
     case "${SELECT_KEYS[$_i]}" in
       proxy)     sel_proxy="${SELECT_STATE[$_i]}" ;;
       ollama)    sel_ollama="${SELECT_STATE[$_i]}" ;;
       postgres)  sel_postgres="${SELECT_STATE[$_i]}" ;;
-      spark)     sel_spark="${SELECT_STATE[$_i]}" ;;
       mnemon)    sel_mnemon="${SELECT_STATE[$_i]}" ;;
       dashboard) sel_dashboard="${SELECT_STATE[$_i]}" ;;
       langfuse)  sel_langfuse="${SELECT_STATE[$_i]}" ;;
@@ -669,8 +664,7 @@ interactive_setup() {
   done
 
   # Dependency closure (computed here so we never lean on cross-profile depends_on):
-  #   spark  ⇒ ollama;   mnemon ⇒ ollama (+ postgres on the work flavor only).
-  [ "$sel_spark" = "1" ] && sel_ollama=1
+  #   mnemon ⇒ ollama (+ postgres on the work flavor only).
   if [ "$sel_mnemon" = "1" ]; then
     sel_ollama=1
     [ "$flavor" = "work" ] && sel_postgres=1
@@ -679,7 +673,7 @@ interactive_setup() {
   # Build COMPOSE_PROFILES in a stable order.
   local compose_profiles="" _pair _key _on
   for _pair in "proxy:$sel_proxy" "ollama:$sel_ollama" "postgres:$sel_postgres" \
-               "spark:$sel_spark" "mnemon:$sel_mnemon" "dashboard:$sel_dashboard" \
+               "mnemon:$sel_mnemon" "dashboard:$sel_dashboard" \
                "langfuse:$sel_langfuse"; do
     _key="${_pair%%:*}"; _on="${_pair##*:}"
     [ "$_on" = "1" ] && compose_profiles="${compose_profiles:+$compose_profiles,}$_key"
@@ -696,10 +690,6 @@ interactive_setup() {
   local langfuse_db_password="" langfuse_redis_auth="" langfuse_clickhouse_password=""
   local langfuse_nextauth_secret="" langfuse_salt="" langfuse_encryption_key=""
   local langfuse_public_key="" langfuse_secret_key=""
-  local sel_gitlab=0 sel_cloudflare=0 sel_github=0
-  local gitlab_url="https://gitlab.com" gitlab_token="" spark_webhook_secret=""
-  local cloudflare_tunnel_token=""
-  local github_url="https://api.github.com" github_token=""
   local sel_slack=0 slack_bot_token="" slack_app_token="" slack_channel=""
   local bus_transport="slack" nats_url="" nats_creds="" nats_token="" sel_nats_local=0
 
@@ -738,30 +728,6 @@ interactive_setup() {
     prompt_with_default host_tmux_dir "HOST_TMUX_DIR (where mnemon reads tmux event logs)" "$HOME/.tmux"
   fi
   host_tmux_dir=$(expand_path "$host_tmux_dir")
-
-  # spark ⇒ repo index path + (optional) indexing integrations
-  if [ "$sel_spark" = "1" ]; then
-    echo ""
-    echo "  Spark indexing:"
-    prompt_with_default repos_path "REPOS_PATH (directory spark will index)" "$HOME/repos"
-
-    if prompt_yes_no "Enable GitLab webhook re-indexing?" "n"; then
-      sel_gitlab=1
-      prompt_with_default gitlab_url "GITLAB_URL" "https://gitlab.com"
-      prompt_secret       gitlab_token "GITLAB_TOKEN (personal access token, api scope)"
-      spark_webhook_secret=$(gen_secret_hex 32)
-      echo "  -> SPARK_WEBHOOK_SECRET generated"
-    fi
-    if [ "$flavor" = "work" ] && prompt_yes_no "Enable GitHub integration?" "n"; then
-      sel_github=1
-      prompt_with_default github_url   "GITHUB_URL" "https://api.github.com"
-      prompt_secret       github_token "GITHUB_TOKEN (PAT, repo + workflow scopes)"
-    fi
-    if prompt_yes_no "Expose spark publicly via a Cloudflare tunnel?" "n"; then
-      sel_cloudflare=1
-      prompt_secret cloudflare_tunnel_token "CLOUDFLARE_TUNNEL_TOKEN"
-    fi
-  fi
   repos_path=$(expand_path "$repos_path")
 
   # langfuse ⇒ stack secrets
@@ -852,14 +818,11 @@ interactive_setup() {
     "$sel_langfuse" "$langfuse_db_password" "$langfuse_redis_auth" "$langfuse_clickhouse_password" \
     "$langfuse_nextauth_secret" "$langfuse_salt" "$langfuse_encryption_key" \
     "$langfuse_public_key" "$langfuse_secret_key" \
-    "$sel_gitlab" "$gitlab_url" "$gitlab_token" "$spark_webhook_secret" \
-    "$sel_cloudflare" "$cloudflare_tunnel_token" \
-    "$sel_github" "$github_url" "$github_token" \
     "$sel_proxy" "$anthropic_api_base" \
     "$sel_slack" "$slack_bot_token" "$slack_app_token" "$slack_channel"
 
   # Append the A2A bus transport block. Kept OUT of write_profile_env's positional args
-  # (already 37) — appended so NATS settings never perturb the existing arg alignment.
+  # (already 28) — appended so NATS settings never perturb the existing arg alignment.
   if [ "$bus_transport" = "nats" ]; then
     {
       echo ""
@@ -907,13 +870,9 @@ interactive_setup() {
   echo "    A2A transport   $bus_transport"
   [ "$bus_transport" = "nats" ] && echo "    NATS_URL        $nats_url$([ "$sel_nats_local" = "1" ] && echo "  (local 'nats' container)" || echo "  (remote/shared broker)")"
   [ "$sel_proxy"  = "1" ] && echo "    proxy upstream  $anthropic_api_base"
-  [ "$sel_spark"  = "1" ] && echo "    repos path      $repos_path"
   [ "$sel_mnemon" = "1" ] && echo "    host tmux dir   $host_tmux_dir"
   echo "    integrations:"
   [ "$sel_langfuse"   = "1" ] && echo "      - Langfuse (6 secrets generated; finish with: ./install.sh --finish-langfuse)"
-  [ "$sel_gitlab"     = "1" ] && echo "      - GitLab webhook re-indexing (spark)"
-  [ "$sel_cloudflare" = "1" ] && echo "      - Cloudflare tunnel (spark)"
-  [ "$sel_github"     = "1" ] && echo "      - GitHub integration (spark)"
   [ "$sel_slack"      = "1" ] && echo "      - Slack bridge (finish with: ./install.sh --finish-slack)"
   if [ "$bus_transport" = "nats" ] && [ "$sel_nats_local" != "1" ] && [ -z "$nats_creds" ] && [ -z "$nats_token" ]; then
     echo "      - NATS A2A (no auth yet — finish with: ./install.sh --finish-nats)"
@@ -943,11 +902,8 @@ write_profile_env() {
   local sel_langfuse="${14}" lf_db_pw="${15}" lf_redis="${16}" lf_ch_pw="${17}"
   local lf_nextauth="${18}" lf_salt="${19}" lf_enc="${20}"
   local lf_pub_key="${21}" lf_sec_key="${22}"
-  local sel_gitlab="${23}" gitlab_url="${24}" gitlab_token="${25}" spark_webhook_secret="${26}"
-  local sel_cloudflare="${27}" cf_token="${28}"
-  local sel_github="${29}" github_url="${30}" github_token="${31}"
-  local sel_proxy="${32}" anthropic_api_base="${33}"
-  local sel_slack="${34}" slack_bot_token="${35}" slack_app_token="${36}" slack_channel="${37}"
+  local sel_proxy="${23}" anthropic_api_base="${24}"
+  local sel_slack="${25}" slack_bot_token="${26}" slack_app_token="${27}" slack_channel="${28}"
 
   local env_path
   env_path=$(profile_path "$profile")
@@ -963,7 +919,7 @@ write_profile_env() {
     echo "# ── Service selection ────────────────────────────────"
     echo "# docker compose reads COMPOSE_PROFILES from .env, so every"
     echo "# 'docker compose up' (and 'task up') honors this set."
-    echo "# Valid profiles: proxy, ollama, postgres (work), spark, mnemon, dashboard, langfuse, nats"
+    echo "# Valid profiles: proxy, ollama, postgres (work), mnemon, dashboard, langfuse, nats"
     echo "COMPOSE_PROFILES=$compose_profiles"
     echo "NEXUS_SERVICES=$nexus_services"
     echo ""
@@ -987,7 +943,6 @@ write_profile_env() {
     echo "# ── Ports (compose defaults — edit only if you have collisions) ──"
     echo "OLLAMA_PORT=11434"
     echo "OLLAMA_BASE_URL=http://localhost:11434"
-    echo "SPARK_PORT=8343"
     echo "MNEMON_MCP_PORT=8330"
     echo "DASHBOARD_PORT=8421"
 
@@ -1011,27 +966,6 @@ write_profile_env() {
       echo "LANGFUSE_ENCRYPTION_KEY=$lf_enc"
       echo "LANGFUSE_PUBLIC_KEY=$lf_pub_key"
       echo "LANGFUSE_SECRET_KEY=$lf_sec_key"
-    fi
-
-    if [ "$sel_gitlab" = "1" ]; then
-      echo ""
-      echo "# ── GitLab webhook re-indexing (spark) ───────────────"
-      echo "GITLAB_URL=$gitlab_url"
-      echo "GITLAB_TOKEN=$gitlab_token"
-      echo "SPARK_WEBHOOK_SECRET=$spark_webhook_secret"
-    fi
-
-    if [ "$sel_cloudflare" = "1" ]; then
-      echo ""
-      echo "# ── Cloudflare tunnel (spark) ────────────────────────"
-      echo "CLOUDFLARE_TUNNEL_TOKEN=$cf_token"
-    fi
-
-    if [ "$sel_github" = "1" ]; then
-      echo ""
-      echo "# ── GitHub integration (spark, work flavor) ──────────"
-      echo "GITHUB_URL=$github_url"
-      echo "GITHUB_TOKEN=$github_token"
     fi
 
     if [ "$sel_slack" = "1" ]; then

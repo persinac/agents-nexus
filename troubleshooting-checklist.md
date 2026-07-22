@@ -1,7 +1,6 @@
 # Mini PC Smoke Test Checklist
 
 ## MCP Servers
-- [x] Spark search — working
 - [ ] Agent memory write: run `/checkpoint` — verify it writes to `~/vault/Checkpoints/`
 - [ ] Agent memory read: ask Claude "what do you remember about X?"
 
@@ -30,4 +29,4 @@
 - [ ] Mini PC: `git pull` — change arrives
 
 ## End-to-end
-- [ ] Run a real agent task with Spark + memory + dashboard + checkpoint
+- [ ] Run a real agent task with memory + dashboard + checkpoint

@@ -41,7 +41,7 @@ Or via `task`: `task up && task langfuse:up && task ollama:init`.
 
 Containers you should see:
 
-- `nexus-ollama`, `nexus-spark`, `nexus-mnemon-mcp`, `nexus-mnemon-flush`,
+- `nexus-ollama`, `nexus-mnemon-mcp`, `nexus-mnemon-flush`,
   `nexus-dashboard`, `nexus-proxy`
 - `langfuse-web`, `langfuse-worker`, `langfuse-postgres`, `langfuse-redis`,
   `langfuse-clickhouse`, `langfuse-minio`

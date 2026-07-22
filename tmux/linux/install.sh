@@ -276,7 +276,7 @@ EOF
 fi
 
 # Merge MCP servers into ~/.claude/settings.json
-# Both Spark and agent-memory run as always-on Docker services with SSE transport.
+# agent-memory runs as an always-on Docker service with SSE transport.
 
 # Probe an HTTP(S) endpoint and report reachability without blocking on SSE
 # connections (which would never close on their own). Returns 0 if the server
@@ -337,9 +337,9 @@ NODEOF
     return 0
   fi
 
-  # Idempotent: `claude mcp add` errors on an existing name, so probe first. Only
-  # agent-memory is registered at user scope — spark is project-scoped via the
-  # repo's own .mcp.json, and registering it here would double-define it.
+  # Idempotent: `claude mcp add` errors on an existing name, so probe first.
+  # agent-memory is registered at user scope; any project-scoped MCP servers come
+  # from the repo's own .mcp.json.
   if claude mcp get agent-memory >/dev/null 2>&1; then
     echo "  [ok] MCP server: agent-memory (already registered)"
   elif claude mcp add --transport sse agent-memory --scope user http://localhost:8330/sse >/dev/null 2>&1; then

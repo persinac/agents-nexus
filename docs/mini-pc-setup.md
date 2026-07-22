@@ -1,9 +1,10 @@
 # GEEKOM A7 MAX Setup — agents-nexus Dedicated Box
 
 Dedicated always-on box for running the full agents-nexus stack so the gaming
-PC stays free. Postgres stays on Digital Ocean — only compute and indexing move
-to the box. Client machines (mac, windows) SSH in and connect to MCP endpoints
-over Tailscale.
+PC stays free. Postgres runs locally in Docker by default (the `work` compose
+flavor bundles a `pgvector` container); this box instead points `DATABASE_URL`
+at a Digital Ocean instance, so only compute moves to the box. Client machines
+(mac, windows) SSH in and connect to MCP endpoints over Tailscale.
 
 ## Progress
 
@@ -12,13 +13,13 @@ over Tailscale.
 | 1. OS & Base Setup | :white_check_mark: Done — Ubuntu 25.04, hostname `nexus`, SSH, static IP `192.168.4.94` |
 | 2. Install Dependencies | :white_check_mark: Done — Docker, fnm/Node, uv, Task, Claude Code, Tailscale (`100.75.154.84`), gh, Caddy |
 | 3. Clone & Configure | :white_check_mark: Done — repos cloned via `clone-from-manifest.py` into categorized dirs (personal/example-org/example-repo/community) |
-| 4. Docker Stack | :white_check_mark: Done — Ollama, Spark, mnemon-flush, dashboard all healthy. Spark reindex complete |
+| 4. Docker Stack | :white_check_mark: Done — Ollama, mnemon-flush, dashboard all healthy |
 | 5. Langfuse Observability | :white_check_mark: Done — all 6 containers healthy, account + project created, API keys wired into .env |
 | 6. Caddy Reverse Proxy | :white_check_mark: Done — path-based routing at `http://100.75.154.84` |
-| 7. Autostart (systemd) | :white_check_mark: Done — Docker stack, arbiter, flush timer, spark nightly reindex all enabled |
+| 7. Autostart (systemd) | :white_check_mark: Done — Docker stack, arbiter, flush timer all enabled |
 | 8. tmux Layer | :white_check_mark: Done — Linux install script, hooks, bashrc functions, systemd user units |
 | 9. API Key Rotation | :white_check_mark: Ready — infrastructure in place (`usekey`/`whichkey`/`keys`), activate when needed |
-| 10. Client Machine Setup | :white_check_mark: Done — SSH config, MCP servers (spark SSE + agent-memory over SSH) in `~/.claude.json` |
+| 10. Client Machine Setup | :white_check_mark: Done — SSH config, MCP servers (agent-memory over SSH) in `~/.claude.json` |
 | 11. Stability (idle reboots) | :warning: Stopgap only — C-state fix **falsified** (rebooted 6× with it active 2026-06-22); now on `cpu-boost-off.service` (boost disabled). Root cause = power delivery; **DC-brick swap + BIOS update pending**. See [nexus-reboot-plan.md](./nexus-reboot-plan.md) |
 
 **Pre-work completed:** Repo discovery pipeline built (`scripts/`), manifest
@@ -33,7 +34,6 @@ mini PC — GEEKOM A7 MAX (Ubuntu Server 25.04)
 ├── caddy                              # reverse proxy (all services under one host)
 ├── docker compose
 │   ├── nexus-ollama      :11434       # embeddings
-│   ├── nexus-spark       :8343        # semantic search MCP (SSE)
 │   ├── nexus-mnemon-flush             # event drain daemon
 │   ├── nexus-dashboard   :8421        # pixel office UI (nginx)
 │   └── [langfuse profile] :3000       # optional observability
@@ -97,7 +97,7 @@ fnm install --lts
 fnm use lts-latest
 ```
 
-### 2.5 uv (Python — for mnemon + spark)
+### 2.5 uv (Python — for mnemon)
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -153,7 +153,7 @@ cd ~/repos/agents-nexus
 | `OLLAMA_BASE_URL` | same | `http://localhost:11434` |
 | Everything else | same | same |
 
-**Clone personal repos** for Spark to index — example-org, example-repo,
+**Clone personal repos** into `REPOS_PATH` — example-org, example-repo,
 agents-nexus, and any other personal projects. No work repos on this box.
 
 Use the repo manifest pipeline (see `scripts/README.md`) to clone everything:
@@ -174,17 +174,15 @@ bash ~/repos/agents-nexus/scripts/clone-reference-repos.sh ~/repos/reference
 
 ```bash
 task install          # symlinks tmux conf + scripts, installs dashboard/arbiter/mnemon deps
-task docker:up        # starts Ollama, Spark, mnemon-flush, dashboard
+task docker:up        # starts Ollama, mnemon-flush, dashboard
 task docker:init      # pulls nomic-embed-text into Ollama (~270 MB, one-time)
 task mnemon:migrate   # ensure DB schema is current (hits DO Postgres)
-task spark:reclaim    # full index of all repos — takes a while
 ```
 
 ### Verify
 
 ```bash
 task docker:status              # all containers healthy
-curl localhost:8343/webhook/status  # spark alive
 curl localhost:8421             # dashboard serves HTML
 curl localhost:11434/api/tags   # ollama has nomic-embed-text
 ```
@@ -291,11 +289,6 @@ http://100.75.154.84 {
         reverse_proxy localhost:8421
     }
 
-    # Spark MCP (SSE)
-    handle /spark* {
-        reverse_proxy localhost:8343
-    }
-
     # Arbiter WebSocket bridge
     handle /arbiter* {
         reverse_proxy localhost:8420
@@ -319,7 +312,7 @@ sudo systemctl reload caddy
 ```
 
 > TODO: evaluate whether each service gets its own subdomain via Tailscale
-> MagicDNS (spark.nexus, arbiter.nexus, etc.) vs path-based routing above.
+> MagicDNS (arbiter.nexus, dashboard.nexus, etc.) vs path-based routing above.
 > Subdomains are cleaner for MCP SSE connections.
 
 ---
@@ -407,24 +400,11 @@ OnUnitActiveSec=120
 WantedBy=timers.target
 ```
 
-### Spark nightly reindex
-
-`/etc/systemd/system/spark-nightly.timer`:
-
-```ini
-[Timer]
-OnCalendar=*-*-* 02:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
 ### Enable all
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now agents-nexus agents-nexus-arbiter agents-nexus-flush.timer spark-nightly.timer
+sudo systemctl enable --now agents-nexus agents-nexus-arbiter agents-nexus-flush.timer
 ```
 
 ---
@@ -621,10 +601,6 @@ Host nexus
         "/home/<user>/repos/agents-nexus/mnemon/.venv/bin/python3",
         "-m", "agent_memory.server.mcp_server"
       ]
-    },
-    "spark": {
-      "type": "sse",
-      "url": "http://100.75.154.84:8343/sse"
     }
   }
 }
@@ -632,7 +608,6 @@ Host nexus
 
 > `agent-memory` tunnels stdio over SSH so the MCP server runs on the mini PC
 > but appears local to Claude Code. No network protocol change needed.
-> `spark` is already SSE — just point at the Tailscale IP.
 
 ### Daily workflow from client
 ```bash
@@ -702,14 +677,13 @@ sudo update-grub
 
 | What | How | Benefit |
 |------|-----|---------|
-| Docker stack (Ollama, Spark, dashboard, mnemon-flush) | Runs 24/7 via systemd | No start/stop when gaming |
+| Docker stack (Ollama, dashboard, mnemon-flush) | Runs 24/7 via systemd | No start/stop when gaming |
 | Tmux agent orchestration | SSH in, run `work` | Agents run even when PC is off |
 | Scheduled agents | `claude /schedule` or cron triggers | Nightly PR reviews, health checks fire reliably |
-| Spark webhook receiver | Cloudflare tunnel or Tailscale funnel | Auto-reindex on merge while AFK |
-| Centralized MCP servers | Spark + mnemon as SSE servers | Any device connects to same memory + search |
+| Centralized MCP servers | mnemon as an SSH-tunneled server | Any device connects to same memory |
 | Transcript aggregation | All JSONL logs on one machine | Single source for agent history |
 | Langfuse observability | `task langfuse:up` via compose profile | Trace all agent memory ops, accessible from any device |
-| Git mirror / repo sync | Cron `git fetch --all` nightly | Spark indexes fresh personal code |
+| Git mirror / repo sync | Cron `git fetch --all` nightly | Fresh personal code on the box |
 
 ## What Stays on Client Machines
 
@@ -723,12 +697,12 @@ sudo update-grub
 ## Open Questions / TODOs
 
 - [ ] Evaluate Tailscale MagicDNS subdomains vs Caddy path routing
-      (e.g. `spark.nexus.ts.net` instead of `<ip>:8343`)
+      (e.g. `dashboard.nexus.ts.net` instead of `<ip>:8421`)
 - [ ] SSH over MCP for mnemon vs converting mnemon to SSE transport
       (SSE would remove the SSH dependency but needs more work in mnemon)
 - [ ] `install.sh` root script — detect Linux and delegate to tmux/linux/install.sh
 - [ ] Git clone strategy for repos on mini PC (bare clone + fetch, or full clones)
       Repos: example-org, example-repo, and personal projects only — no work repos
-- [x] Disk sizing — 1TB NVMe, plenty for personal repos + Spark index + Langfuse volumes
+- [x] Disk sizing — 1TB NVMe, plenty for personal repos + Langfuse volumes
 - [ ] Auth on caddy — at minimum HTTP basic auth in front of dashboard + arbiter
       before exposing via Tailscale (Tailscale ACLs may be sufficient)

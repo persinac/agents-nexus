@@ -13,7 +13,7 @@
 > - Slack tokens are fetched at launch by
 >   `scripts/secrets/secret-run.sh --project nexus --config prd …` → Doppler.
 > - Nexus IPs: LAN `192.168.4.94`, Tailscale `100.75.154.84`. Shared services:
->   spark SSE `:8343`, agent-memory (mnemon) over SSH, proxy `:4000`, dashboard `:8421`.
+>   agent-memory (mnemon) over SSH, proxy `:4000`, dashboard `:8421`.
 
 Naming: nexus = `alex-nexus`. Use **`alex-laptop`** for the laptop
 (`SLACK_PRESENCE_HOST`). Keep agent names host-unique, or address the specific one
@@ -33,7 +33,6 @@ two bridges federating.
 |----------------|----------------------------------------------|-------------------------------------|
 | Slack bridge   | **Local** (Node, presence on)                | Local (unchanged)                   |
 | Agents/substrate | 1+ Claude Code session (sessionstart hook) | Full herdr/tmux + hook set          |
-| Search (spark) | Point at nexus `:8343` over Tailscale        | Own local spark container           |
 | Memory (mnemon)| Point at nexus over SSH                       | Own local mnemon                    |
 | Model traffic  | Laptop's own Anthropic login, **direct**     | Own local proxy (`:4000`) + Langfuse|
 | Docker stack   | none                                          | `task docker:up`                    |
@@ -44,7 +43,7 @@ two bridges federating.
 ## Prereqs (laptop, one-time)
 
 1. **Tailscale** — `tailscale up`; confirm it can reach nexus:
-   `ping 100.75.154.84` and `curl http://100.75.154.84:8343/webhook/status`.
+   `ping 100.75.154.84` and `curl http://100.75.154.84:8421` (dashboard).
 2. **Deps** — Node (fnm or winget), Git, Docker Desktop (WSL2 backend; needed only
    for the full phase), Claude Code (`npm i -g @anthropic-ai/claude-code`; run once to
    log in). `tmux/windows/install-winget.ps1` bootstraps most of this.
@@ -96,7 +95,6 @@ Laptop `~/.claude.json` (from mini-pc-setup Phase 10):
 
 ```json
 { "mcpServers": {
-  "spark": { "type": "sse", "url": "http://100.75.154.84:8343/sse" },
   "agent-memory": { "type": "stdio", "command": "ssh",
     "args": ["nexus", "/home/persinac/repos/agents-nexus/mnemon/.venv/bin/python3",
              "-m", "agent_memory.server.mcp_server"] }
@@ -108,7 +106,7 @@ Don't route through nexus's `:4000` yet — that just adds a nexus dependency yo
 again in the full phase.
 
 **Exit criteria for thin:** messages flow both directions by `host/name`, and laptop
-agents can `search_similar` / `spark` against the shared fleet. Federation proven.
+agents can `search_similar` against the shared fleet. Federation proven.
 
 ---
 
@@ -116,7 +114,7 @@ agents can `search_similar` / `spark` against the shared fleet. Federation prove
 
 Do these once thin is proven; each is independent.
 
-1. **Local stack:** `task docker:up` (Docker Desktop) → own ollama + spark + mnemon +
+1. **Local stack:** `task docker:up` (Docker Desktop) → own ollama + mnemon +
    dashboard. Repoint the laptop's MCP config from nexus IPs to `localhost`. Consider
    skipping the heavy Langfuse profile at first — the laptop chassis is smaller.
 2. **Own proxy + tracing:** bring up the `nexus-proxy` container locally so model traffic
@@ -143,7 +141,7 @@ Do these once thin is proven; each is independent.
 - **Path translation** `C:/…` ↔ `/c/…` — the repo's `tmux/windows` env already handles it;
   set `REPOS_PATH` / `HOST_TMUX_DIR` per the mini-pc-setup Phase-3 table.
 - **Docker Desktop resource caps** (WSL2) — the full stack is heavy for a laptop; start
-  with the thin service set (ollama+spark+mnemon), add Langfuse only if you want traces.
+  with the thin service set (ollama+mnemon), add Langfuse only if you want traces.
 - **Name collisions** across hosts — rely on `alex-laptop/…` vs `alex-nexus/…`.
 
 ---

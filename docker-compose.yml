@@ -1,7 +1,9 @@
 name: agents-nexus
 
-# Knowledge stack: Ollama, Spark, mnemon flush daemon, dashboard UI.
-# Postgres is cloud-hosted (DigitalOcean) — set DATABASE_URL in .env.
+# Knowledge stack: Ollama, mnemon flush daemon, dashboard UI.
+# This (personal) flavor has no Postgres container — set DATABASE_URL in .env to a
+# Postgres you provide (local install or cloud/managed). The `work` flavor instead
+# bundles a local pgvector container by default.
 # Arbiter runs as a systemd user service (needs host tmux socket)
 #
 # First-time setup:
@@ -47,45 +49,6 @@ services:
         echo "[nexus] models ready"
 
   # ── Knowledge Services ───────────────────────────────────────────────────
-
-  # Spark — semantic index over all repos
-  spark:
-    profiles: ["spark"]
-    build:
-      context: ./spark
-    container_name: nexus-spark
-    restart: always
-    environment:
-      OLLAMA_API_BASE: http://ollama:11434
-      SPARK_CONFIG: /app/config.yaml
-      SPARK_INSTALLATIONS_PATH: /repos
-      SPARK_INDEX_PATH: /app/data/the-index
-      # Embedder backend. Default keeps the local Ollama path; set SPARK_EMBEDDER=bedrock
-      # in .env (with the AWS_* keys below) to offload embedding to AWS Bedrock
-      # (Titan Text v2, 1024-dim). Switching embedders needs a full `task spark:reclaim`
-      # — the index is dropped + rebuilt at the new dimension.
-      SPARK_EMBEDDER: ${SPARK_EMBEDDER:-litellm}
-      # Bedrock credentials (only read when SPARK_EMBEDDER=bedrock). Long-lived IAM
-      # keys are preferred over SSO on an unattended box — SSO tokens expire and
-      # would fail write-time embedding mid-reclaim. boto3 picks these up from env.
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      # Quiet LanceDB's benign manifest-namespace WARN spam.
-      RUST_LOG: ${RUST_LOG:-error}
-      GITLAB_URL: ${GITLAB_URL:-}
-      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
-      SPARK_WEBHOOK_SECRET: ${SPARK_WEBHOOK_SECRET:-}
-    volumes:
-      - ./spark/config.yaml:/app/config.yaml:ro
-      - ${REPOS_PATH:?Set REPOS_PATH in .env}:/repos:ro
-      - spark-index:/app/data/the-index
-    ports:
-      - "${SPARK_PORT:-8343}:8343"
-    command: ["serve", "--transport", "sse", "--host", "0.0.0.0", "--port", "8343"]
-    depends_on:
-      ollama:
-        condition: service_healthy
 
   # mnemon flush daemon — drains ~/.tmux/memory-events.jsonl into Postgres every 2 min
   mnemon-flush:
@@ -375,7 +338,6 @@ services:
 
 volumes:
   ollama-data:
-  spark-index:
   langfuse-postgres-data:
   langfuse-redis-data:
   langfuse-minio-data:

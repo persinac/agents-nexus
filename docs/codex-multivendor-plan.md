@@ -57,13 +57,12 @@ codex exec --skip-git-repo-check -s read-only \
 Expect `NEXUS_OK`. If it prompts for login → `codex login` (ChatGPT) first.
 
 ### P3. Share the fleet MCP stack with codex  *(makes codex memory-aware — Tier 0 dep)*
-Claude agents load MCP from `~/.claude.json` (`mcpServers`) + repo `.mcp.json` (spark).
-Mirror the two that exist on this box into codex:
+Claude agents load MCP from `~/.claude.json` (`mcpServers`).
+Mirror `agent-memory` into codex:
 ```bash
 # read the exact launch command/env from ~/.claude.json first, then:
 codex mcp add agent-memory --env <K=V…> -- <command from ~/.claude.json mcpServers.agent-memory>
-codex mcp add spark        --env <K=V…> -- <command from .mcp.json spark>
-codex mcp list   # confirm both register
+codex mcp list   # confirm it registers
 ```
 > `codex mcp add <NAME> [--env K=V]… -- <COMMAND>…` (stdio) or `--url <URL>` (HTTP).
 > agent-memory is the shared project memory — same `project: agents-nexus` notes the
@@ -91,7 +90,7 @@ codex mcp list   # confirm both register
 
 - Ad-hoc interactive: `cd <worktree> && codex` (trusted dir, no dialog).
 - Ad-hoc headless: `codex exec -C <dir> -s workspace-write "<task>"`.
-- Memory-aware: after P3, in a codex session it can call `agent-memory` /`spark` tools —
+- Memory-aware: after P3, in a codex session it can call `agent-memory` tools —
   same notes the claude fleet writes. Test: ask codex to
   *"search agent-memory (project agents-nexus) for the OmniRoute audit"* → it should find it.
 - **Optional:** drop an `AGENTS.md` (codex's `CLAUDE.md` analog) at repo roots you'll use
@@ -188,7 +187,7 @@ actually execute this subtask" function. `spawn_worker` and the DB contract stay
    backend-build-codex:
      vendor: codex               # NEW — absent/`claude` = current SDK path
      tools: [Bash, Edit, Write, Read, Grep, Glob]   # advisory; codex uses its own toolset
-     mcp: [agent-memory, spark]  # mirrored into codex via `codex mcp add` (P3)
+     mcp: [agent-memory]  # mirrored into codex via `codex mcp add` (P3)
      permission: standard        # → -s workspace-write
      verify: { mode: code, checks: [tests] }
    ```
@@ -395,7 +394,7 @@ so **`/foo` is N/A there** — you either **inline the command body** into the p
 and runs; a `codex exec` worker completes a skill-driven subtask with no slash involved.
 **Rollback:** `rm` the prompts/skills symlinks; `codex plugin remove <name>`. Nothing claude-side changes.
 **Risk:** low, but audit symlinked skills for Claude-only tool/MCP references before trusting them
-under codex (tool names and MCP server IDs must actually resolve in codex — P3 covers agent-memory/spark).
+under codex (tool names and MCP server IDs must actually resolve in codex — P3 covers agent-memory).
 
 ---
 
@@ -459,12 +458,12 @@ Corrections to fold into the tiers before/while coding:
 - **`workspace-write` writable roots** = `[workdir, /tmp, $TMPDIR]` (exec header) — worktree
   writes *would* be allowed once the sandbox can initialize.
 
-**P3 (share fleet MCP into codex) — functionally BLOCKED (not a T1 blocker).** Both
-`agent-memory` (`:8330/sse`) and `spark` (`:8343/sse`) are **SSE-transport**; codex `mcp add --url`
-speaks **streamable HTTP** only. `codex mcp add` registered them but `codex mcp list` shows
-`Auth: Unsupported` and a `codex exec` sees **no MCP tools** (`MEM_NONE`). Removed them again to
+**P3 (share fleet MCP into codex) — functionally BLOCKED (not a T1 blocker).**
+`agent-memory` (`:8330/sse`) is **SSE-transport**; codex `mcp add --url`
+speaks **streamable HTTP** only. `codex mcp add` registered it but `codex mcp list` shows
+`Auth: Unsupported` and a `codex exec` sees **no MCP tools** (`MEM_NONE`). Removed it again to
 keep the reviewer clean. Fix for Tier 0's "citizen not silo" goal: expose a streamable-HTTP `/mcp`
-endpoint on the memory/spark servers (FastMCP can serve both), or add an SSE→HTTP shim, or a stdio
+endpoint on the memory server (FastMCP can serve both), or add an SSE→HTTP shim, or a stdio
 wrapper. **T1 doesn't need this** (the reviewer is verdict-only, no MCP).
 
 **Blocker C fix — APPLIED 2026-07-20: option 1.**

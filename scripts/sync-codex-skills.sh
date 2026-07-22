@@ -8,7 +8,7 @@
 # — they already inline the SKILL.md body (Tier 2, gap F).
 #
 # SKIP-list: skills whose CORE function is a Claude-only MCP server codex can't consume
-# (P3 — our agent-memory/spark/etc. are SSE; codex speaks streamable-HTTP only). Skills that
+# (P3 — our agent-memory/etc. are SSE; codex speaks streamable-HTTP only). Skills that
 # merely have an OPTIONAL MCP step (excalidraw upload, ui-ux Skill-composition) are still
 # synced — their Bash/Read/Write core works under codex, the optional step just degrades.
 #

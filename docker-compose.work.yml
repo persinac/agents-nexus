@@ -98,47 +98,6 @@ services:
 
   # ── Knowledge Services ───────────────────────────────────────────────────
 
-  spark:
-    profiles: ["spark"]
-    build:
-      context: ./spark
-    container_name: nexus-spark
-    restart: always
-    environment:
-      OLLAMA_API_BASE: http://ollama:11434
-      SPARK_EMBEDDER: bedrock
-      SPARK_CONFIG: /app/config.yaml
-      SPARK_INSTALLATIONS_PATH: /repos
-      SPARK_INDEX_PATH: /app/data/the-index
-      AWS_PROFILE: dev-engineer
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-      # Quiet LanceDB's benign manifest-namespace WARN on the read-only index mount.
-      RUST_LOG: ${RUST_LOG:-error}
-      GITLAB_URL: ${GITLAB_URL:-}
-      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      SPARK_WEBHOOK_SECRET: ${SPARK_WEBHOOK_SECRET:-}
-    volumes:
-      - ./spark/config.yaml:/app/config.yaml:ro
-      - ${REPOS_PATH:?Set REPOS_PATH in .env}:/repos:ro
-      # Host owns writes (nightly/reclaim); container serves the canonical
-      # bedrock index READ-ONLY. Bedrock query-time embedding uses the mounted
-      # SSO credential cache (no in-container refresh — token expiry tolerated).
-      - ${HOME}/.spark-index/bedrock-rich2:/app/data/the-index:ro
-      - ${HOME}/.aws:/root/.aws:ro
-    ports:
-      - "${SPARK_PORT:-8343}:8343"
-    command: ["serve", "--transport", "sse", "--host", "0.0.0.0", "--port", "8343"]
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8343/sse', timeout=2)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    depends_on:
-      ollama:
-        condition: service_healthy
-
   mnemon-flush:
     profiles: ["mnemon"]
     build:
@@ -447,7 +406,6 @@ volumes:
   postgres-data:
   ollama-data:
   nats-data:
-  spark-index:
   langfuse-postgres-data:
   langfuse-redis-data:
   langfuse-minio-data:

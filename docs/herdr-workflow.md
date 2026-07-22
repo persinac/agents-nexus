@@ -133,7 +133,7 @@ The organization model above is now implemented behind the substrate seam (commi
   a bare name resolves when unique; `workspace/name` scopes; parsed **right-to-left** with a
   known-host test so it coexists with the legacy cross-PC `host/name` (`mac/general` still
   routes to the bus; `search/example-service` is a local workspace). Labels may contain `/`
-  (`mission/spark-reclaim/agent7`); match is full-label-or-slug.
+  (`mission/db-migrate/agent7`); match is full-label-or-slug.
 - **herdr enforces globally-unique names only for agents IT starts** (`agent start` rejects a
   dup) — so bare-name addressing resolves for picker/seam-launched agents. **But the shared
   `interactive` bucket also collects human-launched Claude Code sessions**, which register via
