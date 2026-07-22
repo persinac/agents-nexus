@@ -206,6 +206,22 @@ def test_branch_slug_prefers_ticket():
     assert C._branch("do a thing", "mabcdef").startswith("conductor-")
 
 
+def test_branch_slug_ticketless_prose_is_short():
+    """Cosmetic: a ticketless prose goal must yield a SHORT conductor-<slug> (≤24 slug), with
+    instruction parentheticals stripped — not the whole sentence slugged (was uncapped ≤48)."""
+    b = C._branch("branch off origin/main; the MR must target main", "mabcdef")
+    assert b.startswith("conductor-"), b
+    slug = b[len("conductor-"):]
+    assert len(slug) <= 24, (b, len(slug))
+    assert "must-target-main" not in b, b          # tail of the sentence dropped by the ≤24 cap
+    # parenthetical instructions are stripped, same as the ticket path
+    p = C._branch("refactor the widget (branch off origin/main; open an MR)", "m222222")
+    assert "open-an-mr" not in p and "branch-off" not in p, p
+    assert p.startswith("conductor-refactor-the-widget") or p.startswith("conductor-refactor"), p
+    # empty/garbage goal still falls back to the mission id
+    assert C._branch("", "mdeadbeef") == "conductor-mdeadb"
+
+
 # ── pytest-free runner (the venv has no pytest) ────────────────────────────────
 if __name__ == "__main__":
     import sys
