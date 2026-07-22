@@ -2,9 +2,9 @@
 
 The fastest path from "I have Claude Code" to "I'm driving a fleet of agents." This is the
 **minimal trial**: the multiplexer + the spawn/picker UX, with the heavy knowledge stack
-(memory, search, dashboard, Slack) left OFF. Everything degrades gracefully, so it just runs.
+(memory, search, Slack) left OFF. Everything degrades gracefully, so it just runs.
 
-For the full setup (persistent memory, semantic search, the dashboard, the Slack bus), see
+For the full setup (persistent memory, semantic search, the Slack bus), see
 [`INSTALL.md`](INSTALL.md) and the profile guides once you've kicked the tires here.
 
 ## What you need
@@ -64,7 +64,6 @@ Then press `ctrl+a shift+n` and pick a repo — an agent should spawn in a new p
 |---------|:-----:|---------|
 | Spawn/manage/observe agents, context injection, picker | ✅ | (included) |
 | Persistent cross-session **memory** (Postgres/mnemon) | ❌ | the Docker stack — `INSTALL.md` |
-| Pixel **dashboard** | ❌ | the Docker stack — `INSTALL.md` |
 | **Slack bus** (A2A + control from Slack) | ❌ | `./install.sh --finish-slack` |
 
 None of these block the trial — the fleet notices they're absent and skips them.

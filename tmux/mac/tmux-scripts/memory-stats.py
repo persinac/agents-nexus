@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """memory-stats.py — single-shot health stats in JSON format.
 
-Used by the pixel-dashboard bridge server to serve /api/memory/stats.
+Used by the herdr command-center panel (nexus-observe) for the memory-health summary.
 Outputs one JSON object to stdout, or {"error": "..."} on failure.
 """
 

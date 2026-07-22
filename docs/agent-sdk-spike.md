@@ -145,7 +145,7 @@ delivery semantics, and the permission gate all carry over.
 real loop: blocking inbox read when idle → deliver at boundary → `can_use_tool` gate
 wired to the real litellm classifier + Slack approver. Then decide fleet rollout vs.
 keeping it a single opt-in agent. Out of scope until then: install.sh/Taskfile/launchd,
-dashboard stream rendering, Windows, worktree picker.
+Windows, worktree picker.
 
 ## Runner (cut 1) + inbound bus delivery — done
 

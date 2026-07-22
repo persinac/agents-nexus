@@ -13,7 +13,7 @@
 > - Slack tokens are fetched at launch by
 >   `scripts/secrets/secret-run.sh --project nexus --config prd …` → Doppler.
 > - Nexus IPs: LAN `192.168.4.94`, Tailscale `100.75.154.84`. Shared services:
->   agent-memory (mnemon) over SSH, proxy `:4000`, dashboard `:8421`.
+>   agent-memory (mnemon) over SSH, proxy `:4000`.
 
 Naming: nexus = `alex-nexus`. Use **`alex-laptop`** for the laptop
 (`SLACK_PRESENCE_HOST`). Keep agent names host-unique, or address the specific one
@@ -43,7 +43,7 @@ two bridges federating.
 ## Prereqs (laptop, one-time)
 
 1. **Tailscale** — `tailscale up`; confirm it can reach nexus:
-   `ping 100.75.154.84` and `curl http://100.75.154.84:8421` (dashboard).
+   `ping 100.75.154.84` and `curl http://100.75.154.84:4000` (proxy).
 2. **Deps** — Node (fnm or winget), Git, Docker Desktop (WSL2 backend; needed only
    for the full phase), Claude Code (`npm i -g @anthropic-ai/claude-code`; run once to
    log in). `tmux/windows/install-winget.ps1` bootstraps most of this.
@@ -114,8 +114,8 @@ agents can `search_similar` against the shared fleet. Federation proven.
 
 Do these once thin is proven; each is independent.
 
-1. **Local stack:** `task docker:up` (Docker Desktop) → own ollama + mnemon +
-   dashboard. Repoint the laptop's MCP config from nexus IPs to `localhost`. Consider
+1. **Local stack:** `task docker:up` (Docker Desktop) → own ollama + mnemon.
+   Repoint the laptop's MCP config from nexus IPs to `localhost`. Consider
    skipping the heavy Langfuse profile at first — the laptop chassis is smaller.
 2. **Own proxy + tracing:** bring up the `nexus-proxy` container locally so model traffic
    is traced to the laptop's Langfuse and the laptop keeps working when nexus is down.

@@ -91,16 +91,6 @@ task langfuse:cost-snapshot     # run the snapshot now (idempotent)
 task langfuse:cost              # print recent daily spend by model from Postgres
 ```
 
-**Dashboard "Cost" view:**
-- Arbiter endpoint `GET /api/system/cost` (`arbiter/index.js`) reads the rollup via
-  `docker exec nexus-postgres psql … json_agg`, mirroring `/api/system/installations`.
-- `dashboard/ui/src/components/CostView.tsx` renders it (daily cost-by-model table +
-  bars), opened from the **Cost** button in `BottomToolbar`.
-
-**Activation after deploying these changes:**
-```bash
-# 1. rebuild the dashboard image (UI is baked in at build time)
-docker compose -f docker-compose.work.yml up -d --build dashboard
-# 2. restart the arbiter so it serves /api/system/cost
-#    (it runs as `npm start`; restart it in its own session/window)
-```
+**Viewing the rollup:**
+- `task langfuse:cost` prints recent daily spend by model straight from the
+  `agents.langfuse_cost_daily` Postgres rollup.

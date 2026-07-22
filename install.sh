@@ -11,8 +11,7 @@
 #   ./install.sh --finish-slack        # paste Slack bridge tokens after first run
 #   ./install.sh --finish-nats         # set NATS broker URL + auth (the cross-machine step)
 #   ./install.sh --overlay <url|path>  # snap in a private "plugs" overlay (compose: run per overlay)
-#   ./install.sh --non-interactive     # deps + skills + dashboard only (no prompts)
-#   ./install.sh --no-ui               # skip dashboard npm setup
+#   ./install.sh --non-interactive     # deps + skills only (no prompts)
 #
 # Supported platforms: macOS, Linux. Windows path is left in place but no
 # longer actively maintained against the interactive flow.
@@ -42,7 +41,6 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLATFORM_DIR="$REPO_DIR/tmux/$OS"
 
 # ── Flags ──────────────────────────────────────────────────────
-SKIP_UI=false
 INTERACTIVE=true
 PROFILE_ARG=""
 MODE="install"   # install | switch | finish-langfuse | finish-slack | finish-nats | overlay
@@ -51,7 +49,6 @@ OVERLAY_REF=""   # --overlay-ref <branch/tag/sha>
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --no-ui)            SKIP_UI=true ;;
     --non-interactive)  INTERACTIVE=false ;;
     --profile)          shift; PROFILE_ARG="${1:-}" ;;
     --switch)           shift; PROFILE_ARG="${1:-}"; MODE="switch" ;;
@@ -397,8 +394,8 @@ backfill_compose_profiles() {
   local flavor="personal"
   grep -q '^NEXUS_COMPOSE_FILE=docker-compose.work.yml' "$env_path" && flavor="work"
 
-  local profiles="proxy,ollama,mnemon,dashboard"
-  [ "$flavor" = "work" ] && profiles="proxy,ollama,postgres,mnemon,dashboard"
+  local profiles="proxy,ollama,mnemon"
+  [ "$flavor" = "work" ] && profiles="proxy,ollama,postgres,mnemon"
   # langfuse only if this profile actually configured it (avoid surprise-starting 6 containers).
   grep -q '^LANGFUSE_DB_PASSWORD=.' "$env_path" && profiles="$profiles,langfuse"
 
@@ -626,31 +623,29 @@ interactive_setup() {
   echo "  (all default-on except Langfuse — pick a subset for e.g. an observability-only box)"
   SELECT_TITLE="Toggle services"
   if [ "$flavor" = "work" ]; then
-    SELECT_KEYS=(proxy ollama postgres mnemon dashboard langfuse)
+    SELECT_KEYS=(proxy ollama postgres mnemon langfuse)
     SELECT_LABELS=(
       "proxy      — Anthropic API gateway + Langfuse tap"
       "ollama     — local embedding model host"
       "postgres   — bundled local Postgres (agent memory store)"
       "mnemon     — agent memory: event flush + MCP server"
-      "dashboard  — command-center web UI"
       "langfuse   — self-hosted trace/observability stack (6 containers)"
     )
-    SELECT_DEFAULTS=(1 1 1 1 1 0)
+    SELECT_DEFAULTS=(1 1 1 1 0)
   else
-    SELECT_KEYS=(proxy ollama mnemon dashboard langfuse)
+    SELECT_KEYS=(proxy ollama mnemon langfuse)
     SELECT_LABELS=(
       "proxy      — Anthropic API gateway + Langfuse tap"
       "ollama     — local embedding model host"
       "mnemon     — agent memory: event flush + MCP server (needs external Postgres)"
-      "dashboard  — command-center web UI"
       "langfuse   — self-hosted trace/observability stack (6 containers)"
     )
-    SELECT_DEFAULTS=(1 1 1 1 0)
+    SELECT_DEFAULTS=(1 1 1 0)
   fi
   multi_select
 
   # Map the toggle state back to per-service booleans (index-shift safe).
-  local sel_proxy=0 sel_ollama=0 sel_postgres=0 sel_mnemon=0 sel_dashboard=0 sel_langfuse=0
+  local sel_proxy=0 sel_ollama=0 sel_postgres=0 sel_mnemon=0 sel_langfuse=0
   local _i
   for ((_i=0; _i<${#SELECT_KEYS[@]}; _i++)); do
     case "${SELECT_KEYS[$_i]}" in
@@ -658,7 +653,6 @@ interactive_setup() {
       ollama)    sel_ollama="${SELECT_STATE[$_i]}" ;;
       postgres)  sel_postgres="${SELECT_STATE[$_i]}" ;;
       mnemon)    sel_mnemon="${SELECT_STATE[$_i]}" ;;
-      dashboard) sel_dashboard="${SELECT_STATE[$_i]}" ;;
       langfuse)  sel_langfuse="${SELECT_STATE[$_i]}" ;;
     esac
   done
@@ -673,7 +667,7 @@ interactive_setup() {
   # Build COMPOSE_PROFILES in a stable order.
   local compose_profiles="" _pair _key _on
   for _pair in "proxy:$sel_proxy" "ollama:$sel_ollama" "postgres:$sel_postgres" \
-               "mnemon:$sel_mnemon" "dashboard:$sel_dashboard" \
+               "mnemon:$sel_mnemon" \
                "langfuse:$sel_langfuse"; do
     _key="${_pair%%:*}"; _on="${_pair##*:}"
     [ "$_on" = "1" ] && compose_profiles="${compose_profiles:+$compose_profiles,}$_key"
@@ -919,7 +913,7 @@ write_profile_env() {
     echo "# ── Service selection ────────────────────────────────"
     echo "# docker compose reads COMPOSE_PROFILES from .env, so every"
     echo "# 'docker compose up' (and 'task up') honors this set."
-    echo "# Valid profiles: proxy, ollama, postgres (work), mnemon, dashboard, langfuse, nats"
+    echo "# Valid profiles: proxy, ollama, postgres (work), mnemon, langfuse, nats"
     echo "COMPOSE_PROFILES=$compose_profiles"
     echo "NEXUS_SERVICES=$nexus_services"
     echo ""
@@ -944,7 +938,6 @@ write_profile_env() {
     echo "OLLAMA_PORT=11434"
     echo "OLLAMA_BASE_URL=http://localhost:11434"
     echo "MNEMON_MCP_PORT=8330"
-    echo "DASHBOARD_PORT=8421"
 
     if [ "$sel_proxy" = "1" ]; then
       echo ""
@@ -1321,26 +1314,8 @@ echo "── Step 4: Global Claude skills ────────────�
 setup_skills
 echo ""
 
-# ── Step 5: Dashboard UI ───────────────────────────────────────
-if $SKIP_UI; then
-  echo "── Step 5: Dashboard UI (skipped) ──────────────────────"
-else
-  echo "── Step 5: Dashboard UI ────────────────────────────────"
-  DASHBOARD_DIR="$REPO_DIR/dashboard/ui"
-  if [ ! -f "$DASHBOARD_DIR/package.json" ]; then
-    echo "  WARNING: $DASHBOARD_DIR/package.json not found, skipping"
-  elif ! check_cmd node; then
-    echo "  WARNING: Node.js not found, skipping dashboard setup"
-  else
-    echo "  Installing dashboard dependencies..."
-    ( cd "$DASHBOARD_DIR" && npm install --silent )
-    echo "  Dashboard ready. Start with: cd dashboard/ui && npm run dev"
-  fi
-fi
-echo ""
-
-# ── Step 6: Validate ───────────────────────────────────────────
-echo "── Step 6: Validate ─────────────────────────────────────"
+# ── Step 5: Validate ───────────────────────────────────────────
+echo "── Step 5: Validate ─────────────────────────────────────"
 validate_setup
 echo ""
 
@@ -1357,9 +1332,6 @@ echo "  Quick start:"
 echo "    1. Open a new terminal (or source your shell config)"
 echo "    2. Run 'herdr' to start the agent fleet"
 echo "    3. ctrl+a N to spawn an agent in a repo"
-if ! $SKIP_UI; then
-  echo "    4. cd dashboard/ui && npm run dev  (for the dashboard)"
-fi
 echo ""
 echo "  Status bar colors:"
 echo "    Green  = agent working"

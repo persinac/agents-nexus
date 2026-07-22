@@ -230,8 +230,8 @@ this is a real port, not a copy. To reach herdr parity on Linux:
   (substrate shim + `pane-alive`, the `HERDR_PANE_ID` fold in hooks + open-claude, the
   `agent-send`/`agent-registry` handle+liveness fixes, the unified `launch-claude` picker).
   Much is shared-bash and ports directly; confirm Linux-specific bits (`date`, paths).
-- **Services:** create **systemd units** (user services) for the substrated daemon, the
-  arbiter, and the bus — the analog of the mac launchd plists. The Linux bus already
+- **Services:** create **systemd units** (user services) for the substrated daemon
+  and the bus — the analog of the mac launchd plists. The Linux bus already
   runs from a separate systemd unit (wraps Doppler) per the slack-bridge plist comment.
 - **herdr install:** the Linux install path (`curl -fsSL https://herdr.dev/install.sh | sh`
   or the distro package) + the headless server as a systemd unit.
@@ -241,13 +241,13 @@ this is a real port, not a copy. To reach herdr parity on Linux:
 
 ## Where the migration stands (context for next session)
 
-- **Live on mac (herdr):** substrated daemon + arbiter + slack-bridge under launchd on
+- **Live on mac (herdr):** substrated daemon + slack-bridge under launchd on
   herdr. **herdr is the repo DEFAULT now (flipped 2026-07-16)** — the old per-machine
   `NEXUS_SUBSTRATE=herdr` plist/env overrides are redundant; tmux stays a flag-selectable
   deprecated fallback (`NEXUS_SUBSTRATE=tmux`).
 - **Agents first-class:** context injection, hooks (`HERDR_PANE_ID` fold), registration,
   delivery, human-name surfacing all work. Bus delivery to herdr agents verified.
-- **Commits (main):** `d17c7c2` daemon+shim · `3156560` arbiter identity · `721cca4` hook
+- **Commits (main):** `d17c7c2` daemon+shim · `3156560` agent identity · `721cca4` hook
   parity+picker · `bf8672b` bus presence routing · `6831567` identity layer (pane-alive).
 - **Restart resilience:** ✅ **DONE** — `scripts/herdr-recover.sh` is herdr's missing
   `pane-died` analog: it reconciles the stale rosters after a server restart and (opt-in)

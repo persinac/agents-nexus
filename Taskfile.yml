@@ -13,33 +13,9 @@ tasks:
   # =============================================================================
 
   install:
-    desc: Install all dependencies (mnemon, arbiter, dashboard)
+    desc: Install all dependencies (mnemon)
     cmds:
       - task: mnemon:install
-      - task: arbiter:install
-      - task: dashboard:install
-
-  # =============================================================================
-  # Arbiter (A2A hub + WebSocket bridge)
-  # =============================================================================
-
-  arbiter:start:
-    desc: Start the arbiter server
-    dir: arbiter
-    cmds:
-      - npm start
-
-  arbiter:dev:
-    desc: Start the arbiter server with file watching
-    dir: arbiter
-    cmds:
-      - npm run dev
-
-  arbiter:install:
-    desc: Install arbiter dependencies
-    dir: arbiter
-    cmds:
-      - npm install
 
   # =============================================================================
   # Slack bridge (two-way #nexus <-> agent control)
@@ -59,28 +35,6 @@ tasks:
   slack:bridge:install:
     desc: Install slack-bridge dependencies
     dir: slack-bridge
-    cmds:
-      - npm install
-
-  # =============================================================================
-  # Dashboard (pixel UI)
-  # =============================================================================
-
-  dashboard:dev:
-    desc: Start the dashboard UI in dev mode
-    dir: dashboard/ui
-    cmds:
-      - npm run dev
-
-  dashboard:build:
-    desc: Build the dashboard UI
-    dir: dashboard/ui
-    cmds:
-      - npm run build
-
-  dashboard:install:
-    desc: Install dashboard dependencies
-    dir: dashboard/ui
     cmds:
       - npm install
 
@@ -138,36 +92,31 @@ tasks:
       - uv run ruff check --fix .
 
   # =============================================================================
-  # Stack lifecycle (arbiter + dashboard + mnemon)
+  # Stack lifecycle (mnemon)
   # =============================================================================
 
   kill:
-    desc: Kill arbiter tmux window and mnemon MCP server
+    desc: Kill the mnemon MCP server
     cmds:
-      - tmux kill-window -t ${TMUX_SESSION:-agents}:arbiter 2>/dev/null || true
       - pkill -f "agent_memory.server.mcp_server" || true
 
   up:
-    desc: Start docker stack, arbiter (tmux window), and mnemon in the background
+    desc: Start docker stack and mnemon in the background
     cmds:
       - docker compose up -d
-      - cmd: |
-          tmux new-window -d -t "${TMUX_SESSION:-agents}:" -n arbiter "cd {{.TASKFILE_DIR}} && task arbiter:start" 2>/dev/null \
-            || echo "Warning: could not spawn arbiter tmux window — is the '${TMUX_SESSION:-agents}' session running?"
-          echo "Arbiter started in tmux window 'arbiter' (attach: tmux select-window -t ${TMUX_SESSION:-agents}:arbiter)"
       - cmd: |
           nohup bash -c 'cd {{.TASKFILE_DIR}}/mnemon && uv run agent-memory-serve' > /tmp/mnemon.log 2>&1 &
           echo "Started mnemon. Log: /tmp/mnemon.log"
 
   restart:
-    desc: Kill and restart all services (arbiter, dashboard, mnemon)
+    desc: Kill and restart all services (mnemon)
     cmds:
       - task: kill
       - sleep 1
       - task: up
 
   logs:
-    desc: Tail mnemon log (arbiter output is in tmux window 'agents:arbiter')
+    desc: Tail mnemon log
     cmds:
       - tail -f /tmp/mnemon.log
 

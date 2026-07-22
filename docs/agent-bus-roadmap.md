@@ -14,8 +14,8 @@ This plan sequences the orthogonal capability axes plus the durability/reconcili
 
 1. **Opt-in, default off.** Every phase ships behind a flag; the working bus never regresses.
 2. **Reuse what we have.** `agent-ledger.py` (flock JSONL) for durability, the
-   agent-memory MCP (mnemon, SSE `:8330`) for history, the arbiter Command Center for
-   observability, the presence map for routing. Pure/testable pieces go in
+   agent-memory MCP (mnemon, SSE `:8330`) for history, the herdr nexus-observe
+   command-center for observability, the presence map for routing. Pure/testable pieces go in
    `orchestrator.js` (unit-tested like the presence helpers); stateful glue + Slack I/O
    stay in `index.js`.
 3. **Slack stays the human-observable transport.** A broker (NATS/JetStream) is a
@@ -104,14 +104,13 @@ caller awaits (fifo/file poll).
 **Approach**
 - Bridge exposes `GET /bus` (per-pane queue depths, outbox pending/dead counts, recent
   traffic, pending requests) beside `/agents` + `/health`.
-- Arbiter adds `/api/system/bus` (mirrors `/api/system/agents` — fetch the bridge
-  endpoint or read the outbox JSONL); the dashboard gets a **Bus** tab (mirrors the
-  Memory view), with a sender→recipient force-graph reusing `MemoryGraphView`.
+- The nexus-observe command-center adds a **Bus** view (mirrors the agents view — fetch the
+  bridge endpoint or read the outbox JSONL), with a sender→recipient force-graph.
 
-**Touch points:** `index.js` (`/bus`), `arbiter/index.js` (`/api/system/bus`), dashboard webview.
+**Touch points:** `index.js` (`/bus`), nexus-observe command-center panel.
 **Decisions:** poll vs SSE; read bridge endpoint vs outbox file.
 **Effort:** M. **Depends on:** A (the outbox is the data source).
-**Verify:** send traffic → it + queue depth appear live in the dashboard.
+**Verify:** send traffic → it + queue depth appear live in the command-center.
 
 ## Phase E — Bus → memory ingestion
 
@@ -132,7 +131,7 @@ only `--ask`/`--reply` + non-trivial messages) so it doesn't flood the store.
 **Approach**
 - Per-sender rate limit (reuse `orchestrator.rateState`, already used for spawn).
 - Loop detection: track recent `(from,to,bodyHash)` / `corr`-chain depth; throttle + warn
-  a runaway A→B→A (surface in `#nexus` + the dashboard).
+  a runaway A→B→A (surface in `#nexus` + the command-center).
 - Priority: control messages (acks, RPC replies) get a fast lane / preempt the idle-gate; chatter waits.
 
 **Touch points:** `index.js` (rate state, loop guard, priority in `flushBusQueue`),

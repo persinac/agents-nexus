@@ -226,11 +226,11 @@ CREATE INDEX idx_links_type ON memory_links (link_type);
 
 ### 11f — Knowledge graph web UI (Priority: 5)
 
-- Interactive web visualization (like pixel dashboard, but for the knowledge graph)
+- Interactive web visualization of the knowledge graph
 - Orthogonal views: switch between temporal, causal, semantic, entity lenses
 - Click an entity → see all connected notes across all dimensions
 - Filter by project, time range, tags, device
-- Could extend pixel-dashboard or be a standalone app
+- Standalone app (or a herdr nexus-observe panel)
 - WebSocket for live updates as new events/notes arrive
 
 ### 11g — Auto-inject knowledge into agent prompts (Priority: 5)
