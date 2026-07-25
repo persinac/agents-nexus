@@ -215,7 +215,7 @@ def register(name: str, cwd: str, inbox: Path):
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default=os.environ.get("PROJECT_SLUG") or Path(os.getcwd()).name)
-    ap.add_argument("--model", default=os.environ.get("CLAUDE_MODEL", "claude-opus-4-8"))
+    ap.add_argument("--model", default=os.environ.get("CLAUDE_MODEL", "claude-opus-5"))
     ap.add_argument("--cwd", default=os.getcwd())
     ap.add_argument("--all-mcp", action="store_true", help="load all user MCP servers, not just memory")
     ap.add_argument("--approval-timeout", type=float, default=120.0)
