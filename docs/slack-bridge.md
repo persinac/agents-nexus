@@ -83,6 +83,45 @@ wedged — no round-trip to the agent. The same data is exposed as JSON at
 `SLACK_STATUS_STUCK_MIN` (default `10`) sets how many minutes a "working" agent can
 go without running a tool before the roll-up flags it `:warning: stuck`.
 
+## `/nexus` — slash command + control modals
+
+The text commands above still work, but the primary control surface is the
+`/nexus` **slash command**, which opens Block Kit **modals** with dropdowns
+populated live from the fleet — so you pick an agent/repo from a list instead of
+typing a name you have to remember. It's delivered over the same Socket Mode
+websocket (no Request URL); adding the command needs the `commands` scope (see the
+manifest below) and a one-time reinstall.
+
+Bare **`/nexus`** opens the **home modal**: every live agent (name · host ·
+status) and a row of action buttons. Buttons push a form onto the modal stack
+(with a back button); the read/message actions are always available, while the
+lifecycle/destructive ones require `SLACK_SPAWN_ENABLED=1`.
+
+| Subcommand | Opens / does |
+| --- | --- |
+| `/nexus` · `/nexus home` | The home control modal (agent list + buttons). |
+| `/nexus status [name]` · `/nexus agents [--local]` | Fast **ephemeral** text roll-up (only you see it). `agents` lists the cross-host fleet; `--local` limits to this host. |
+| `/nexus msg` | **Message** form: agent dropdown + message box. Local agents deliver via send-keys; a remote agent routes over the bus/NATS. |
+| `/nexus peek` | **Peek** form: agent dropdown + line count → posts the tail of that agent's pane back to the channel. |
+| `/nexus spawn` | **Spawn** form: repo dropdown (from the allowlist) + task box. _(needs `SLACK_SPAWN_ENABLED=1`)_ |
+| `/nexus restore` | **Restore** form: dropdown of dormant agents from the ledger. _(needs `SLACK_SPAWN_ENABLED=1`)_ |
+| `/nexus keep` | **Keep/pin** form: agent dropdown + pin on/off. _(needs `SLACK_SPAWN_ENABLED=1`)_ |
+| `/nexus clear` | **Clear context** form: agent dropdown + confirm. Runs `/clear` in the agent — **only when it's idle** (`@waiting=2`); refuses on a busy/prompting agent. _(needs `SLACK_SPAWN_ENABLED=1`)_ |
+| `/nexus stop` | **Stop** form: agent dropdown → sends ESC to interrupt the agent (context kept). _(needs `SLACK_SPAWN_ENABLED=1`)_ |
+
+Clear/stop/peek/keep act on a pane on **this** host, so their dropdowns list local
+agents only; message and the agent roll-up include remote agents. Each action's
+result is posted back to the channel the command came from. Under the hood these
+reuse the existing primitives — `agent-send.sh` (message, `/clear`), `substrate.sh
+send-keys`/`capture` (stop, peek), `agent-keep.sh` (pin), and the spawn/restore
+flow — so there are no new control scripts.
+
+> **Multi-bridge note:** Socket Mode hands each slash command / interaction to
+> exactly one connected bridge. On a single-host install this is a non-issue.
+> Message routing is host-correct (a remote name goes over the bus); spawn / clear
+> / stop / peek / keep act on the receiving bridge's host and list only its local
+> agents, so they're never silently wrong.
+
 ### Delivery feedback: receipts + completion ping
 
 So you're not guessing whether a busy agent got your message — especially on mobile,
@@ -579,14 +618,22 @@ features:
   bot_user:
     display_name: nexus-bridge
     always_online: true
+  slash_commands:                # the /nexus control command (Socket Mode → no request URL)
+    - command: /nexus
+      description: Control the agent fleet
+      usage_hint: "[status|agents|spawn|msg|clear|stop|restore|peek|keep]"
+      should_escape: false
 oauth_config:
   scopes:
     bot:
+      - commands                 # required to register the /nexus slash command
       - chat:write
       - chat:write.public       # post to public channels without joining
       - chat:write.customize     # post as the agent's name/icon
       - channels:history         # read the public #nexus channel
       - channels:read
+      - groups:history           # read a PRIVATE control channel (#nexus-lan / #nexus-agents)
+      - groups:read
       - im:history               # DM-the-bot control (optional)
       - app_mentions:read
       - reactions:write
@@ -596,7 +643,7 @@ oauth_config:
       - files:write              # post logs / diffs / screenshots
 settings:
   interactivity:
-    is_enabled: true             # required for the Approve/Deny buttons (block_actions)
+    is_enabled: true             # required for the Approve/Deny buttons + /nexus modals (block_actions, view_submission)
   event_subscriptions:
     bot_events:
       - message.channels         # PUBLIC channel inbound
@@ -607,6 +654,13 @@ settings:
   socket_mode_enabled: true
   org_deploy_enabled: false
 ```
+
+**Adding `/nexus` to an existing app.** The `commands` scope + the `slash_commands`
+block are the only additions for the slash command. On an app that's already
+installed, saving them changes the OAuth scopes, so Slack prompts to **reinstall to
+the workspace** — do that once. No Request URL is needed anywhere because Socket
+Mode is on. `interactivity.is_enabled` was already required for the buttons, so the
+modals need no further change there.
 
 **Channel type ↔ event/scope must match.** A bot only receives a channel's
 messages if it subscribes to that channel type's `message.*` event AND holds the
