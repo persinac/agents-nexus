@@ -250,6 +250,174 @@ export function resolvedCard(message, note) {
 }
 
 // --------------------------------------------------------------------------
+// Nexus control modals — pure Block Kit VIEW builders for the `/nexus` slash
+// command. index.js gathers live data (presence, registry status, allowlist,
+// ledger) and hands shaped option lists / input blocks here; these return the
+// `view` object for web.views.open / push / update. Kept pure (data in → JSON
+// out) so the layout is unit-testable without Slack. Every action button uses an
+// `nx:` action_id prefix so index.js's block_actions dispatch routes them and
+// they never collide with the 1/2/3 permission-digit path.
+// --------------------------------------------------------------------------
+
+// Slack caps a static_select option label at 75 chars and an option value at 75.
+// Truncate defensively — agent names / repos are short, but a desc can be long.
+function cap75(s) { return String(s == null ? '' : s).slice(0, 75); }
+
+// Shape a caller list of { text, value } into Block Kit option objects.
+function toOptions(options) {
+  return (options || [])
+    .filter((o) => o && o.value != null && String(o.value) !== '')
+    .map((o) => ({ text: { type: 'plain_text', text: cap75(o.text || o.value), emoji: true }, value: cap75(o.value) }));
+}
+
+// The home modal. `agents`: [{ name, host, status, emoji }] (already status-labeled
+// by index.js). `spawnEnabled` gates the lifecycle/destructive buttons — when off we
+// show only the always-available actions (message / peek / refresh) plus a hint.
+export function homeView({ agents = [], spawnEnabled = false, channel = '', loading = false } = {}) {
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Nexus Fleet Control', emoji: true } },
+  ];
+  if (agents.length) {
+    const lines = agents.map((a) => `${a.emoji || '•'} \`${a.name}\` · ${a.host}${a.status ? ` · ${a.status}` : ''}`);
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } });
+  } else {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: loading ? ':hourglass_flowing_sand: loading agents…' : '_no live agents_' }] });
+  }
+  blocks.push({ type: 'divider' });
+  const btn = (id, text, style) => {
+    const b = { type: 'button', action_id: id, text: { type: 'plain_text', text, emoji: true } };
+    if (style) b.style = style;
+    return b;
+  };
+  blocks.push({
+    type: 'actions', block_id: 'nx_read',
+    elements: [btn('nx:open:msg', '✉️ Message'), btn('nx:open:peek', '👁 Peek'), btn('nx:refresh', '🔄 Refresh')],
+  });
+  if (spawnEnabled) {
+    blocks.push({
+      type: 'actions', block_id: 'nx_life',
+      elements: [
+        btn('nx:open:spawn', '🚀 Spawn', 'primary'), btn('nx:open:restore', '↩️ Restore'),
+        btn('nx:open:keep', '📌 Keep'), btn('nx:open:clear', '🧹 Clear'), btn('nx:open:stop', '🛑 Stop', 'danger'),
+      ],
+    });
+  } else {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: ':lock: spawn / restore / keep / clear / stop need `SLACK_SPAWN_ENABLED=1`' }] });
+  }
+  return {
+    type: 'modal', callback_id: 'nx_home', private_metadata: channel,
+    title: { type: 'plain_text', text: 'Nexus' }, close: { type: 'plain_text', text: 'Close' }, blocks,
+  };
+}
+
+// A single-select form modal: one `target` static_select of `options` plus any
+// caller-supplied `extraBlocks` (message body, confirm checkbox, etc.). When
+// `options` is empty we render a note and OMIT `submit` — Slack rejects a view
+// whose static_select has zero options, and a form with nothing to act on has
+// nothing to submit. The origin channel rides in `private_metadata`.
+export function selectFormView({
+  callback_id, title, submitLabel = 'Submit', selectLabel = 'Agent',
+  placeholder = 'Pick one', options = [], extraBlocks = [], channel = '', intro = '',
+} = {}) {
+  const view = {
+    type: 'modal', callback_id, private_metadata: channel,
+    title: { type: 'plain_text', text: cap75(title || 'Nexus') },
+    close: { type: 'plain_text', text: 'Cancel' }, blocks: [],
+  };
+  if (intro) view.blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: intro }] });
+  const opts = toOptions(options);
+  if (!opts.length) {
+    view.blocks.push({ type: 'section', text: { type: 'mrkdwn', text: ':information_source: nothing available here right now.' } });
+    return view; // no submit
+  }
+  view.blocks.push({
+    type: 'input', block_id: 'target',
+    label: { type: 'plain_text', text: selectLabel },
+    element: { type: 'static_select', action_id: 'sel', placeholder: { type: 'plain_text', text: placeholder }, options: opts },
+  });
+  for (const b of (extraBlocks || [])) view.blocks.push(b);
+  view.submit = { type: 'plain_text', text: submitLabel };
+  return view;
+}
+
+// Input-block helpers (small Block Kit literals) so index.js stays declarative.
+export function multilineInput(block_id, label, { optional = false, placeholder = '' } = {}) {
+  const el = { type: 'plain_text_input', action_id: 'val', multiline: true };
+  if (placeholder) el.placeholder = { type: 'plain_text', text: placeholder };
+  return { type: 'input', block_id, optional, label: { type: 'plain_text', text: label }, element: el };
+}
+
+export function textInput(block_id, label, { optional = true, placeholder = '' } = {}) {
+  const el = { type: 'plain_text_input', action_id: 'val' };
+  if (placeholder) el.placeholder = { type: 'plain_text', text: placeholder };
+  return { type: 'input', block_id, optional, label: { type: 'plain_text', text: label }, element: el };
+}
+
+export function confirmCheckbox(block_id, label) {
+  const opt = { text: { type: 'plain_text', text: cap75(label) }, value: 'yes' };
+  return {
+    type: 'input', block_id, optional: true, label: { type: 'plain_text', text: 'Confirm' },
+    element: { type: 'checkboxes', action_id: 'val', options: [opt] },
+  };
+}
+
+export function radioOnOff(block_id, { current = 'on' } = {}) {
+  const on = { text: { type: 'plain_text', text: 'Pin (keep on)' }, value: 'on' };
+  const off = { text: { type: 'plain_text', text: 'Unpin (keep off)' }, value: 'off' };
+  return {
+    type: 'input', block_id, label: { type: 'plain_text', text: 'Pin state' },
+    element: {
+      type: 'radio_buttons', action_id: 'val', options: [on, off],
+      initial_option: current === 'off' ? off : on,
+    },
+  };
+}
+
+// --------------------------------------------------------------------------
+// Message-based control panel for /nexus (NOT a modal). Modals need a fresh
+// trigger_id within 3s, which this deployment's Socket Mode WS latency (~2.6s)
+// routinely blows — so /nexus acks with THIS message instead, and its buttons /
+// select respond via response_url (valid 30 min, no trigger_id). Returns MESSAGE
+// blocks. `agents`: [{ name, pane, label }] (local agents; value = pane). Pick an
+// agent → the caller re-renders with `picked` set to reveal per-agent action
+// buttons whose value is that pane. Pure — data in, Block Kit out.
+// --------------------------------------------------------------------------
+export function fleetPanel({ agents = [], picked = null, spawnEnabled = false } = {}) {
+  const blocks = [
+    { type: 'section', text: { type: 'mrkdwn', text: '*Nexus Fleet Control* — pick an agent, then choose an action.' } },
+  ];
+  if (agents.length) {
+    const options = agents.slice(0, 100).map((a) => ({ text: { type: 'plain_text', text: cap75(a.label || a.name) }, value: cap75(a.pane) }));
+    const select = { type: 'static_select', action_id: 'nx:pick', placeholder: { type: 'plain_text', text: 'Pick an agent' }, options };
+    if (picked && picked.pane) {
+      const opt = options.find((o) => o.value === cap75(picked.pane));
+      if (opt) select.initial_option = opt;
+    }
+    blocks.push({ type: 'actions', block_id: 'nx_pick', elements: [select] });
+  } else {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '_no local agents_' }] });
+  }
+  if (picked && picked.pane) {
+    const btn = (aid, text, style) => {
+      const b = { type: 'button', action_id: aid, value: cap75(picked.pane), text: { type: 'plain_text', text, emoji: true } };
+      if (style) b.style = style;
+      return b;
+    };
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `Actions for \`${picked.name}\`:` } });
+    blocks.push({
+      type: 'actions', block_id: 'nx_do',
+      elements: [
+        btn('nx:do:status', '📊 Status'), btn('nx:do:peek', '👁 Peek'),
+        btn('nx:do:keepon', '📌 Keep on'), btn('nx:do:keepoff', '📍 Keep off'),
+        btn('nx:do:clear', '🧹 Clear', 'danger'), btn('nx:do:stop', '🛑 Stop', 'danger'),
+      ],
+    });
+  }
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Text actions: `/nexus msg <agent> <text>` · `/nexus spawn <repo> [seed]` · `/nexus restore`' }] });
+  return blocks;
+}
+
+// --------------------------------------------------------------------------
 // Presence registry (Phase 2).
 //
 // Phase 1 delivery is host-local: a bridge delivers a message addressed to a

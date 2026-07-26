@@ -972,14 +972,167 @@ socket.on('reaction_added', async ({ event, ack }) => {
 // digit; deliver it to the thread's agent, then resolve the card (drop buttons,
 // show the outcome). Requires the Slack app to have Interactivity enabled.
 socket.on('interactive', async ({ body, ack }) => {
+  // Modal form submits must ack WITH a response (close / errors), so they own their
+  // own ack inside handleNexusSubmit rather than the blanket pre-ack below.
+  if (body && body.type === 'view_submission') { await handleNexusSubmit(body, ack); return; }
   try { await ack(); } catch { /* already acked */ }
   await handleInteractive(body);
+});
+
+// The `/nexus` slash command. Socket Mode delivers it over this same websocket —
+// no Request URL. Bare `/nexus` (or `home`) opens the control modal; `status` /
+// `agents` reply as fast ephemeral text; the rest open their form directly.
+// --- Message-based /nexus helpers (no modals; robust to slow Socket Mode WS) ---
+function eph(text) { return { response_type: 'ephemeral', text }; }
+
+async function respond(url, payload) {
+  if (!url) return;
+  try {
+    await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  } catch (e) { console.error(`[nexus] respond failed: ${e.message}`); }
+}
+
+function paneName(pane) {
+  const e = loadRegistry().find((x) => x.pane === pane);
+  return e ? e.name : pane;
+}
+
+// Resolve a /nexus agent arg (name, pane handle wN:pN, or %pane) to { name, pane }
+// on THIS host, or null. Local only (clear/stop/peek/keep act on a local pane).
+function resolveLocalAgent(arg) {
+  const a = String(arg || '').trim();
+  if (!a) return null;
+  if (/^w[A-Za-z0-9]+:p[A-Za-z0-9]+$/.test(a) || /^%\d+$/.test(a)) {
+    const e = loadRegistry().find((x) => x.pane === a);
+    return { name: e ? e.name : a, pane: a };
+  }
+  const e = resolveByName(a);
+  return e && e.pane ? { name: e.name, pane: e.pane } : null;
+}
+
+// Fleet status roll-up as mrkdwn (the text behind /nexus status).
+async function statusText(target) {
+  const opts = { now: Date.now(), stuckMin: STATUS_STUCK_MIN };
+  const fleet = gatherFleetStatus();
+  const t = String(target || '').trim();
+  if (t && t.toLowerCase() !== 'all') {
+    const low = t.toLowerCase();
+    const a = fleet.find((x) => x.name.toLowerCase() === low || x.slot === t);
+    if (!a) return `:warning: no active agent \`${t}\`. \`/nexus agents\` to list.`;
+    return orch.formatAgentStatus({ ...a, branch: gitBranch(a.cwd) }, opts);
+  }
+  return orch.formatFleetStatus(fleet, opts);
+}
+
+async function doPeek(arg, linesArg) {
+  const a = resolveLocalAgent(arg);
+  if (!a) return eph(`:warning: no local agent \`${arg || ''}\`. \`/nexus agents\` to list.`);
+  const n = Math.max(1, Math.min(200, parseInt(linesArg || '40', 10) || 40));
+  const out = subRead(['capture', a.pane, String(n)]);
+  const tail = out ? out.split('\n').slice(-n).join('\n') : '(no output captured)';
+  return eph(`:eyes: \`${a.name}\` — last ${n} lines:\n\`\`\`\n${orch.capWithMarker(tail, 2800)}\n\`\`\``);
+}
+
+async function doClearCmd(arg) {
+  const a = resolveLocalAgent(arg);
+  if (!a) return eph(`:warning: no local agent \`${arg || ''}\`.`);
+  const w = paneWaiting(a.pane);
+  if (w !== '2') return eph(`:warning: \`${a.name}\` is ${orch.statusLabel(w).text} — clear only when it's idle at the prompt.`);
+  const r = deliverToPane(a.pane, '/clear');
+  return eph(r.ok ? `:broom: cleared context on \`${a.name}\`.` : `:warning: clear failed: ${r.error}`);
+}
+
+async function doStopCmd(arg) {
+  const a = resolveLocalAgent(arg);
+  if (!a) return eph(`:warning: no local agent \`${arg || ''}\`.`);
+  const r = subRun(['send-keys', a.pane, 'escape']);
+  return eph(r.ok ? `:octagonal_sign: sent ESC to \`${a.name}\`.` : `:warning: stop failed: ${r.error}`);
+}
+
+async function doKeepCmd(arg, onoff) {
+  const a = resolveLocalAgent(arg);
+  if (!a) return eph(`:warning: no local agent \`${arg || ''}\`.`);
+  const v = /^(off|0|no|false)$/i.test(String(onoff || '')) ? 'off' : 'on';
+  const r = deliverViaScript(join(HOME, '.tmux', 'agent-keep.sh'), [a.pane, v]);
+  return eph(r.ok ? `:pushpin: keep ${v} for \`${a.name}\` — ${r.out || 'done'}` : `:warning: keep failed: ${r.error}`);
+}
+
+async function doMsgCmd(arg, text) {
+  if (!arg || !String(text).trim()) return eph('usage: `/nexus msg <agent> <text>`');
+  const r = sendToAgent(arg, text);
+  return eph(r.ok ? `:envelope_with_arrow: sent to \`${arg}\`.` : `:warning: send to \`${arg}\` failed: ${r.error}`);
+}
+
+socket.on('slash_commands', async ({ body, ack }) => {
+  // Message-based control surface (NO modals). Slack's Socket Mode delivers the
+  // command envelope with a tight 3s trigger_id budget that this deployment's WS
+  // latency (~2.6s) routinely blows, so views.open/push are unreliable here. We ack
+  // with a MESSAGE instead (proven by status/agents), and the panel's buttons/select
+  // respond via response_url (valid ~30 min, no trigger_id).
+  const raw = String((body && body.text) || '').trim();
+  const parts = raw.split(/\s+/);
+  const sub = (parts[0] || '').toLowerCase();
+  const chan = (body && body.channel_id) || NEXUS_CHANNEL || '';
+  const uid = body && body.user_id;
+  console.log(`[nexus] slash /nexus "${raw}" from ${uid}`);
+  try {
+    if (!sub || sub === 'home' || sub === 'help') {
+      const agents = localAgentOptions().map((o) => ({ name: o.text, pane: o.value, label: o.text }));
+      await ack({ response_type: 'ephemeral', text: 'Nexus Fleet Control', blocks: orch.fleetPanel({ agents, spawnEnabled: SPAWN_ENABLED }) });
+      return;
+    }
+    if (sub === 'status') { await ack({ response_type: 'ephemeral', text: await statusText(parts.slice(1).join(' ')) }); return; }
+    if (sub === 'agents') { await ack(await agentsSummaryText(/--local\b/.test(raw))); return; }
+    if (sub === 'peek') { await ack(await doPeek(parts[1], parts[2])); return; }
+    if (sub === 'clear') { await ack(await doClearCmd(parts[1])); return; }
+    if (sub === 'stop') { await ack(await doStopCmd(parts[1])); return; }
+    if (sub === 'keep') { await ack(await doKeepCmd(parts[1], parts[2])); return; }
+    if (sub === 'msg' || sub === 'message') {
+      const rest2 = raw.slice(sub.length).trim();
+      const agent = rest2.split(/\s+/)[0] || '';
+      const msgText = rest2.slice(agent.length).trim();
+      await ack(await doMsgCmd(agent, msgText));
+      return;
+    }
+    if (sub === 'spawn') {
+      if (!SPAWN_ENABLED) { await ack(eph(':lock: spawn disabled (`SLACK_SPAWN_ENABLED=0`).')); return; }
+      const repo = parts[1];
+      const seed = raw.slice(sub.length).trim().slice((repo || '').length).trim();
+      if (!repo) {
+        const names = orch.allowlistEntries(orch.loadAllowlist(SPAWN_ALLOWLIST_FILE)).map((e) => e.name);
+        await ack(eph(names.length ? `spawnable: ${names.join(', ')}\nusage: \`/nexus spawn <repo> [seed]\`` : 'no spawnable repos configured.'));
+        return;
+      }
+      await ack(eph(`:rocket: spawning \`${repo}\`…`));
+      await doSpawn(chan, undefined, repo, seed, uid);
+      return;
+    }
+    if (sub === 'restore') {
+      if (!SPAWN_ENABLED) { await ack(eph(':lock: restore disabled.')); return; }
+      const repo = parts[1];
+      if (repo) { await ack(eph(`:leftwards_arrow_with_hook: restoring \`${repo}\`…`)); await doRestore(chan, undefined, repo, uid); return; }
+      const dormant = await ledgerCmd(['list', '--state', 'dormant', '--json']);
+      const names = (Array.isArray(dormant) ? dormant : []).map((d) => d.repo || d.name);
+      await ack(eph(names.length ? `dormant: ${names.join(', ')}\nusage: \`/nexus restore <repo>\`` : 'no dormant agents.'));
+      return;
+    }
+    await ack(eph(`Unknown \`${sub}\`. Try \`/nexus\` (panel), or: status · agents · peek · clear · stop · keep · msg · spawn · restore`));
+  } catch (e) {
+    console.error(`[nexus] slash ${sub} failed: ${e.message}`);
+    try { await ack(eph(`:warning: ${e.message}`)); } catch { /* already acked */ }
+  }
 });
 
 async function handleInteractive(body) {
   if (!body || body.type !== 'block_actions') return;
   const action = (body.actions || [])[0];
   if (!action) return;
+  // Nexus control-modal buttons (home → push a form / refresh). Routed before the
+  // orchestrator + permission-digit paths so `nx:` action_ids never collide.
+  if (typeof action.action_id === 'string' && action.action_id.startsWith('nx:')) {
+    await handleNexusButton(action, body);
+    return;
+  }
   const chan = body.channel && body.channel.id;
   const mts = body.message && body.message.ts;
   // Orchestrator buttons (spawn confirm / restore) — routed before the
@@ -1199,7 +1352,7 @@ function gitBranch(cwd) {
 // fleet only (presence carries no per-agent state). index.js reads tmux;
 // orchestrator.js formats. Shape: [{name, slot, pane, cwd, waiting, waitSince, lastTool}].
 function gatherFleetStatus() {
-  const liveNames = new Set(localLiveAgents().map((n) => n.toLowerCase()));
+  const liveNames = new Set(localLiveAgents().map((a) => a.name.toLowerCase()));
   return loadRegistry()
     .filter((a) => a.name && liveNames.has(a.name.toLowerCase()))
     .map((a) => ({
@@ -1871,6 +2024,315 @@ const httpServer = http.createServer((req, res) => {
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: false, error: 'not found' }));
 });
+
+// ---------------------------------------------------------------------------
+// `/nexus` control surface — slash command → home modal → per-action forms.
+// Reuses every underlying primitive: presence (cross-host agent list), the
+// registry-derived status (gatherFleetStatus), the spawn/restore flow
+// (performSpawn / doRestore), agent-send.sh (message, /clear), substrate.sh
+// (send-keys ESC, capture), and agent-keep.sh. The pure Block Kit view layout
+// lives in orchestrator.js; this side gathers live data + performs the actions.
+// ---------------------------------------------------------------------------
+
+// Run substrate.sh and surface success/failure (subRead swallows errors — this
+// doesn't, so stop/peek can report a bad target).
+function subRun(args) {
+  try { const out = execFileSync(SUBSTRATE_BIN, args, { encoding: 'utf8', timeout: 5000 }).trim(); return { ok: true, out }; }
+  catch (e) { return { ok: false, error: (e.stdout || e.stderr || e.message || '').toString().trim() }; }
+}
+
+// FAST fleet list — presence only (NATS KV, else the Slack presenceMap), local
+// registry as a last resort. NO per-agent @waiting lookups, so it makes at most one
+// async call + one registry read and never blocks the event loop with a substrate
+// subprocess storm. Used everywhere an open must beat Slack's 3s trigger window: the
+// home skeleton, the message form, `/nexus agents`. De-duped, name-sorted.
+async function gatherAgentsLite() {
+  let rows = [];
+  if (BUS_TRANSPORT === 'nats' && natsReady && natsTransport) {
+    try {
+      const snap = await natsTransport.presenceSnapshot();   // [{host,workspace,name,pane,ts}]
+      rows = (snap || []).map((a) => ({ name: a.name, host: a.host || SELF_HOST, pane: a.pane || '', workspace: a.workspace || '' }));
+    } catch { /* fall through to Slack presence / local */ }
+  }
+  if (!rows.length && presenceMap && presenceMap.size) {
+    try { rows = orch.reachability(presenceMap).map((a) => ({ name: a.name, host: a.host, pane: a.pane || '', workspace: a.workspace || '' })); } catch { /* ignore */ }
+  }
+  if (!rows.length) {
+    rows = localLiveAgents().map((a) => ({ name: a.name, host: SELF_HOST, pane: a.pane, workspace: a.workspace || '' }));
+  }
+  const seen = new Set();
+  rows = rows.filter((a) => { const k = `${a.host}|${a.pane}|${a.name}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  return rows.map((a) => ({ ...a, local: a.host === SELF_HOST }))
+    .sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : (x.host < y.host ? -1 : 1)));
+}
+
+// RICH fleet list — the lite set enriched with each LOCAL agent's live @waiting
+// status (one gatherFleetStatus pass = N synchronous substrate reads). Those reads
+// block the event loop, so this is ONLY used to UPDATE the home modal AFTER it is
+// already open — never before a views.open / ack.
+async function gatherHomeAgents() {
+  const rows = await gatherAgentsLite();
+  const statusByPane = new Map(gatherFleetStatus().map((s) => [s.pane, s]));
+  return rows.map((a) => {
+    const s = a.local && a.pane ? statusByPane.get(a.pane) : null;
+    const lab = s ? orch.statusLabel(s.waiting) : null;
+    return { ...a, emoji: lab ? lab.emoji : ':globe_with_meridians:', status: lab ? lab.text : (a.local ? '' : 'remote') };
+  });
+}
+
+// Local-only agent options (clear / stop / peek / keep act on a pane on THIS host,
+// so a remote agent has nothing to act on). value = pane. Cheap: one localLiveAgents()
+// read (registry + live-handle filter), no per-agent @waiting subprocess calls.
+function localAgentOptions() {
+  return localLiveAgents()
+    .map((a) => ({ text: `${a.name}${a.workspace ? ` · ${a.workspace}` : ''}`, value: a.pane }))
+    .filter((o) => o.value);
+}
+
+// Message-form options: every reachable agent (local + remote). value = a bare name
+// for a local agent (agent-send.sh send-keys), or host/name for a remote one
+// (agent-send.sh routes it over the bus/NATS). Uses the lite list so the form pushes
+// well within the trigger window.
+async function messageAgentOptions() {
+  const agents = await gatherAgentsLite();
+  return agents.map((a) => ({
+    text: `${a.name} · ${a.host}${a.local ? '' : ' · remote'}`,
+    value: a.local ? a.name : `${a.host}/${a.name}`,
+  }));
+}
+
+// Spawn-form options from the allowlist (name — description). Restore-form options
+// from the ledger's dormant set.
+function spawnRepoOptions() {
+  const allow = orch.loadAllowlist(SPAWN_ALLOWLIST_FILE);
+  const entries = orch.mergeSummaries(orch.allowlistEntries(allow), orch.loadSummaries(SPAWN_SUMMARIES_FILE));
+  return entries.map((e) => ({ text: e.desc ? `${e.name} — ${e.desc}` : e.name, value: e.name }));
+}
+async function dormantOptions() {
+  const dormant = await ledgerCmd(['list', '--state', 'dormant', '--json']);
+  return (Array.isArray(dormant) ? dormant : []).map((d) => ({ text: d.repo || d.name, value: d.repo || d.name }));
+}
+
+// Lifecycle/destructive forms are gated on SLACK_SPAWN_ENABLED (same flag as the
+// text-command spawn branch). When off, a direct opener returns a note view.
+const NX_GATED = new Set(['nx:open:spawn', 'nx:open:restore', 'nx:open:keep', 'nx:open:clear', 'nx:open:stop']);
+
+async function buildFormView(id, channel) {
+  if (NX_GATED.has(id) && !SPAWN_ENABLED) {
+    return orch.selectFormView({ callback_id: 'nx_noop', title: 'Disabled', options: [], channel,
+      intro: ':lock: This action needs `SLACK_SPAWN_ENABLED=1` on the bridge.' });
+  }
+  switch (id) {
+    case 'nx:open:msg':
+      return orch.selectFormView({ callback_id: 'nx_msg', title: 'Message agent', submitLabel: 'Send',
+        selectLabel: 'Agent', placeholder: 'Pick an agent', options: await messageAgentOptions(), channel,
+        extraBlocks: [orch.multilineInput('body', 'Message', { placeholder: 'What should it do?' })] });
+    case 'nx:open:peek':
+      return orch.selectFormView({ callback_id: 'nx_peek', title: 'Peek output', submitLabel: 'Peek',
+        options: localAgentOptions(), channel, intro: 'Grab the last lines of an agent’s pane.',
+        extraBlocks: [orch.textInput('lines', 'Lines (default 40)', { placeholder: '40' })] });
+    case 'nx:open:spawn':
+      return orch.selectFormView({ callback_id: 'nx_spawn', title: 'Spawn agent', submitLabel: 'Spawn',
+        selectLabel: 'Repo', placeholder: 'Pick a repo', options: spawnRepoOptions(), channel,
+        extraBlocks: [orch.multilineInput('task', 'Task / seed', { optional: true, placeholder: 'Start work in …' })] });
+    case 'nx:open:restore':
+      return orch.selectFormView({ callback_id: 'nx_restore', title: 'Restore agent', submitLabel: 'Restore',
+        selectLabel: 'Dormant agent', placeholder: 'Pick one', options: await dormantOptions(), channel,
+        intro: 'Bring a reaped agent back from its checkpoint.' });
+    case 'nx:open:keep':
+      return orch.selectFormView({ callback_id: 'nx_keep', title: 'Keep / pin', submitLabel: 'Apply',
+        options: localAgentOptions(), channel, intro: 'Pin an agent so the reaper skips it.',
+        extraBlocks: [orch.radioOnOff('onoff', { current: 'on' })] });
+    case 'nx:open:clear':
+      return orch.selectFormView({ callback_id: 'nx_clear', title: 'Clear context', submitLabel: 'Clear',
+        options: localAgentOptions(), channel,
+        intro: ':warning: Runs `/clear` in the agent — its conversation is wiped. Only fires when the agent is idle.',
+        extraBlocks: [orch.confirmCheckbox('confirm', 'Yes, clear this agent’s conversation')] });
+    case 'nx:open:stop':
+      return orch.selectFormView({ callback_id: 'nx_stop', title: 'Stop / interrupt', submitLabel: 'Send ESC',
+        options: localAgentOptions(), channel, intro: 'Send ESC to halt what the agent is doing (its context is kept).' });
+    default:
+      return null;
+  }
+}
+
+// Panel interactions (message buttons + select — no modal). Pick an agent, then
+// act; results post via response_url (30-min window), sidestepping trigger_id.
+async function handleNexusButton(action, body) {
+  const url = body && body.response_url;
+  const id = action.action_id;
+  try {
+    if (id === 'nx:pick') {
+      const pane = action.selected_option && action.selected_option.value;
+      const picked = pane ? { name: paneName(pane), pane } : null;
+      const agents = localAgentOptions().map((o) => ({ name: o.text, pane: o.value, label: o.text }));
+      await respond(url, { response_type: 'ephemeral', replace_original: true, text: 'Nexus Fleet Control', blocks: orch.fleetPanel({ agents, picked, spawnEnabled: SPAWN_ENABLED }) });
+      return;
+    }
+    if (id.startsWith('nx:do:')) {
+      const act = id.slice('nx:do:'.length);
+      const pane = action.value;
+      let res;
+      if (act === 'status') res = await statusText(paneName(pane));
+      else if (act === 'peek') res = (await doPeek(pane, '40')).text;
+      else if (act === 'clear') res = (await doClearCmd(pane)).text;
+      else if (act === 'stop') res = (await doStopCmd(pane)).text;
+      else if (act === 'keepon') res = (await doKeepCmd(pane, 'on')).text;
+      else if (act === 'keepoff') res = (await doKeepCmd(pane, 'off')).text;
+      else res = `unknown action ${act}`;
+      await respond(url, { response_type: 'ephemeral', replace_original: false, text: res });
+      return;
+    }
+  } catch (e) {
+    console.error(`[nexus] panel action ${id} failed: ${e.message}`);
+    await respond(url, { response_type: 'ephemeral', replace_original: false, text: `:warning: ${e.message}` });
+  }
+}
+
+async function openHome(trigger_id, channel, t0 = Date.now()) {
+  if (!trigger_id) return;
+  // Open a skeleton IMMEDIATELY (no data-gathering before views.open) so the 3s
+  // trigger window is never lost to the substrate reads that enrich status; then
+  // fill the agent list in via views.update.
+  let opened;
+  try {
+    opened = await web.views.open({ trigger_id, view: orch.homeView({ agents: [], spawnEnabled: SPAWN_ENABLED, channel: channel || '', loading: true }) });
+    console.log(`[nexus] home skeleton opened in ${Date.now() - t0}ms`);
+  } catch (e) { console.error(`[nexus] openHome open failed after ${Date.now() - t0}ms: ${e.message}`); return; }
+  try {
+    const agents = await gatherHomeAgents();
+    const vid = opened && opened.view && opened.view.id;
+    if (vid) await web.views.update({ view_id: vid, view: orch.homeView({ agents, spawnEnabled: SPAWN_ENABLED, channel: channel || '' }) });
+  } catch (e) { console.error(`[nexus] openHome enrich failed: ${e.message}`); }
+}
+
+// Open a form modal for a /nexus subcommand. Builds the view (cheap gathering) and
+// opens it with the trigger; timing-logged so an expired_trigger_id is diagnosable.
+async function openForm(id, trigger_id, channel, t0 = Date.now()) {
+  if (!trigger_id) return;
+  try {
+    const view = await buildFormView(id, channel);
+    if (!view) return;
+    await web.views.open({ trigger_id, view });
+    console.log(`[nexus] form ${id} opened in ${Date.now() - t0}ms`);
+  } catch (e) { console.error(`[nexus] openForm ${id} failed after ${Date.now() - t0}ms: ${e.message}`); }
+}
+
+// Ephemeral text for `/nexus agents [--local]`.
+async function agentsSummaryText(localOnly) {
+  let agents = await gatherAgentsLite();
+  if (localOnly) agents = agents.filter((a) => a.local);
+  if (!agents.length) return { response_type: 'ephemeral', text: '_no live agents_' };
+  const lines = agents.map((a) => `• ${a.name} · ${a.host}${a.local ? '' : ' · remote'}`);
+  return { response_type: 'ephemeral', text: `*Live agents (${agents.length})* — \`/nexus status\` for live state\n${lines.join('\n')}` };
+}
+
+// Deliver a human's message to an agent: local → immediate send-keys (agent-send.sh
+// with the final-hop local env); remote/namespaced → over the bus (--stdin keeps the
+// body off any shell command line). Returns { ok, error }.
+function sendToAgent(target, text) {
+  try {
+    if (!String(target).includes('/') && resolveByName(target)) {
+      const r = deliverToName(target, text);
+      return r.ok ? { ok: true } : { ok: false, error: r.error };
+    }
+    execFileSync(AGENT_SEND, [target, '--stdin'], { encoding: 'utf8', timeout: 6000, input: text, env: { ...process.env, SLACK_A2A_SAMEHOST: 'local' } });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e.stdout || e.message || '').toString().trim() };
+  }
+}
+
+// Direct spawn from the modal (the modal IS the confirmation — no confirm card).
+// Mirrors doRestore: allowlist match → lock → performSpawn.
+async function doSpawn(channel, threadTs, repoArg, seed, requester) {
+  if (!SPAWN_ENABLED) { await replyInThread(channel, threadTs, ':lock: spawn is disabled (`SLACK_SPAWN_ENABLED=0`).'); return; }
+  const allow = orch.loadAllowlist(SPAWN_ALLOWLIST_FILE);
+  const match = orch.matchAllowlist(allow, repoArg);
+  if (!match) { await replyInThread(channel, threadTs, `:information_source: \`${repoArg}\` isn't on the spawnable allowlist.`); return; }
+  if (repoLocked(match.name, match.path)) { await replyInThread(channel, threadTs, `:information_source: \`${match.name}\` is already running — message it instead.`); return; }
+  inFlight.add(match.name);
+  const note = await performSpawn({ repo: match.name, path: match.path, seed: (seed || '').trim() || `Start work in ${match.name}.`, channel, rootTs: threadTs, requester });
+  await replyInThread(channel, threadTs, note);
+}
+
+// Modal submit dispatch. Reads body.view.state.values, recovers the origin channel
+// from private_metadata, performs the action, and ack()s exactly once — empty to
+// close the modal, or { response_action: 'errors' } to reject in-place. Confirmations
+// are posted back to the origin channel.
+async function handleNexusSubmit(body, ack) {
+  const view = body.view || {};
+  const cb = view.callback_id;
+  const st = (view.state && view.state.values) || {};
+  const channel = view.private_metadata || NEXUS_CHANNEL || '';
+  const user = (body.user && body.user.id) || '';
+  const target = st.target && st.target.sel && st.target.sel.selected_option && st.target.sel.selected_option.value;
+  const say = async (t) => { if (!channel) return; try { await web.chat.postMessage({ channel, text: t }); } catch (e) { console.error(`[nexus] post failed: ${e.message}`); } };
+  try {
+    switch (cb) {
+      case 'nx_msg': {
+        const textBody = (st.body && st.body.val && st.body.val.value) || '';
+        if (!target || !textBody.trim()) { await ack({ response_action: 'errors', errors: { body: 'Pick an agent and enter a message.' } }); return; }
+        await ack();
+        const r = sendToAgent(target, textBody);
+        await say(r.ok ? `:envelope_with_arrow: <@${user}> → \`${target}\`: ${orch.capWithMarker(textBody, 300)}` : `:warning: send to \`${target}\` failed: ${r.error}`);
+        return;
+      }
+      case 'nx_spawn': {
+        if (!target) { await ack({ response_action: 'errors', errors: { target: 'Pick a repo.' } }); return; }
+        await ack();
+        await doSpawn(channel, undefined, target, (st.task && st.task.val && st.task.val.value) || '', user);
+        return;
+      }
+      case 'nx_restore': {
+        if (!target) { await ack({ response_action: 'errors', errors: { target: 'Pick a dormant agent.' } }); return; }
+        await ack();
+        await doRestore(channel, undefined, target, user);
+        return;
+      }
+      case 'nx_clear': {
+        const confirmed = ((st.confirm && st.confirm.val && st.confirm.val.selected_options) || []).length > 0;
+        if (!target) { await ack({ response_action: 'errors', errors: { target: 'Pick an agent.' } }); return; }
+        if (!confirmed) { await ack({ response_action: 'errors', errors: { confirm: 'Tick the box to confirm.' } }); return; }
+        const w = paneWaiting(target);
+        if (w !== '2') { await ack({ response_action: 'errors', errors: { confirm: `Agent is ${orch.statusLabel(w).text} — clear only when idle at the prompt.` } }); return; }
+        await ack();
+        const r = deliverToPane(target, '/clear');
+        await say(r.ok ? `:broom: cleared context on \`${target}\` (by <@${user}>)` : `:warning: clear failed: ${r.error}`);
+        return;
+      }
+      case 'nx_stop': {
+        if (!target) { await ack({ response_action: 'errors', errors: { target: 'Pick an agent.' } }); return; }
+        await ack();
+        const r = subRun(['send-keys', target, 'escape']);
+        await say(r.ok ? `:octagonal_sign: sent ESC to \`${target}\` (by <@${user}>)` : `:warning: stop failed: ${r.error}`);
+        return;
+      }
+      case 'nx_peek': {
+        if (!target) { await ack({ response_action: 'errors', errors: { target: 'Pick an agent.' } }); return; }
+        await ack();
+        const n = Math.max(1, Math.min(200, parseInt((st.lines && st.lines.val && st.lines.val.value) || '40', 10) || 40));
+        const out = subRead(['capture', target, String(n)]);
+        const tail = out ? out.split('\n').slice(-n).join('\n') : '(no output captured)';
+        await say(`:eyes: last ${n} lines of \`${target}\`:\n\`\`\`\n${orch.capWithMarker(tail, 2800)}\n\`\`\``);
+        return;
+      }
+      case 'nx_keep': {
+        if (!target) { await ack({ response_action: 'errors', errors: { target: 'Pick an agent.' } }); return; }
+        await ack();
+        const onoff = (st.onoff && st.onoff.val && st.onoff.val.selected_option && st.onoff.val.selected_option.value) || 'on';
+        const r = deliverViaScript(join(HOME, '.tmux', 'agent-keep.sh'), [target, onoff]);
+        await say(r.ok ? `:pushpin: keep ${onoff} for \`${target}\` — ${r.out || 'done'}` : `:warning: keep failed: ${r.error}`);
+        return;
+      }
+      default:
+        await ack();
+    }
+  } catch (e) {
+    console.error(`[nexus] submit ${cb} failed: ${e.message}`);
+    try { await ack(); } catch { /* already acked */ }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Startup

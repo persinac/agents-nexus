@@ -3,7 +3,7 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery, homeView, selectFormView, multilineInput, textInput, confirmCheckbox, radioOnOff } from './orchestrator.js';
 
 // The addressed-bus parser lives in index.js (it needs no orchestrator state), but its
 // shape is a shared contract with formatRelay/parsePresence — a relay or presence line must
@@ -549,4 +549,94 @@ test('renderDelivery: msg is byte-for-byte the legacy line; typed kinds are labe
   assert.match(req, /agent-send\.sh --reply abc F4\/w\/general/);   // the reply hint targets reply_to
   assert.equal(renderDelivery(buildEnvelope({ kind: 'reply', corr: 'abc', from: 'svc', body: 'green' })), '↩ reply from svc [re abc]: green');
   assert.equal(renderDelivery(buildEnvelope({ kind: 'event', from: 'svc', body: 'deployed' })), '↩ event from svc: deployed');
+});
+
+// --- Nexus control-modal view builders ------------------------------------
+
+// Find the first block of a given type in a view.
+const blockOf = (view, type) => (view.blocks || []).find((b) => b.type === type);
+const actionsBlock = (view, block_id) => (view.blocks || []).find((b) => b.type === 'actions' && b.block_id === block_id);
+
+test('homeView: lists agents and shows lifecycle buttons only when spawn is enabled', () => {
+  const agents = [
+    { name: 'database', host: 'nexus', status: 'working', emoji: ':large_green_circle:' },
+    { name: 'general', host: 'mac', status: 'remote', emoji: ':globe_with_meridians:' },
+  ];
+  const on = homeView({ agents, spawnEnabled: true, channel: 'C123' });
+  assert.equal(on.type, 'modal');
+  assert.equal(on.callback_id, 'nx_home');
+  assert.equal(on.private_metadata, 'C123');           // origin channel rides in private_metadata
+  assert.ok(!on.submit);                               // home has no submit (buttons only)
+  const section = blockOf(on, 'section');
+  assert.match(section.text.text, /database/);
+  assert.match(section.text.text, /general/);
+  assert.ok(actionsBlock(on, 'nx_read'), 'read actions present');
+  assert.ok(actionsBlock(on, 'nx_life'), 'lifecycle actions present when enabled');
+  // Every button carries an nx: action_id (so index.js dispatch routes it, never the digit path).
+  for (const el of actionsBlock(on, 'nx_read').elements.concat(actionsBlock(on, 'nx_life').elements)) {
+    assert.match(el.action_id, /^nx:/);
+  }
+
+  const off = homeView({ agents, spawnEnabled: false });
+  assert.ok(actionsBlock(off, 'nx_read'), 'read actions always present');
+  assert.ok(!actionsBlock(off, 'nx_life'), 'lifecycle buttons hidden when spawn disabled');
+  assert.ok(blockOf(off, 'context'), 'shows the SLACK_SPAWN_ENABLED hint');
+});
+
+test('homeView: empty fleet renders a note, no crash', () => {
+  const v = homeView({ agents: [], spawnEnabled: true });
+  assert.ok(blockOf(v, 'context'));                    // "_no live agents_"
+  assert.ok(actionsBlock(v, 'nx_read'));
+});
+
+test('selectFormView: builds a static_select with submit; empty options drop the submit', () => {
+  const opts = [{ text: 'database · idle', value: 'w3:pK' }, { text: 'general · working', value: 'w4:pQ' }];
+  const v = selectFormView({ callback_id: 'nx_clear', title: 'Clear context', submitLabel: 'Clear', options: opts, channel: 'C9' });
+  assert.equal(v.callback_id, 'nx_clear');
+  assert.equal(v.private_metadata, 'C9');
+  assert.deepEqual(v.submit, { type: 'plain_text', text: 'Clear' });
+  const input = (v.blocks || []).find((b) => b.type === 'input' && b.block_id === 'target');
+  assert.equal(input.element.type, 'static_select');
+  assert.equal(input.element.options.length, 2);
+  assert.equal(input.element.options[0].value, 'w3:pK');
+
+  const empty = selectFormView({ callback_id: 'nx_restore', title: 'Restore', options: [] });
+  assert.ok(!empty.submit, 'no submit when there is nothing to pick');
+  assert.ok((empty.blocks || []).some((b) => b.type === 'section'), 'shows a "nothing available" note');
+});
+
+test('selectFormView: option text/value are capped at Slack’s 75-char limit', () => {
+  const long = 'x'.repeat(200);
+  const v = selectFormView({ callback_id: 'nx_msg', options: [{ text: long, value: long }] });
+  const opt = v.blocks.find((b) => b.block_id === 'target').element.options[0];
+  assert.equal(opt.text.text.length, 75);
+  assert.equal(opt.value.length, 75);
+});
+
+test('selectFormView: appends caller extraBlocks after the select', () => {
+  const v = selectFormView({
+    callback_id: 'nx_msg', options: [{ text: 'a', value: 'a' }],
+    extraBlocks: [multilineInput('body', 'Message')],
+  });
+  const ids = v.blocks.filter((b) => b.type === 'input').map((b) => b.block_id);
+  assert.deepEqual(ids, ['target', 'body']);
+});
+
+test('input helpers: shapes match Block Kit input contracts', () => {
+  const ml = multilineInput('body', 'Message');
+  assert.equal(ml.element.type, 'plain_text_input');
+  assert.equal(ml.element.multiline, true);
+  assert.equal(ml.optional, false);
+
+  const ti = textInput('lines', 'Lines');
+  assert.equal(ti.optional, true);                     // text inputs default optional
+
+  const cb = confirmCheckbox('confirm', 'Yes, clear it');
+  assert.equal(cb.element.type, 'checkboxes');
+  assert.equal(cb.optional, true);
+  assert.equal(cb.element.options[0].value, 'yes');
+
+  const on = radioOnOff('onoff', { current: 'off' });
+  assert.equal(on.element.type, 'radio_buttons');
+  assert.equal(on.element.initial_option.value, 'off');
 });
