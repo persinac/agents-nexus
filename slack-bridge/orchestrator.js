@@ -394,6 +394,12 @@ export function fleetPanel({ agents = [], picked = null, spawnEnabled = false } 
       if (opt) select.initial_option = opt;
     }
     blocks.push({ type: 'actions', block_id: 'nx_pick', elements: [select] });
+    // Always-visible button — works with no prior selection. Doubles as the probe
+    // for whether button block_actions reach the bridge at all.
+    blocks.push({
+      type: 'actions', block_id: 'nx_always',
+      elements: [{ type: 'button', action_id: 'nx:do:fleetstatus', value: '', text: { type: 'plain_text', text: '📊 Fleet status', emoji: true } }],
+    });
   } else {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '_no local agents_' }] });
   }
