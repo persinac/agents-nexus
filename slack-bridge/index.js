@@ -972,6 +972,8 @@ socket.on('reaction_added', async ({ event, ack }) => {
 // digit; deliver it to the thread's agent, then resolve the card (drop buttons,
 // show the outcome). Requires the Slack app to have Interactivity enabled.
 socket.on('interactive', async ({ body, ack }) => {
+  const _a = body && body.actions && body.actions[0];
+  console.log(`[nexus] interactive type=${(body && body.type) || '-'} action=${(_a && _a.action_id) || '-'}`);
   // Modal form submits must ack WITH a response (close / errors), so they own their
   // own ack inside handleNexusSubmit rather than the blanket pre-ack below.
   if (body && body.type === 'view_submission') { await handleNexusSubmit(body, ack); return; }
@@ -1064,11 +1066,12 @@ async function doMsgCmd(arg, text) {
 }
 
 socket.on('slash_commands', async ({ body, ack }) => {
-  // Message-based control surface (NO modals). Slack's Socket Mode delivers the
-  // command envelope with a tight 3s trigger_id budget that this deployment's WS
-  // latency (~2.6s) routinely blows, so views.open/push are unreliable here. We ack
-  // with a MESSAGE instead (proven by status/agents), and the panel's buttons/select
-  // respond via response_url (valid ~30 min, no trigger_id).
+  // ACK EMPTY + IMMEDIATELY (first line, zero computation) so the ack lands inside
+  // Slack's 3s window even though this deployment's Socket Mode WS delivers the
+  // envelope ~2.6s late. ALL output then goes over response_url (valid ~30 min, no
+  // deadline), so the result shows up regardless of ack timing.
+  try { await ack(); } catch (e) { /* already acked */ }
+  const url = body && body.response_url;
   const raw = String((body && body.text) || '').trim();
   const parts = raw.split(/\s+/);
   const sub = (parts[0] || '').toLowerCase();
@@ -1078,48 +1081,48 @@ socket.on('slash_commands', async ({ body, ack }) => {
   try {
     if (!sub || sub === 'home' || sub === 'help') {
       const agents = localAgentOptions().map((o) => ({ name: o.text, pane: o.value, label: o.text }));
-      await ack({ response_type: 'ephemeral', text: 'Nexus Fleet Control', blocks: orch.fleetPanel({ agents, spawnEnabled: SPAWN_ENABLED }) });
+      await respond(url, { response_type: 'ephemeral', text: 'Nexus Fleet Control', blocks: orch.fleetPanel({ agents, spawnEnabled: SPAWN_ENABLED }) });
       return;
     }
-    if (sub === 'status') { await ack({ response_type: 'ephemeral', text: await statusText(parts.slice(1).join(' ')) }); return; }
-    if (sub === 'agents') { await ack(await agentsSummaryText(/--local\b/.test(raw))); return; }
-    if (sub === 'peek') { await ack(await doPeek(parts[1], parts[2])); return; }
-    if (sub === 'clear') { await ack(await doClearCmd(parts[1])); return; }
-    if (sub === 'stop') { await ack(await doStopCmd(parts[1])); return; }
-    if (sub === 'keep') { await ack(await doKeepCmd(parts[1], parts[2])); return; }
+    if (sub === 'status') { await respond(url, { response_type: 'ephemeral', text: await statusText(parts.slice(1).join(' ')) }); return; }
+    if (sub === 'agents') { await respond(url, await agentsSummaryText(/--local\b/.test(raw))); return; }
+    if (sub === 'peek') { await respond(url, await doPeek(parts[1], parts[2])); return; }
+    if (sub === 'clear') { await respond(url, await doClearCmd(parts[1])); return; }
+    if (sub === 'stop') { await respond(url, await doStopCmd(parts[1])); return; }
+    if (sub === 'keep') { await respond(url, await doKeepCmd(parts[1], parts[2])); return; }
     if (sub === 'msg' || sub === 'message') {
       const rest2 = raw.slice(sub.length).trim();
       const agent = rest2.split(/\s+/)[0] || '';
       const msgText = rest2.slice(agent.length).trim();
-      await ack(await doMsgCmd(agent, msgText));
+      await respond(url, await doMsgCmd(agent, msgText));
       return;
     }
     if (sub === 'spawn') {
-      if (!SPAWN_ENABLED) { await ack(eph(':lock: spawn disabled (`SLACK_SPAWN_ENABLED=0`).')); return; }
+      if (!SPAWN_ENABLED) { await respond(url, eph(':lock: spawn disabled (`SLACK_SPAWN_ENABLED=0`).')); return; }
       const repo = parts[1];
       const seed = raw.slice(sub.length).trim().slice((repo || '').length).trim();
       if (!repo) {
         const names = orch.allowlistEntries(orch.loadAllowlist(SPAWN_ALLOWLIST_FILE)).map((e) => e.name);
-        await ack(eph(names.length ? `spawnable: ${names.join(', ')}\nusage: \`/nexus spawn <repo> [seed]\`` : 'no spawnable repos configured.'));
+        await respond(url, eph(names.length ? `spawnable: ${names.join(', ')}\nusage: \`/nexus spawn <repo> [seed]\`` : 'no spawnable repos configured.'));
         return;
       }
-      await ack(eph(`:rocket: spawning \`${repo}\`…`));
+      await respond(url, eph(`:rocket: spawning \`${repo}\`…`));
       await doSpawn(chan, undefined, repo, seed, uid);
       return;
     }
     if (sub === 'restore') {
-      if (!SPAWN_ENABLED) { await ack(eph(':lock: restore disabled.')); return; }
+      if (!SPAWN_ENABLED) { await respond(url, eph(':lock: restore disabled.')); return; }
       const repo = parts[1];
-      if (repo) { await ack(eph(`:leftwards_arrow_with_hook: restoring \`${repo}\`…`)); await doRestore(chan, undefined, repo, uid); return; }
+      if (repo) { await respond(url, eph(`:leftwards_arrow_with_hook: restoring \`${repo}\`…`)); await doRestore(chan, undefined, repo, uid); return; }
       const dormant = await ledgerCmd(['list', '--state', 'dormant', '--json']);
       const names = (Array.isArray(dormant) ? dormant : []).map((d) => d.repo || d.name);
-      await ack(eph(names.length ? `dormant: ${names.join(', ')}\nusage: \`/nexus restore <repo>\`` : 'no dormant agents.'));
+      await respond(url, eph(names.length ? `dormant: ${names.join(', ')}\nusage: \`/nexus restore <repo>\`` : 'no dormant agents.'));
       return;
     }
-    await ack(eph(`Unknown \`${sub}\`. Try \`/nexus\` (panel), or: status · agents · peek · clear · stop · keep · msg · spawn · restore`));
+    await respond(url, eph(`Unknown \`${sub}\`. Try \`/nexus\` (panel), or: status · agents · peek · clear · stop · keep · msg · spawn · restore`));
   } catch (e) {
     console.error(`[nexus] slash ${sub} failed: ${e.message}`);
-    try { await ack(eph(`:warning: ${e.message}`)); } catch { /* already acked */ }
+    await respond(url, eph(`:warning: ${e.message}`));
   }
 });
 
@@ -2173,7 +2176,8 @@ async function handleNexusButton(action, body) {
       const act = id.slice('nx:do:'.length);
       const pane = action.value;
       let res;
-      if (act === 'status') res = await statusText(paneName(pane));
+      if (act === 'fleetstatus') res = await statusText('all');
+      else if (act === 'status') res = await statusText(paneName(pane));
       else if (act === 'peek') res = (await doPeek(pane, '40')).text;
       else if (act === 'clear') res = (await doClearCmd(pane)).text;
       else if (act === 'stop') res = (await doStopCmd(pane)).text;
