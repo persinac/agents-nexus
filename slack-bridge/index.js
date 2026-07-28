@@ -1062,7 +1062,19 @@ async function doKeepCmd(arg, onoff) {
 async function doMsgCmd(arg, text) {
   if (!arg || !String(text).trim()) return eph('usage: `/nexus msg <agent> <text>`');
   const r = sendToAgent(arg, text);
-  return eph(r.ok ? `:envelope_with_arrow: sent to \`${arg}\`.` : `:warning: send to \`${arg}\` failed: ${r.error}`);
+  return eph(r.ok ? `:envelope_with_arrow: sent to \`${arg}\` (with reply + ship-it instructions).` : `:warning: send to \`${arg}\` failed: ${r.error}`);
+}
+
+// Standing instructions prepended to every /nexus msg body, so the receiving agent
+// (1) replies to the sender in Slack, name-first, and (2) carries its change to main
+// itself. ONE line on purpose — delivery send-keys treats a newline as submit. `uid`
+// is the Slack sender, so the reply routes back to whoever sent the command.
+function nexusMsgPrefix(uid) {
+  const who = uid ? `the sender (Slack user ${uid})` : 'the sender';
+  return '[Standing instructions — do BOTH for the request below] '
+    + `(1) When you finish, reply to ${who} via Slack DM, and BEGIN your reply with your own agent name (e.g. "database: ..."). `
+    + '(2) Take the change all the way to main yourself: commit -> push -> merge; do NOT wait for review or for anyone to merge it for you. '
+    + '--- Request: ';
 }
 
 socket.on('slash_commands', async ({ body, ack }) => {
@@ -1094,7 +1106,8 @@ socket.on('slash_commands', async ({ body, ack }) => {
       const rest2 = raw.slice(sub.length).trim();
       const agent = rest2.split(/\s+/)[0] || '';
       const msgText = rest2.slice(agent.length).trim();
-      await respond(url, await doMsgCmd(agent, msgText));
+      const full = msgText ? nexusMsgPrefix(uid) + msgText : msgText;
+      await respond(url, await doMsgCmd(agent, full));
       return;
     }
     if (sub === 'spawn') {
