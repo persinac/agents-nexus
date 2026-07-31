@@ -152,16 +152,20 @@ function shQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
-export function buildSpawnCommand({ slug, seed, restoreCheckpoint, openClaude }) {
+export function buildSpawnCommand({ slug, seed, restoreCheckpoint, openClaude, permissionMode }) {
   const parts = ['env', `PROJECT_SLUG=${shQuote(slug)}`];
   if (seed) parts.push(`SEED_PROMPT=${shQuote(seed)}`);
   if (restoreCheckpoint) parts.push(`RESTORE_CHECKPOINT=${shQuote(restoreCheckpoint)}`);
+  // Permission posture for the spawned agent — open-claude.sh turns this into
+  // `claude --permission-mode <mode>` (acceptEdits = auto-approve file edits,
+  // bypassPermissions = auto-approve everything). Empty = leave unset (prompts).
+  if (permissionMode) parts.push(`CLAUDE_PERMISSION_MODE=${shQuote(permissionMode)}`);
   parts.push(shQuote(openClaude));
   return parts.join(' ');
 }
 
-export function spawnWindow({ session, name, cwd, slug, seed, restoreCheckpoint, openClaude, timeoutMs = 8000 }) {
-  const command = buildSpawnCommand({ slug: slug || name, seed, restoreCheckpoint, openClaude });
+export function spawnWindow({ session, name, cwd, slug, seed, restoreCheckpoint, openClaude, permissionMode, timeoutMs = 8000 }) {
+  const command = buildSpawnCommand({ slug: slug || name, seed, restoreCheckpoint, openClaude, permissionMode });
   const substrate = process.env.HOME + "/.tmux/substrate.sh";
   return new Promise((resolve) => {
     execFile(substrate, ["spawn", name, cwd, command, "--print"],
@@ -172,7 +176,9 @@ export function spawnWindow({ session, name, cwd, slug, seed, restoreCheckpoint,
           const out = String(stdout).trim();
           if (out.startsWith("{")) {
             const parsed = JSON.parse(out);
-            const pane = parsed.result?.agent_started?.pane_id || "";
+            // herdr `agent start --print` returns the pane at result.agent.pane_id;
+            // keep the legacy result.agent_started.pane_id as a fallback.
+            const pane = parsed.result?.agent?.pane_id || parsed.result?.agent_started?.pane_id || "";
             const slot = pane ? (pane.split(":")[0] || "") : "";
             resolve({ ok: true, pane, slot });
           } else {

@@ -99,6 +99,11 @@ const SPAWN_RATE_WINDOW_MS = parseInt(process.env.SLACK_SPAWN_RATE_WINDOW_MS || 
 const SPAWN_CONFIRM_TTL_MS = parseInt(process.env.SLACK_SPAWN_CONFIRM_TTL_MS || '300000', 10); // 5 min
 const NUDGE_MIN_INTERVAL_MS = parseInt(process.env.SLACK_NUDGE_MIN_INTERVAL_MS || '3600000', 10); // 1 h
 const OPEN_CLAUDE = process.env.SLACK_OPEN_CLAUDE || join(HOME, '.tmux', 'open-claude.sh');
+// Permission posture for agents spawned via /nexus spawn. Empty (default) = leave
+// unset so the agent prompts as usual; `acceptEdits` = auto-approve file edits (still
+// prompts for Bash); `bypassPermissions` = auto-approve everything (fully hands-off).
+// open-claude.sh maps this to `claude --permission-mode <mode>`.
+const SPAWN_PERMISSION_MODE = process.env.SLACK_SPAWN_PERMISSION_MODE || '';
 const LEDGER_PYTHON = process.env.SLACK_LEDGER_PYTHON || 'python3';
 const LEDGER_SCRIPT = process.env.SLACK_LEDGER_SCRIPT || join(AGENTS_NEXUS_DIR, 'scripts', 'agent-ledger.py');
 const LEDGER_FILE = process.env.AGENT_LEDGER || join(HOME, '.tmux', 'agent-ledger.jsonl');
@@ -761,7 +766,7 @@ async function performSpawn(pending) {
   const res = await orch.spawnWindow({
     session: SPAWN_SESSION, name: repo, cwd: repoPath, slug: repo,
     seed: restore ? '' : pending.seed, restoreCheckpoint: restore ? pending.checkpoint : '',
-    openClaude: OPEN_CLAUDE,
+    openClaude: OPEN_CLAUDE, permissionMode: SPAWN_PERMISSION_MODE,
   });
   if (!res.ok) {
     inFlight.delete(repo);

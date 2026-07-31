@@ -3,7 +3,7 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery, homeView, selectFormView, multilineInput, textInput, confirmCheckbox, radioOnOff } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery, homeView, selectFormView, multilineInput, textInput, confirmCheckbox, radioOnOff, buildSpawnCommand } from './orchestrator.js';
 
 // The addressed-bus parser lives in index.js (it needs no orchestrator state), but its
 // shape is a shared contract with formatRelay/parsePresence — a relay or presence line must
@@ -639,4 +639,14 @@ test('input helpers: shapes match Block Kit input contracts', () => {
   const on = radioOnOff('onoff', { current: 'off' });
   assert.equal(on.element.type, 'radio_buttons');
   assert.equal(on.element.initial_option.value, 'off');
+});
+
+test('buildSpawnCommand: injects CLAUDE_PERMISSION_MODE only when set', () => {
+  const base = buildSpawnCommand({ slug: 'hermes-bridge', openClaude: '/o/c.sh' });
+  assert.ok(!base.includes('CLAUDE_PERMISSION_MODE'), 'no mode when unset');
+  const withMode = buildSpawnCommand({ slug: 'hermes-bridge', openClaude: '/o/c.sh', permissionMode: 'acceptEdits' });
+  assert.match(withMode, /CLAUDE_PERMISSION_MODE='acceptEdits'/);
+  assert.match(withMode, /PROJECT_SLUG='hermes-bridge'/);
+  // ordering: env assignments precede the launcher path
+  assert.ok(withMode.indexOf('CLAUDE_PERMISSION_MODE') < withMode.indexOf('/o/c.sh'));
 });
