@@ -1120,13 +1120,15 @@ socket.on('slash_commands', async ({ body, ack }) => {
         return;
       }
       await respond(url, eph(`:rocket: spawning \`${repo}\`…`));
-      await doSpawn(chan, undefined, repo, seed, uid);
+      // Post the spawn result to the reachable control channel — chat.postMessage to
+      // the invoking channel fails channel_not_found when the bot isn't a member.
+      await doSpawn(NEXUS_CHANNEL || chan, undefined, repo, seed, uid);
       return;
     }
     if (sub === 'restore') {
       if (!SPAWN_ENABLED) { await respond(url, eph(':lock: restore disabled.')); return; }
       const repo = parts[1];
-      if (repo) { await respond(url, eph(`:leftwards_arrow_with_hook: restoring \`${repo}\`…`)); await doRestore(chan, undefined, repo, uid); return; }
+      if (repo) { await respond(url, eph(`:leftwards_arrow_with_hook: restoring \`${repo}\`…`)); await doRestore(NEXUS_CHANNEL || chan, undefined, repo, uid); return; }
       const dormant = await ledgerCmd(['list', '--state', 'dormant', '--json']);
       const names = (Array.isArray(dormant) ? dormant : []).map((d) => d.repo || d.name);
       await respond(url, eph(names.length ? `dormant: ${names.join(', ')}\nusage: \`/nexus restore <repo>\`` : 'no dormant agents.'));
