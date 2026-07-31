@@ -70,7 +70,6 @@ fi
 # registers (registry + name) in both substrates.
 TMUX_PANE="${TMUX_PANE:-${HERDR_PANE_ID:-}}"
 MY_PANE_ID="$TMUX_PANE"
-MY_SLOT=$("$NEXUS_TMUX_DIR/substrate.sh" pane-field "$TMUX_PANE" '#{window_index}' 2>/dev/null)
 MY_NAME="$project_slug"
 # Workspace (bucket) label: set at spawn via NEXUS_WORKSPACE; else derive from the pane
 # (herdr). Empty for flat/default agents, which resolve as unscoped (thin) names.
@@ -111,7 +110,14 @@ if [ -n "${ANTHROPIC_BASE_URL:-}" ] && [ -n "$MY_NAME" ]; then
   export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL%/}/sess/${_sess_slug}"
 fi
 
-if [ -n "$MY_PANE_ID" ] && [ -n "$MY_SLOT" ]; then
+# Gate on the PANE only. `register` is keyed by pane and takes no slot, so the old
+# `&& [ -n "$MY_SLOT" ]` gated registration on a window-index query (substrate
+# pane-field) that RACES on herdr: at spawn time the daemon doesn't yet know a
+# freshly-created pane, so pane-field returned empty → registration was silently
+# skipped, leaving bridge-spawned agents unregistered (invisible to /agents, their
+# permission prompts un-routed to Slack → wedged at the first prompt). MY_PANE_ID
+# comes from HERDR_PANE_ID in the env (no daemon query), so it's reliably set.
+if [ -n "$MY_PANE_ID" ]; then
   # Route through the shared `substrate register` verb (the one writer of the registry
   # format), so picker launches and seam-spawned agents register identically.
   "$NEXUS_TMUX_DIR/substrate.sh" register "$MY_PANE_ID" "$MY_NAME" "$REPO_PATH" "$MY_WORKSPACE"
