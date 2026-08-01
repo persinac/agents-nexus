@@ -2477,6 +2477,19 @@ async function handleNexusSubmit(body, ack) {
       await pushNatsPresence();
       setInterval(() => { pushNatsPresence().catch(() => {}); }, PRESENCE_HEARTBEAT_MS);
       console.log(`[slack-bridge] NATS presence heartbeat every ${PRESENCE_HEARTBEAT_MS}ms (bucket=${NATS_PRESENCE_KV})`);
+      // Registry watch → refresh presence within ~2s of a spawn/reap instead of waiting
+      // up to a full heartbeat, so `/nexus agents` reflects a fresh spawn promptly (the
+      // heartbeat stays as the backstop). Mirrors the Slack-presence fs.watch.
+      try {
+        let _natsPresDebounce = null;
+        watch(REGISTRY_DIR, () => {
+          clearTimeout(_natsPresDebounce);
+          _natsPresDebounce = setTimeout(() => { pushNatsPresence().catch(() => {}); }, 1500);
+        });
+        console.log('[slack-bridge] NATS presence registry-watch ON (spawn/reap propagates ~2s)');
+      } catch (e) {
+        console.warn(`[slack-bridge] NATS presence registry watch unavailable (${e.message}) — relying on the heartbeat`);
+      }
     } catch (e) {
       console.error(`[slack-bridge] NATS transport failed to start: ${e.message} — A2A over NATS is DOWN (Slack human legs unaffected)`);
     }
