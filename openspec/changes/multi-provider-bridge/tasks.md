@@ -1,12 +1,18 @@
 ## Status (2026-08-01)
 
-Proposed. Decisions locked (in-house adapters · HTTP interactions · one process ·
-mirror `/nexus <args>`). Design merged (`docs/multi-provider-bridge.md`). No code yet.
+In progress. Decisions locked (in-house adapters · HTTP interactions · one process ·
+mirror `/nexus <args>`). Design merged (`docs/multi-provider-bridge.md`).
+
+**Seam foundation landed (PR #38):** the normalized model + Slack render/parse + a
+testable `SlackAdapter` exist and are unit-tested (77/77), but are **not yet wired into
+the live `/nexus` handler** — the running bridge is unaffected. The wiring (2.2) is the
+next step and needs an operator Slack re-test (2.4), since Socket Mode can't be driven
+headlessly.
 
 ## 1. Provider seam + normalized model
 
-- [ ] 1.1 `slack-bridge/providers/types.js` — `Message {text?, ephemeral?, components?}`,
-      `Command`, `Action`, and the `NexusProvider` shape (JSDoc). Pure, unit-tested.
+- [x] 1.1 `slack-bridge/providers/types.js` — `Message {text?, ephemeral?, components?}`,
+      `Command`, `Action`, and the `NexusProvider` shape (JSDoc). Pure, unit-tested. (PR #38)
 - [ ] 1.2 Extract the provider-agnostic `/nexus` dispatch from `index.js` into a core
       `dispatchNexusCommand(command, respond)` — same helpers (status/agents/peek/clear/
       stop/keep/msg/spawn/restore), no Slack types in the signature.
@@ -15,10 +21,12 @@ mirror `/nexus <args>`). Design merged (`docs/multi-provider-bridge.md`). No cod
 
 ## 2. Slack adapter (behavior-preserving refactor)
 
-- [ ] 2.1 `slack-bridge/providers/slack.js` — `SlackAdapter`: Socket Mode ingress →
+- [x] 2.1 `slack-bridge/providers/slack.js` — `SlackAdapter`: Socket Mode ingress →
       `Command`/`Action`; `reply` via `response_url` (ack-empty first); `send` via
-      `chat.postMessage`; renders `Message` via `messageToBlockKit`.
+      `chat.postMessage`; renders `Message` via `messageToBlockKit`. Pure fns + adapter
+      unit-tested (injected socket/web/post). (PR #38)
 - [ ] 2.2 `index.js` wires `SlackAdapter` into the core; remove inline Slack I/O.
+      **← NEXT. Touches the live path; do with an operator present to re-test (2.4).**
 - [ ] 2.3 Snapshot-test: Block Kit output for the panel + each reply is byte-identical
       to today. `node --check` + `npm test` green.
 - [ ] 2.4 **Verify live**: restart bridge; `/nexus status|agents|peek|<panel>` in Slack
