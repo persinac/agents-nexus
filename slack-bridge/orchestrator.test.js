@@ -3,7 +3,7 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery, homeView, selectFormView, multilineInput, textInput, confirmCheckbox, radioOnOff, buildSpawnCommand } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery, homeView, selectFormView, multilineInput, textInput, confirmCheckbox, radioOnOff, buildSpawnCommand, suggestSpawnName } from './orchestrator.js';
 
 // The addressed-bus parser lives in index.js (it needs no orchestrator state), but its
 // shape is a shared contract with formatRelay/parsePresence — a relay or presence line must
@@ -649,4 +649,17 @@ test('buildSpawnCommand: injects CLAUDE_PERMISSION_MODE only when set', () => {
   assert.match(withMode, /PROJECT_SLUG='hermes-bridge'/);
   // ordering: env assignments precede the launcher path
   assert.ok(withMode.indexOf('CLAUDE_PERMISSION_MODE') < withMode.indexOf('/o/c.sh'));
+});
+
+test('suggestSpawnName maps a near-miss to the closest allowlist name', () => {
+  const names = ['management-api', 'directory-api', 'hermes-bridge', 'store-front', 'wallet-api'];
+  assert.equal(suggestSpawnName('storefront-ui', names), 'store-front'); // the real case
+  assert.equal(suggestSpawnName('store-front', names), 'store-front');   // exact
+  assert.equal(suggestSpawnName('storefront', names), 'store-front');
+  assert.equal(suggestSpawnName('wallet', names), 'wallet-api');
+  assert.equal(suggestSpawnName('management', names), 'management-api'); // substring
+  assert.equal(suggestSpawnName('mgmt-api', names), null);              // abbreviations not expanded
+  assert.equal(suggestSpawnName('zzzzz', names), null);                  // no meaningful overlap
+  assert.equal(suggestSpawnName('', names), null);
+  assert.equal(suggestSpawnName('store-front', []), null);              // no candidates
 });
