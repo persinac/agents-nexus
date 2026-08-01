@@ -27,8 +27,13 @@ echo "[surfacer] $NAME ($PANE) → posting prompt cards to /notify, cap ${MAX}s,
 post_card() {
   local action="$1"
   local body
-  body=$(python3 -c "import json,sys; print(json.dumps({'name':sys.argv[1],'pane':sys.argv[2],'kind':'permission_prompt','wait_since':sys.argv[3],'summary':sys.argv[4]}))" \
-    "$NAME" "$PANE" "$(date +%s)" "$action" 2>/dev/null)
+  # Omit wait_since ON PURPOSE. The bridge's resolveRequest has a same-prompt guard that
+  # compares the card's wait_since to the pane's @wait_since sidecar and drops the card as
+  # "stale" if they differ. When the agent's Notification hook is dead, that sidecar is never
+  # set — so any wait_since we invent would mismatch and every tap would be rejected. Leaving
+  # it empty makes the guard fall through, so a tap delivers the digit straight to the pane.
+  body=$(python3 -c "import json,sys; print(json.dumps({'name':sys.argv[1],'pane':sys.argv[2],'kind':'permission_prompt','summary':sys.argv[3]}))" \
+    "$NAME" "$PANE" "$action" 2>/dev/null)
   printf '%s' "$body" | curl -m 3 -s -o /dev/null -X POST "http://127.0.0.1:$PORT/notify" -H 'Content-Type: application/json' --data @- 2>/dev/null
 }
 
