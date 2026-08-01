@@ -52,7 +52,56 @@ _FNM_BIN="$HOME/.local/share/fnm/aliases/default/bin"
 # fall back to NOTES_DIR for back-compat with older env.sh installs.
 CHECKPOINT_SRC="${CHECKPOINT_DIR:-${NOTES_DIR:-$HOME/vault/Checkpoints}}"
 REPO_PATH="${PWD}"
-project_slug="${PROJECT_SLUG:-$(basename "$REPO_PATH")}"
+
+# project_slug: the REPO's name, not the checkout directory's.
+#
+# These are the same for an ordinary clone and differ for a git worktree, whose
+# directory is named <parent>_<repo>--<branch> — so a worktree agent registered
+# as "flashback-fleet_management-dashboard--business-hours" instead of
+# "management-dashboard".
+#
+# That is not just unpleasant to type on the bus. project_slug ALSO keys the
+# agent-memory project, the checkpoint filenames and the prompt cache (see the
+# uses below), so a worktree-spawned agent silently came up with none of its
+# project's memory and wrote its checkpoints to a namespace nothing else reads.
+# The bus name was the visible symptom; the lost continuity was the actual bug.
+#
+# git-common-dir resolves to the MAIN checkout's .git from inside a worktree and
+# to the repo's own .git otherwise, so this returns exactly what basename used to
+# for a normal clone — verified against both before changing it.
+_slug_from_git() {
+    local common main
+    common=$(git -C "$REPO_PATH" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+    [ -n "$common" ] || return 1
+    main=$(dirname "$common")
+    [ -d "$main" ] || return 1
+    basename "$main"
+}
+
+# A name already claimed by a LIVE agent must not be handed out twice: the bus
+# resolves by name and takes the first match, so a duplicate would silently
+# deliver another agent's messages here. Two worktrees of one repo hit this, and
+# it is the case the long directory name was accidentally protecting against —
+# so fall back to the directory name rather than collide.
+_slug_is_taken() {
+    local want="$1" f
+    for f in "$HOME/.tmux/registry"/*; do
+        [ -f "$f" ] || continue
+        [ "$(basename "$f")" = "${TMUX_PANE:-${HERDR_PANE_ID:-}}" ] && continue
+        [ "$(grep -m1 '^NAME=' "$f" 2>/dev/null | cut -d= -f2)" = "$want" ] && return 0
+    done
+    return 1
+}
+
+if [ -n "${PROJECT_SLUG:-}" ]; then
+    project_slug="$PROJECT_SLUG"                      # explicit override always wins
+else
+    project_slug="$(basename "$REPO_PATH")"
+    _git_slug="$(_slug_from_git || true)"
+    if [ -n "$_git_slug" ] && [ "$_git_slug" != "$project_slug" ] && ! _slug_is_taken "$_git_slug"; then
+        project_slug="$_git_slug"
+    fi
+fi
 
 # ── Agent-memory Python (venv used by the MCP server) ──────────────────────
 _AGENT_MEM_VENV="${AGENTS_NEXUS_DIR:-$HOME/repos/agents-nexus}/mnemon/.venv"
