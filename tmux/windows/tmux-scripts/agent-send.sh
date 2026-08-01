@@ -1,11 +1,42 @@
 #!/usr/bin/env bash
 # Send a message from one agent to another via tmux.
-# Usage: agent-send.sh <slot_or_name> <message>
+# Usage: agent-send.sh [--stdin | --body-file F] <slot_or_name> <message>
 # Accepts a slot number (fast path) or an agent name (registry lookup).
+#
+# ── SECURITY: message-body command injection (SEND side) ──
+# A body passed as an INLINE double-quoted arg is expanded by the CALLER's shell
+# BEFORE this script runs — so $(...) and backticks in the body EXECUTE on the
+# sending host. Real RCE when relaying UNTRUSTED text (e.g. a log line). Cannot be
+# fixed inside this script. For untrusted/log/code text, pipe it instead:
+#   printf '%s' "$body" | agent-send.sh --stdin <slot_or_name>
+# or use --body-file <path>, or capture into a var and pass "$body" (a variable's
+# value is not re-expanded). Single-quoting the whole arg is NOT a general fix.
 
-TARGET="${1:?"Usage: agent-send.sh <slot_or_name> <message>"}"
+READ_STDIN=0
+BODY_FILE=""
+while true; do
+  case "$1" in
+    --stdin)     READ_STDIN=1; shift ;;
+    --body-file) BODY_FILE="${2:?"--body-file needs a path"}"; shift 2 ;;
+    *) break ;;
+  esac
+done
+
+TARGET="${1:?"Usage: agent-send.sh [--stdin|--body-file F] <slot_or_name> <message>"}"
 shift
-MSG="$*"
+# Accept --stdin / --body-file in the body position too, not only leading.
+case "${1:-}" in
+  --stdin)     READ_STDIN=1; shift ;;
+  --body-file) BODY_FILE="${2:?"--body-file needs a path"}"; shift 2 ;;
+esac
+if [ "$READ_STDIN" = "1" ]; then
+  MSG="$(cat)"
+elif [ -n "$BODY_FILE" ]; then
+  [ -r "$BODY_FILE" ] || { echo "agent-send: --body-file not readable: $BODY_FILE" >&2; exit 1; }
+  MSG="$(cat -- "$BODY_FILE")"
+else
+  MSG="$*"
+fi
 [ -z "$MSG" ] && { echo "No message provided"; exit 1; }
 
 # Ensure $HOME resolves to a writable Windows path

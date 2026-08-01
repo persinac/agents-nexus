@@ -294,3 +294,40 @@ Guardrails at ship time:
 | `tmux/mac/tmux-scripts/agent-send.sh:159-169` | `resolve_pane_name` (local path only) |
 | `tmux/mac/tmux-scripts/agent-send.sh:312-319` | channel-mode reverse-resolve (name-keyed) |
 | `docs/herdr-workflow.md:137` | the globally-unique-names invariant (to correct) |
+
+## Security: message-body command injection (send side)
+
+`agent-send.sh <target> "body"` passes the body as an **inline double-quoted
+argument**, which the **caller's shell expands before the script runs**. So
+`$(...)` and `` `...` `` in the body **execute on the sending host** — the script
+only ever sees the already-substituted result. This cannot be fixed inside
+`agent-send.sh` (the expansion has already happened by the time it sees `argv`).
+
+This is a real code-execution risk, not just mangled text, whenever you **relay
+untrusted content** — a log line, a quoted error, any fragment that might contain
+`$(...)`. Reading a misbehaving service's logs and quoting them to another agent
+is the exact trigger. (Same family as the receive-side substrate finding, but on
+the send side; reported by `infrastructure`, reproduced by `management-dashboard`
++ `agents-nexus`, 2026-07-25.)
+
+**Safe patterns — use these for any untrusted / log / code text:**
+
+```sh
+# 1. stdin mode (added for this): the body is read via cat, no shell re-expands it
+printf '%s' "$body" | agent-send.sh --via-slack <target> --stdin
+
+# 2. file mode
+agent-send.sh --via-slack <target> --body-file /path/to/text
+
+# 3. var-capture with a quoted-delimiter heredoc (survives apostrophes)
+body=$(cat <<'EOF'
+...literal text that may contain $(...) or backticks...
+EOF
+)
+agent-send.sh --via-slack <target> "$body"   # a variable's VALUE is not re-expanded
+```
+
+Single-quoting the whole argument is **not** a general fix — an apostrophe in the
+body breaks the quoting. The `--stdin` / `--body-file` modes remove the class only
+for callers who actually adopt them; the positional-arg path is unchanged and
+remains caller-side-expanded for trusted text.

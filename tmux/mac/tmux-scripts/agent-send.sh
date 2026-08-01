@@ -25,9 +25,27 @@
 # bridge's env — so the bridge's own deliveries stay local and never loop.
 #
 # Usage: agent-send.sh [--via-slack|--local] <slot_or_name_or_%pane|host/name> <message>
+#        agent-send.sh [--via-slack] <target> --stdin        # body from stdin  (SAFE for untrusted text)
+#        agent-send.sh [--via-slack] <target> --body-file F  # body from a file (SAFE for untrusted text)
 #        agent-send.sh --relay <message>
 # Accepts a pane id (%NN, exact), a slot number (window index), an agent name, or
 # a namespaced `host/name` for a specific remote bridge.
+#
+# ── SECURITY: message-body command injection (SEND side) ──────────────────────
+# A body passed as an INLINE double-quoted arg is expanded by the CALLER's shell
+# BEFORE this script runs — so $(...) and backticks in the body EXECUTE on the
+# sending host. That is a real RCE when relaying UNTRUSTED text (e.g. a log line
+# or a quoted fragment that may contain $(...)). It CANNOT be fixed inside this
+# script — the expansion already happened by the time we see argv. For any
+# untrusted / log / code text, use one of these SAFE patterns instead:
+#   1. Pipe it:      printf '%s' "$body" | agent-send.sh <target> --stdin
+#   2. --body-file:  agent-send.sh <target> --body-file /path/to/text
+#   3. Var-capture:  body=$(cat <<'EOF'
+#                    ...literal text (may contain $(...) or backticks)...
+#                    EOF
+#                    ); agent-send.sh <target> "$body"
+# A variable's VALUE is not re-expanded, so $(...) inside $body stays literal.
+# Single-quoting the whole arg is NOT a general fix (apostrophes break it).
 
 VIA_SLACK=0
 FORCE_LOCAL=0
@@ -35,6 +53,8 @@ RELAY=0
 KIND=""       # typed-envelope kind (Phase B): request | reply | event ; empty = msg (unchanged)
 CORR=""       # correlation id for --reply (the request's id)
 REPLY_TO=""   # override where a reply should be addressed
+READ_STDIN=0  # --stdin: read the body from stdin (injection-safe channel for untrusted text)
+BODY_FILE=""  # --body-file <path>: read the body from a file (injection-safe channel)
 # Parse leading flags. The typed verbs (--request/--reply/--event) build a Phase-B envelope
 # via the bridge and therefore force the bus path; a bare `agent-send.sh <to> <msg>` is a
 # plain `msg`, unchanged. --reply takes the correlation id; --reply-to takes an address.
@@ -47,6 +67,8 @@ while true; do
     --reply)     KIND="reply"; CORR="${2:?"--reply needs a correlation id: agent-send.sh --reply <id> <to> <msg>"}"; shift 2 ;;
     --event)     KIND="event"; shift ;;
     --reply-to)  REPLY_TO="${2:?"--reply-to needs an address"}"; shift 2 ;;
+    --stdin)     READ_STDIN=1; shift ;;
+    --body-file) BODY_FILE="${2:?"--body-file needs a path: agent-send.sh <target> --body-file <path>"}"; shift 2 ;;
     *) break ;;
   esac
 done
@@ -55,10 +77,27 @@ done
 # a HUMAN to read (share your output instead of copy-pasting it into a Slack DM).
 if [ "$RELAY" = "1" ]; then
   TARGET=""
-  MSG="$*"
 else
   TARGET="${1:?"Usage: agent-send.sh [--via-slack|--local|--relay] <slot_or_name> <message>"}"
   shift
+fi
+# --stdin / --body-file may appear in the body position (after <target>), not only
+# as leading flags — accept both so `agent-send.sh <target> --stdin` works and can
+# never silently send the literal string "--stdin" as the message body.
+case "${1:-}" in
+  --stdin)     READ_STDIN=1; shift ;;
+  --body-file) BODY_FILE="${2:?"--body-file needs a path"}"; shift 2 ;;
+esac
+# Body source. --stdin / --body-file carry LITERAL text that no shell re-expands —
+# the injection-safe way to relay untrusted content (see the SECURITY note above).
+# The positional-args fallback ("$*") preserves the original behavior for trusted
+# text; that path is subject to the caller-side expansion documented above.
+if [ "$READ_STDIN" = "1" ]; then
+  MSG="$(cat)"
+elif [ -n "$BODY_FILE" ]; then
+  [ -r "$BODY_FILE" ] || { echo "agent-send: --body-file not readable: $BODY_FILE" >&2; exit 1; }
+  MSG="$(cat -- "$BODY_FILE")"
+else
   MSG="$*"
 fi
 [ -z "$MSG" ] && { echo "No message provided"; exit 1; }
