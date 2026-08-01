@@ -52,6 +52,11 @@ const THREAD_MAP_PATH = join(HOME, '.tmux', 'slack-threads.json');
 const BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const APP_TOKEN = process.env.SLACK_APP_TOKEN;
 const NEXUS_CHANNEL = process.env.SLACK_NEXUS_CHANNEL || '';
+// Operator DM (a Slack user id). When set, "needs input" cards from /notify go to this
+// user's DM instead of NEXUS_CHANNEL, so the human sees them where they actually are —
+// the bot DM — rather than a busy channel they may not be watching. Empty → legacy
+// behavior (post to NEXUS_CHANNEL).
+const OPERATOR_DM = process.env.SLACK_OPERATOR_DM || '';
 const PORT = parseInt(process.env.SLACK_BRIDGE_PORT || '8788', 10);
 const THREAD_TTL_MS = 7 * 24 * 60 * 60 * 1000; // prune mappings older than 7 days
 // Proactive stale-card sweep cadence. Cards answered IN SLACK self-resolve; this
@@ -543,6 +548,12 @@ function paneWaitSince(pane) {
 // ---------------------------------------------------------------------------
 function rootForAgent(name) {
   for (const v of threadMap.values()) if (v.name === name && v.root) return v.root;
+  return null;
+}
+// Channel-scoped variant: an agent's anchor is per-destination, so a DM anchor and a
+// NEXUS_CHANNEL anchor never cross-thread (thread_ts is only valid within its channel).
+function rootForAgentIn(name, channel) {
+  for (const v of threadMap.values()) if (v.name === name && v.channel === channel && v.root) return v.root;
   return null;
 }
 function pendingCount(rootTs) {
@@ -1914,7 +1925,10 @@ const httpServer = http.createServer((req, res) => {
       try {
         const { name, message, pane, kind, category, summary, wait_since } = JSON.parse(body || '{}');
         if (!name) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'name required' })); return; }
-        if (!NEXUS_CHANNEL) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'SLACK_NEXUS_CHANNEL not set' })); return; }
+        // Prefer the operator DM (the human's actual surface) when configured; else the channel.
+        const target = OPERATOR_DM || NEXUS_CHANNEL;
+        if (!target) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'no SLACK_OPERATOR_DM or SLACK_NEXUS_CHANNEL' })); return; }
+        console.log(`[notify] recv name=${name} kind=${kind || '-'} pane=${pane || '-'}`);
         // Block Kit card: a section with the [category] + middle-man summary, then
         // (for permission prompts) Approve / Approve+don't-ask / Deny buttons whose
         // values are the menu digits. `text` is the notification fallback.
@@ -1939,17 +1953,21 @@ const httpServer = http.createServer((req, res) => {
         const fallback = `${name} needs input: ${(summary || message || '').toString().slice(0, 200)}`;
         // Per-agent thread: post under the agent's anchor (create it if this is the
         // agent's first pending request), so #nexus top-level stays one line per agent.
-        let rootTs = rootForAgent(name);
+        let rootTs = rootForAgentIn(name, target);
         if (!rootTs) {
-          const anchor = await web.chat.postMessage({ channel: NEXUS_CHANNEL, text: `:thread: *${name}* — waiting on you` });
+          const anchor = await web.chat.postMessage({ channel: target, text: `:thread: *${name}* — waiting on you` });
           rootTs = anchor.ts;
         }
-        const posted = await web.chat.postMessage({ channel: NEXUS_CHANNEL, thread_ts: rootTs, text: fallback, blocks });
-        threadMap.set(posted.ts, { name, channel: NEXUS_CHANNEL, pane: pane || '', kind: kind || '', wait_since: wait_since || '', root: rootTs, ts: posted.ts, createdAt: Date.now() });
+        const posted = await web.chat.postMessage({ channel: target, thread_ts: rootTs, text: fallback, blocks });
+        threadMap.set(posted.ts, { name, channel: target, pane: pane || '', kind: kind || '', wait_since: wait_since || '', root: rootTs, ts: posted.ts, createdAt: Date.now() });
         saveThreadMap();
+        // Observability: the card path was previously silent, so a failed/mis-routed
+        // permission card left no trace (the hook discards the response with -o /dev/null).
+        console.log(`[notify] posted card for ${name} (kind=${kind || '-'}) → ${target} ts=${posted.ts}`);
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true, ts: posted.ts }));
       } catch (e) {
+        console.error(`[notify] FAILED to post card: ${e.message}`);
         res.writeHead(500);
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
