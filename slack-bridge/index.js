@@ -896,9 +896,11 @@ async function orchestratorCommand(event, channel, text) {
   }
   const mKeep = text.match(/^keep\s+(\S+)(?:\s+(on|off|1|0|yes|no|true|false))?\s*$/i);
   if (mKeep) {
-    const args = mKeep[2] ? [mKeep[1], mKeep[2]] : [mKeep[1]];
-    const res = deliverViaScript(join(HOME, '.tmux', 'agent-keep.sh'), args);
-    await replyInThread(channel, event.ts, res.ok ? `:pushpin: ${res.out || 'done'}` : `:warning: ${res.error}`);
+    const ka = resolveLocalAgent(mKeep[1]);
+    if (!ka) { await replyInThread(channel, event.ts, `:warning: no local agent \`${mKeep[1]}\`.`); return true; }
+    const on = !/^(off|0|no|false)$/i.test(mKeep[2] || '');
+    const res = setKeep(ka.pane, mKeep[2] || 'on');
+    await replyInThread(channel, event.ts, res.ok ? `:pushpin: keep ${on ? 'on' : 'off'} for \`${ka.name}\` — ${res.out || 'done'}` : `:warning: ${res.error}`);
     return true;
   }
   // `spawn <repo> [seed…]` — explicit, by-name spawn (no classification). The
@@ -1060,7 +1062,7 @@ async function doKeepCmd(arg, onoff) {
   const a = resolveLocalAgent(arg);
   if (!a) return eph(`:warning: no local agent \`${arg || ''}\`.`);
   const v = /^(off|0|no|false)$/i.test(String(onoff || '')) ? 'off' : 'on';
-  const r = deliverViaScript(join(HOME, '.tmux', 'agent-keep.sh'), [a.pane, v]);
+  const r = setKeep(a.pane, v);
   return eph(r.ok ? `:pushpin: keep ${v} for \`${a.name}\` — ${r.out || 'done'}` : `:warning: keep failed: ${r.error}`);
 }
 
@@ -1220,6 +1222,19 @@ const SUBSTRATE_BIN = `${process.env.HOME}/.tmux/substrate.sh`;
 function subRead(args) {
   try { return execFileSync(SUBSTRATE_BIN, args, { encoding: 'utf8', timeout: 3000 }).trim(); }
   catch { return ''; }
+}
+// Backend-aware reaper-protect toggle (@keep) via `substrate.sh keep <pane> <1|0>`
+// — herdr → sidecar, tmux → set-window-option. Replaces the old ~/.tmux/agent-keep.sh,
+// which was tmux-only and is absent under the herdr substrate (so /nexus keep no-op'd).
+// Accepts a PANE and an on/off-ish flag; returns deliverViaScript's {ok,out,error} shape.
+function setKeep(pane, onoff) {
+  const v = /^(off|0|no|false)$/i.test(String(onoff || '')) ? '0' : '1';
+  try {
+    const out = execFileSync(SUBSTRATE_BIN, ['keep', pane, v], { encoding: 'utf8', timeout: 3000 }).trim();
+    return { ok: true, out: out || `keep ${v === '1' ? 'on' : 'off'}` };
+  } catch (e) {
+    return { ok: false, error: (e.stderr || e.stdout || e.message || '').toString().trim() };
+  }
 }
 // Live pane/agent handles for liveness filtering (herdr: daemon pane list; tmux: list-panes).
 function liveHandles() {
@@ -2053,7 +2068,7 @@ const httpServer = http.createServer((req, res) => {
 // Reuses every underlying primitive: presence (cross-host agent list), the
 // registry-derived status (gatherFleetStatus), the spawn/restore flow
 // (performSpawn / doRestore), agent-send.sh (message, /clear), substrate.sh
-// (send-keys ESC, capture), and agent-keep.sh. The pure Block Kit view layout
+// (send-keys ESC, capture, keep/@keep). The pure Block Kit view layout
 // lives in orchestrator.js; this side gathers live data + performs the actions.
 // ---------------------------------------------------------------------------
 
@@ -2345,7 +2360,7 @@ async function handleNexusSubmit(body, ack) {
         if (!target) { await ack({ response_action: 'errors', errors: { target: 'Pick an agent.' } }); return; }
         await ack();
         const onoff = (st.onoff && st.onoff.val && st.onoff.val.selected_option && st.onoff.val.selected_option.value) || 'on';
-        const r = deliverViaScript(join(HOME, '.tmux', 'agent-keep.sh'), [target, onoff]);
+        const r = setKeep(target, onoff);
         await say(r.ok ? `:pushpin: keep ${onoff} for \`${target}\` — ${r.out || 'done'}` : `:warning: keep failed: ${r.error}`);
         return;
       }
