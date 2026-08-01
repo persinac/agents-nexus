@@ -67,6 +67,32 @@ export function allowlistEntries(allowlist) {
     .map(([name, v]) => ({ name, ...normalizeEntry(v) }));
 }
 
+// Best-effort "did you mean" for a spawn name that didn't match the allowlist. Compares
+// the input to candidate names by normalized (alnum-only, lowercased) containment, then
+// by longest common prefix. Returns the closest name, or null when nothing meaningfully
+// overlaps (so we suggest only when it's likely right). e.g. 'storefront-ui' → 'store-front'.
+export function suggestSpawnName(input, names) {
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const ni = norm(input);
+  if (!ni) return null;
+  let best = null;
+  let bestScore = 0;
+  for (const n of names || []) {
+    const nn = norm(n);
+    if (!nn) continue;
+    let score;
+    if (nn === ni) score = 1000;
+    else if (ni.includes(nn) || nn.includes(ni)) score = Math.min(nn.length, ni.length);
+    else {
+      let i = 0;
+      while (i < nn.length && i < ni.length && nn[i] === ni[i]) i += 1;
+      score = i;
+    }
+    if (score > bestScore) { bestScore = score; best = n; }
+  }
+  return bestScore >= 3 ? best : null;
+}
+
 // Spark-derived descriptions cache: { repo -> description }, produced by
 // scripts/spark-summary.py from the live Spark index (auto-maintained nightly).
 // Best-effort: a missing/garbage file yields {} so the classifier still runs on

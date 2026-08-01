@@ -1121,15 +1121,25 @@ socket.on('slash_commands', async ({ body, ack }) => {
       if (!SPAWN_ENABLED) { await respond(url, eph(':lock: spawn disabled (`SLACK_SPAWN_ENABLED=0`).')); return; }
       const repo = parts[1];
       const seed = raw.slice(sub.length).trim().slice((repo || '').length).trim();
+      const allow = orch.loadAllowlist(SPAWN_ALLOWLIST_FILE);
+      const names = orch.allowlistEntries(allow).map((e) => e.name);
       if (!repo) {
-        const names = orch.allowlistEntries(orch.loadAllowlist(SPAWN_ALLOWLIST_FILE)).map((e) => e.name);
         await respond(url, eph(names.length ? `spawnable: ${names.join(', ')}\nusage: \`/nexus spawn <repo> [seed]\`` : 'no spawnable repos configured.'));
         return;
       }
-      await respond(url, eph(`:rocket: spawning \`${repo}\`…`));
+      // Validate the name BEFORE the optimistic "spawning…" — otherwise a bad name reads
+      // as success: the rocket goes over response_url (visible) while doSpawn's rejection
+      // goes to NEXUS_CHANNEL via chat.postMessage (which the invoker may not be watching).
+      const match = orch.matchAllowlist(allow, repo);
+      if (!match) {
+        const hint = orch.suggestSpawnName(repo, names);
+        await respond(url, eph(`:warning: \`${repo}\` isn't a spawnable repo.${hint ? ` Did you mean \`${hint}\`?` : ''}${names.length ? ` Spawnable: ${names.join(', ')}` : ''}`));
+        return;
+      }
+      await respond(url, eph(`:rocket: spawning \`${match.name}\`…`));
       // Post the spawn result to the reachable control channel — chat.postMessage to
       // the invoking channel fails channel_not_found when the bot isn't a member.
-      await doSpawn(NEXUS_CHANNEL || chan, undefined, repo, seed, uid);
+      await doSpawn(NEXUS_CHANNEL || chan, undefined, match.name, seed, uid);
       return;
     }
     if (sub === 'restore') {
@@ -2288,7 +2298,11 @@ async function doSpawn(channel, threadTs, repoArg, seed, requester) {
   if (!SPAWN_ENABLED) { await replyInThread(channel, threadTs, ':lock: spawn is disabled (`SLACK_SPAWN_ENABLED=0`).'); return; }
   const allow = orch.loadAllowlist(SPAWN_ALLOWLIST_FILE);
   const match = orch.matchAllowlist(allow, repoArg);
-  if (!match) { await replyInThread(channel, threadTs, `:information_source: \`${repoArg}\` isn't on the spawnable allowlist.`); return; }
+  if (!match) {
+    const hint = orch.suggestSpawnName(repoArg, orch.allowlistEntries(allow).map((e) => e.name));
+    await replyInThread(channel, threadTs, `:information_source: \`${repoArg}\` isn't on the spawnable allowlist.${hint ? ` Did you mean \`${hint}\`?` : ''}`);
+    return;
+  }
   if (repoLocked(match.name, match.path)) { await replyInThread(channel, threadTs, `:information_source: \`${match.name}\` is already running — message it instead.`); return; }
   inFlight.add(match.name);
   const note = await performSpawn({ repo: match.name, path: match.path, seed: (seed || '').trim() || `Start work in ${match.name}.`, channel, rootTs: threadTs, requester });
