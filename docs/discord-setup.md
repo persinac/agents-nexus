@@ -52,9 +52,42 @@ The Discord adapter serves `POST /discord/interactions` on the **existing bridge
 
 ## Invite the app to your server
 
-OAuth2 → URL Generator → scope **`applications.commands`** (that alone is enough for slash commands
-over HTTP interactions — the `bot` gateway scope is *not* required). Open the generated URL and add
-the app to your server.
+For slash commands over HTTP interactions you only need the **`applications.commands`** scope — the
+`bot` gateway scope is *not* required. **Skip the portal's "Install" button and the OAuth2 URL
+Generator** (both are common sources of the "Invalid Form Body" error below) and open this URL
+directly, with your Application ID filled in:
+
+```
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=applications.commands&integration_type=0
+```
+
+- `integration_type=0` = **Guild install** (adds to a server). `1` is user-install — not what we want.
+- `applications.commands` needs **no** `permissions=` value.
+- Open it → pick your test server → Authorize.
+
+### Troubleshooting "Invalid Form Body" (error code 50035)
+
+This is a validation error on the authorize request — the server is fine. Ranked causes:
+
+1. **`bot` scope with no/invalid permissions.** The URL Generator adds `bot` and then a
+   `permissions=` bitfield; an empty or malformed one fails validation. **Fix:** drop `bot` entirely
+   (use just `applications.commands`, as above). If you truly want the bot as a member, add
+   `&scope=bot%20applications.commands&permissions=0`.
+2. **`integration_type` vs Installation-context mismatch.** If the portal's **Installation** tab has
+   *Guild Install* disabled but the URL passes `integration_type=0` (or vice-versa), Discord rejects
+   it. **Fix:** Portal → **Installation** → enable **Guild Install** under *Installation Contexts*;
+   under *Default Install Settings → Guild Install* set **Scopes = `applications.commands`** and leave
+   **Permissions** empty. If *User Install* is on and unused, turn it off.
+3. **Malformed URL.** The space between multiple scopes must be `%20` (or `+`); a raw space or a
+   stray character trips 50035. The single-scope URL above avoids this.
+4. **Deprecated scope** → `SCOPE_INVALID`. Use exactly `applications.commands`.
+
+The Application ID is **not** secret — paste it into the URL yourself, or share it and I'll hand you
+the exact link.
+
+Sources: Discord API error 50035 / "Invalid Form Body" and OAuth2 scope validation —
+<https://github.com/discord/discord-api-docs/issues/2565>,
+<https://discord.com/developers/docs/reference>.
 
 ## Order of operations
 
