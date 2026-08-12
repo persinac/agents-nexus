@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# PreToolUse(Bash) guard: refuse commands that would dump a credential-bearing file
+# into the transcript.
+#
+# WHY THIS EXISTS (2026-07-26): a `grep -n -A6 "cni:" talos-config/controlplane.yaml`
+# printed the k8s bootstrap token and the Talos secretbox encryption secret into a session
+# transcript. The -A6 asked for six lines of trailing context that were never needed and
+# never previewed. Nothing caught it: the LLM-egress scrubber is pattern-based (AKIA,
+# sk-ant-, ghp_) and the secretbox secret is a bare 44-char base64 blob with no prefix, so
+# no pattern matched. Pattern matching finds the loud subset; high-entropy values without a
+# distinctive shape -- exactly what Talos and Kubernetes secrets are -- are invisible to it.
+#
+# A CLAUDE.md rule alone is a promise to be careful. This is the enforceable half.
+#
+# It blocks BROAD READS of credential paths. Targeted operations still work, and that is the
+# point: assert a property instead of printing a value.
+#     ALLOWED:  grep -c / -l / -o, wc, sha256sum, git ls-files, ls, stat, yq on one field
+#     BLOCKED:  cat, head, tail, less, strings, xxd, and grep -A/-B/-C on those paths
+#
+# It ALSO blocks SELF-DUMPING commands (see SELF_DUMPING below) that read a credential
+# without naming a path -- git remote -v, git config --list, bare env, kubectl get secret
+# -o yaml. These match on command shape alone, because there is no path to match on.
+#
+# Fails OPEN on internal error (never wedge the session on a guard bug), but fails CLOSED on
+# a match. Exit 2 + stderr is the documented PreToolUse blocking contract.
+
+set -uo pipefail
+
+payload="$(cat 2>/dev/null || true)"
+[ -z "$payload" ] && exit 0
+
+read -r -d '' PY <<'PYEOF'
+import json, re, sys
+
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)                      # unparseable -> fail open
+
+if d.get("tool_name") != "Bash":
+    sys.exit(0)
+
+cmd = (d.get("tool_input") or {}).get("command") or ""
+if not cmd:
+    sys.exit(0)
+
+# A heredoc body is DATA, not commands. A commit message or a doc that merely MENTIONS
+# `git remote -v` must not trip the guard -- that false positive surfaced immediately
+# (2026-08-12), blocking the very commit that documented the incident.
+#
+# EXCEPTION: when the heredoc feeds an interpreter, the body really is executed, so it
+# stays in scope. `bash <<'EOF' ... EOF` must still be scanned, or stripping bodies would
+# be a one-line evasion hole.
+# The (?<!\.) guard matters: without it, \bsh\b matches the ".sh" in a FILENAME, so any
+# line that merely mentions a shell script (`git add hooks/foo.sh && git commit -F - <<EOF`)
+# would be misread as an interpreter line and have its body scanned anyway.
+INTERP = re.compile(r"(?<!\.)\b(?:(?:ba|z|k|da)?sh|python[0-9.]*|perl|ruby|node|eval)\b")
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+def strip_heredoc_bodies(text):
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        out.append(lines[i])
+        m = HEREDOC.search(lines[i])
+        if m and not INTERP.search(lines[i]):
+            delim = m.group(2)
+            i += 1
+            while i < len(lines) and lines[i].strip() != delim:
+                i += 1                       # drop the body
+            if i < len(lines):
+                out.append(lines[i])         # keep the closing delimiter
+        i += 1
+    return "\n".join(out)
+
+scan = strip_heredoc_bodies(cmd)
+
+# Paths that can hold credentials. Substring match on the command text.
+CRED = [
+    r"talos-config", r"cluster-secrets", r"controlplane\.yaml", r"worker\.yaml",
+    r"talosconfig", r"kubeconfig", r"\.kube/config", r"\.git/config",
+    r"id_rsa", r"id_ed25519", r"\.pem\b", r"\.p12\b", r"\.pfx\b",
+    r"credentials\b", r"\.aws/credentials", r"\.npmrc", r"\.netrc",
+    r"secrets?\.ya?ml", r"\.env\b", r"cluster-secrets\.yaml",
+]
+
+# Readers that emit unbounded / unpreviewed output.
+BROAD = [
+    (r"\bcat\s", "cat"),
+    (r"\bbat\s", "bat"),
+    (r"\bhead\s", "head"),
+    (r"\btail\s", "tail"),
+    (r"\bless\s", "less"),
+    (r"\bmore\s", "more"),
+    (r"\bstrings\s", "strings"),
+    (r"\bxxd\s", "xxd"),
+    (r"\bod\s", "od"),
+    (r"\bbase64\s+-d", "base64 -d"),
+    (r"\bgrep\b[^|;&]*\s-[A-Za-z]*[ABC]\s*\d", "grep with -A/-B/-C context"),
+    (r"\bsed\s+-n[^|;&]*p\b", "sed -n p"),
+    (r"\bawk\b[^|;&]*print\s*\$0", "awk print $0"),
+]
+
+# Self-dumping commands: the credential is IMPLICIT. No path is ever typed and no
+# general-purpose reader is used, so the CRED-plus-BROAD pair above can never fire --
+# both halves pass and the command sails through.
+#
+# WHY THIS EXISTS (2026-08-12): `git remote -v` printed a fine-grained GitHub PAT
+# (embedded in the origin URL) into a transcript. CRED lists `.git/config`, but the
+# command never names that path -- it opens it. BROAD lists readers, and `git` is not
+# one. Two correct-looking checks both said "allow".
+#
+# These match on command SHAPE alone and block with no CRED hit required. Targeted
+# forms stay allowed on purpose: `printenv PATH`, `git config --get user.email`, and
+# `doppler secrets get X --plain` (which captures into a var rather than printing).
+SELF_DUMPING = [
+    (r"\bgit\s+remote\s+(-v\b|--verbose\b|show\b|get-url\b)",
+     "git remote -v/show/get-url (prints .git/config URLs; a PAT may be embedded)"),
+    (r"\bgit\s+config\b[^|;&]*(--list\b|-l\b)",
+     "git config --list (prints remote URLs and everything else)"),
+    (r"\bgit\s+config\b[^|;&]*--get\b[^|;&]*\burl\b",
+     "git config --get ...url (the URL is the thing that embeds the token)"),
+    (r"\b(env|printenv)\s*(\||;|&|>|$)",
+     "bare env/printenv (dumps every exported secret at once)"),
+    (r"\bkubectl\s+get\s+secrets?\b[^|;&]*-o\s*(yaml|json)",
+     "kubectl get secret -o yaml/json (base64 blobs match no scrubber pattern)"),
+    (r"\bdoppler\s+secrets\b(?!\s+get\b)",
+     "doppler secrets (prints the full plaintext table)"),
+    (r"\bhelm\s+get\s+values\b", "helm get values"),
+    (r"\bnpm\s+config\s+list\b", "npm config list (may print _authToken)"),
+]
+
+# A self-dumping command blocks on its own; otherwise fall through to path-plus-reader.
+self_hit = next((label for pat, label in SELF_DUMPING if re.search(pat, scan)), None)
+
+if self_hit:
+    reader, path_note = self_hit, "implicit -- the command opens it without naming it"
+else:
+    cred_hit = next((p for p in CRED if re.search(p, scan)), None)
+    if not cred_hit:
+        sys.exit(0)
+
+    broad_hit = next((label for pat, label in BROAD if re.search(pat, scan)), None)
+    if not broad_hit:
+        sys.exit(0)                  # targeted read against a cred path -> allow
+
+    reader, path_note = broad_hit, f"matched /{cred_hit}/"
+
+sys.stderr.write(
+    "BLOCKED by block-credential-dump.sh\n\n"
+    f"  reader:          {reader}\n"
+    f"  credential path: {path_note}\n\n"
+    "This command would print a credential-bearing file into the transcript, which is\n"
+    "durable and is also sent to the model API. On 2026-07-26 exactly this pattern\n"
+    "(grep -A6 on talos-config/controlplane.yaml) leaked the k8s bootstrap token and the\n"
+    "Talos secretbox encryption secret. Neither could be un-leaked: Kubernetes has no\n"
+    "certificate revocation and the remediation was a CA rotation nobody wanted.\n\n"
+    "Do this instead -- assert the property, never print the value:\n"
+    "  grep -c PATTERN FILE                 # does it exist / how many\n"
+    "  grep -oE 'name:\\s*\\w+' FILE          # extract ONE field, no context\n"
+    "  sha256sum FILE | cut -c1-16          # compare without disclosing\n"
+    "  python3 -c \"...\"                     # parse one key, print its NAME not its value\n\n"
+    "If you genuinely must see raw content, do it in a shell the user controls\n"
+    "(prefix the command with ! in the prompt) so it never enters the transcript.\n"
+)
+sys.exit(2)
+PYEOF
+
+printf '%s' "$payload" | python3 -c "$PY"
+rc=$?
+[ "$rc" -eq 2 ] && exit 2
+exit 0
