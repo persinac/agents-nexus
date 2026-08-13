@@ -221,10 +221,17 @@ schema, or config changed, so the revert is clean.
 - Reply text is Slack-flavored: `:warning:`/`:rocket:` render as literal colons on
   Discord, and `*bold*` is italic there. Cosmetic; a `Message.text` dialect pass belongs
   with 4.x if it matters.
-- `dispatchNexusCommand` / `dispatchNexusAction` still live in `index.js`, which cannot
-  be imported by a test (it opens a Socket Mode connection at module load). They are
-  verified structurally, not by unit test. Extracting them to `core.js` would close that
-  and is cheap — worth doing before Phase 4 adds fan-out logic beside them.
+- ~~`dispatchNexusCommand` / `dispatchNexusAction` cannot be unit-tested in `index.js`.~~
+  **CLOSED (2026-08-13):** both moved to `slack-bridge/core.js` behind
+  `createNexusCore(deps)` with every dependency injected; `index.js` keeps one wiring
+  block and all four call sites unchanged. Bodies moved verbatim, so behaviour is
+  unchanged. Added 24 tests for paths that previously had none — notably that `msg`
+  preserves internal spacing after the agent name, that `spawn` validates the repo
+  BEFORE the optimistic ack (the ack is visible to the invoker; `doSpawn`'s rejection
+  goes to the control channel they may not watch), that `restore` targets the control
+  channel rather than the invoking one, and that `nx:pick` only ever edits while
+  `nx:do:*` only ever posts. Verified `core.js` contains no platform types in
+  executable code, and that `core.test.js` needs no adapter import to drive it.
 - `/nexus spawn` on Discord replies over Discord, but `doSpawn` still posts its *result*
   to the Slack control channel via `chat.postMessage`. Phase 4's `Notifier` is where that
   gets routed per-provider.

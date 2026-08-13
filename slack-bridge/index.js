@@ -27,6 +27,7 @@ import { homedir, hostname } from 'os';
 import { SocketModeClient, LogLevel } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
 import * as orch from './orchestrator.js';
+import { createNexusCore } from './core.js';
 import { ephemeral } from './providers/types.js';
 import { messageToBlockKit, interactiveToAction, SlackAdapter } from './providers/slack.js';
 import { DiscordAdapter } from './providers/discord.js';
@@ -1118,78 +1119,32 @@ function nexusMsgPrefix(uid) {
     + '--- Request: ';
 }
 
-// ── Core `/nexus` dispatch — provider-agnostic (task 1.2) ────────────────────
-// A normalized `Command` in, normalized `Message`s out through `reply`. No Slack
-// types appear in the signature or the body, so a Discord adapter drives this
-// unchanged. The callback is named `reply` (not `respond`) deliberately: the
-// module-level `respond()` is Slack-specific, and shadowing it here would let an
-// accidental use of it slip through unnoticed.
-/**
- * @param {import('./providers/types.js').Command} command
- * @param {(m: import('./providers/types.js').Message) => Promise<void>} reply
- */
-async function dispatchNexusCommand(command, reply) {
-  const { name: sub, args, rawArgs, userId: uid, channelId } = command;
-  const chan = channelId || NEXUS_CHANNEL || '';
-  try {
-    if (!sub || sub === 'home' || sub === 'help') {
-      const agents = localAgentOptions().map((o) => ({ name: o.text, pane: o.value, label: o.text }));
-      await reply(orch.fleetPanel({ agents, spawnEnabled: SPAWN_ENABLED }));
-      return;
-    }
-    if (sub === 'status') { await reply(eph(await statusText(args.join(' ')))); return; }
-    if (sub === 'agents') { await reply(await agentsSummaryText(/--local\b/.test(rawArgs))); return; }
-    if (sub === 'peek') { await reply(await doPeek(args[0], args[1])); return; }
-    if (sub === 'clear') { await reply(await doClearCmd(args[0])); return; }
-    if (sub === 'stop') { await reply(await doStopCmd(args[0])); return; }
-    if (sub === 'keep') { await reply(await doKeepCmd(args[0], args[1])); return; }
-    if (sub === 'msg' || sub === 'message') {
-      const agent = args[0] || '';
-      const msgText = rawArgs.slice(agent.length).trim();
-      const full = msgText ? nexusMsgPrefix(uid) + msgText : msgText;
-      await reply(await doMsgCmd(agent, full));
-      return;
-    }
-    if (sub === 'spawn') {
-      if (!SPAWN_ENABLED) { await reply(eph(':lock: spawn disabled (`SLACK_SPAWN_ENABLED=0`).')); return; }
-      const repo = args[0];
-      const seed = rawArgs.slice((repo || '').length).trim();
-      const allow = orch.loadAllowlist(SPAWN_ALLOWLIST_FILE);
-      const names = orch.allowlistEntries(allow).map((e) => e.name);
-      if (!repo) {
-        await reply(eph(names.length ? `spawnable: ${names.join(', ')}\nusage: \`/nexus spawn <repo> [seed]\`` : 'no spawnable repos configured.'));
-        return;
-      }
-      // Validate the name BEFORE the optimistic "spawning…" — otherwise a bad name reads
-      // as success: the rocket goes over response_url (visible) while doSpawn's rejection
-      // goes to NEXUS_CHANNEL via chat.postMessage (which the invoker may not be watching).
-      const match = orch.matchAllowlist(allow, repo);
-      if (!match) {
-        const hint = orch.suggestSpawnName(repo, names);
-        await reply(eph(`:warning: \`${repo}\` isn't a spawnable repo.${hint ? ` Did you mean \`${hint}\`?` : ''}${names.length ? ` Spawnable: ${names.join(', ')}` : ''}`));
-        return;
-      }
-      await reply(eph(`:rocket: spawning \`${match.name}\`…`));
-      // Post the spawn result to the reachable control channel — chat.postMessage to
-      // the invoking channel fails channel_not_found when the bot isn't a member.
-      await doSpawn(NEXUS_CHANNEL || chan, undefined, match.name, seed, uid);
-      return;
-    }
-    if (sub === 'restore') {
-      if (!SPAWN_ENABLED) { await reply(eph(':lock: restore disabled.')); return; }
-      const repo = args[0];
-      if (repo) { await reply(eph(`:leftwards_arrow_with_hook: restoring \`${repo}\`…`)); await doRestore(NEXUS_CHANNEL || chan, undefined, repo, uid); return; }
-      const dormant = await ledgerCmd(['list', '--state', 'dormant', '--json']);
-      const names = (Array.isArray(dormant) ? dormant : []).map((d) => d.repo || d.name);
-      await reply(eph(names.length ? `dormant: ${names.join(', ')}\nusage: \`/nexus restore <repo>\`` : 'no dormant agents.'));
-      return;
-    }
-    await reply(eph(`Unknown \`${sub}\`. Try \`/nexus\` (panel), or: status · agents · peek · clear · stop · keep · msg · spawn · restore`));
-  } catch (e) {
-    console.error(`[nexus] slash ${sub} failed: ${e.message}`);
-    await reply(eph(`:warning: ${e.message}`));
-  }
-}
+// ── Core `/nexus` dispatch — provider-agnostic ───────────────────────────────
+// The dispatch itself lives in core.js so it can be unit-tested: importing index.js
+// opens a Socket Mode connection, which makes anything defined here untestable. Every
+// dependency is injected, so a test drives the same code with stubs.
+//
+// All of these are hoisted function declarations, so referencing them here — above
+// several of their definitions — is safe; the three config values are consts declared
+// near the top of the file.
+const { dispatchNexusCommand, dispatchNexusAction } = createNexusCore({
+  spawnEnabled: SPAWN_ENABLED,
+  nexusChannel: NEXUS_CHANNEL,
+  spawnAllowlistFile: SPAWN_ALLOWLIST_FILE,
+  localAgentOptions,
+  paneName,
+  statusText,
+  agentsSummaryText,
+  doPeek,
+  doClearCmd,
+  doStopCmd,
+  doKeepCmd,
+  doMsgCmd,
+  doSpawn,
+  doRestore,
+  nexusMsgPrefix,
+  ledgerCmd,
+});
 
 // ── Slack ingress/egress — the only place Slack types meet the core (task 2.2) ──
 // SlackAdapter owns BOTH Socket Mode listeners (`slash_commands` + `interactive`) and
@@ -2339,53 +2294,6 @@ async function buildFormView(id, channel) {
         options: localAgentOptions(), channel, intro: 'Send ESC to halt what the agent is doing (its context is kept).' });
     default:
       return null;
-  }
-}
-
-// ── Core panel-action dispatch — provider-agnostic (task 3.4) ────────────────
-// `edit` / `post` is the portable form of Slack's `replace_original`, which task 1.3
-// deliberately parked at the call site until Discord needed it:
-//   edit → replace the message the component lives on (Slack `replace_original:true`,
-//          Discord `PATCH /webhooks/…/messages/@original`)
-//   post → add a new message beside it (Slack `replace_original:false`,
-//          Discord follow-up webhook POST)
-// Both providers have both semantics natively; only the wire spelling differs, so the
-// pair belongs in the seam rather than in either adapter.
-/**
- * @param {import('./providers/types.js').Action} action
- * @param {{edit: (m: Object) => Promise<void>, post: (m: Object) => Promise<void>}} out
- */
-async function dispatchNexusAction(action, { edit, post }) {
-  if (!action) return;
-  const id = action.actionId || '';
-  try {
-    if (id === 'nx:pick') {
-      // `action.value` carries the choice on both providers — Slack's adapter reads it
-      // out of `selected_option`, Discord's out of `data.values[0]`.
-      const pane = action.value;
-      const picked = pane ? { name: paneName(pane), pane } : null;
-      const agents = localAgentOptions().map((o) => ({ name: o.text, pane: o.value, label: o.text }));
-      await edit(orch.fleetPanel({ agents, picked, spawnEnabled: SPAWN_ENABLED }));
-      return;
-    }
-    if (id.startsWith('nx:do:')) {
-      const act = id.slice('nx:do:'.length);
-      const pane = action.value;
-      let res;
-      if (act === 'fleetstatus') res = await statusText('all');
-      else if (act === 'status') res = await statusText(paneName(pane));
-      else if (act === 'peek') res = (await doPeek(pane, '40')).text;
-      else if (act === 'clear') res = (await doClearCmd(pane)).text;
-      else if (act === 'stop') res = (await doStopCmd(pane)).text;
-      else if (act === 'keepon') res = (await doKeepCmd(pane, 'on')).text;
-      else if (act === 'keepoff') res = (await doKeepCmd(pane, 'off')).text;
-      else res = `unknown action ${act}`;
-      await post(eph(res));
-      return;
-    }
-  } catch (e) {
-    console.error(`[nexus] panel action ${id} failed: ${e.message}`);
-    await post(eph(`:warning: ${e.message}`));
   }
 }
 
