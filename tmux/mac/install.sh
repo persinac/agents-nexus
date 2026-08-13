@@ -149,14 +149,23 @@ fi
 
 mkdir -p "$HOME/.claude"
 
-# Claude hooks — auto-checkpoint (Stop hook: background, selective memory note)
+# Claude hooks — symlink EVERY versioned hook so a git pull refreshes them in place.
+# Globbed rather than named one-by-one: block-credential-dump.sh shipped in the repo for
+# three weeks while every box that pulled it left the guard inert, because the installer
+# only knew auto-checkpoint.sh by name. Drop a new hook in claude-hooks/ and it installs.
+# Matching settings.json entries live in claude-settings.json and merge below.
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/auto-checkpoint"
-if [ -f "$SCRIPT_DIR/claude-hooks/auto-checkpoint.sh" ]; then
-  chmod +x "$SCRIPT_DIR/claude-hooks/auto-checkpoint.sh"
-  ln -sf "$SCRIPT_DIR/claude-hooks/auto-checkpoint.sh" "$HOME/.claude/hooks/auto-checkpoint.sh"
+for hook in "$SCRIPT_DIR"/claude-hooks/*.sh; do
+  [ -f "$hook" ] || continue          # unmatched glob when the dir is empty
+  chmod +x "$hook"
+  ln -sfn "$hook" "$HOME/.claude/hooks/$(basename "$hook")"
+  echo "Installed hook ~/.claude/hooks/$(basename "$hook")"
+done
+
+# auto-checkpoint additionally needs its MCP config templated (paths are per-machine)
+if [ -f "$SCRIPT_DIR/claude-hooks/auto-checkpoint-mcp.json" ]; then
   sed -e "s|__HOME__|$HOME|g" -e "s|__AGENTS_NEXUS_DIR__|$NEXUS_DIR|g" \
     "$SCRIPT_DIR/claude-hooks/auto-checkpoint-mcp.json" > "$HOME/.claude/auto-checkpoint/mcp.json"
-  echo "Installed auto-checkpoint hook (~/.claude/hooks/auto-checkpoint.sh)"
 fi
 
 SETTINGS="$HOME/.claude/settings.json"

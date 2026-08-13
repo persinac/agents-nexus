@@ -232,14 +232,21 @@ fi
 # Merge claude settings
 mkdir -p "$HOME/.claude"
 
-# Claude hooks — auto-checkpoint (Stop hook: background, selective memory note)
+# Claude hooks — symlink EVERY versioned hook so a git pull refreshes them in place.
+# Sourced from $MAC_DIR: the hooks are plain bash + python3 and are shared, not duplicated
+# per platform. Globbed rather than named one-by-one so a new hook installs by existing.
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/auto-checkpoint"
-if [ -f "$MAC_DIR/claude-hooks/auto-checkpoint.sh" ]; then
-  chmod +x "$MAC_DIR/claude-hooks/auto-checkpoint.sh"
-  ln -sf "$MAC_DIR/claude-hooks/auto-checkpoint.sh" "$HOME/.claude/hooks/auto-checkpoint.sh"
+for hook in "$MAC_DIR"/claude-hooks/*.sh; do
+  [ -f "$hook" ] || continue          # unmatched glob when the dir is empty
+  chmod +x "$hook"
+  ln -sfn "$hook" "$HOME/.claude/hooks/$(basename "$hook")"
+  echo "Installed hook ~/.claude/hooks/$(basename "$hook")"
+done
+
+# auto-checkpoint additionally needs its MCP config templated (paths are per-machine)
+if [ -f "$MAC_DIR/claude-hooks/auto-checkpoint-mcp.json" ]; then
   sed -e "s|__HOME__|$HOME|g" -e "s|__AGENTS_NEXUS_DIR__|$NEXUS_DIR|g" \
     "$MAC_DIR/claude-hooks/auto-checkpoint-mcp.json" > "$HOME/.claude/auto-checkpoint/mcp.json"
-  echo "Installed auto-checkpoint hook (~/.claude/hooks/auto-checkpoint.sh)"
 fi
 
 SETTINGS="$HOME/.claude/settings.json"

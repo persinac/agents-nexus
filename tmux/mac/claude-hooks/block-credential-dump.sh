@@ -119,7 +119,14 @@ SELF_DUMPING = [
      "git config --list (prints remote URLs and everything else)"),
     (r"\bgit\s+config\b[^|;&]*--get\b[^|;&]*\burl\b",
      "git config --get ...url (the URL is the thing that embeds the token)"),
-    (r"\b(env|printenv)\s*(\||;|&|>|$)",
+    # The leading (?:^|[|;&]|\bsudo\s+) requires env/printenv to be in COMMAND position.
+    # A bare \b was not enough: \b matches after any non-word char, so a PATH ending in
+    # "env" at end-of-command satisfied \b env \s* $ and blocked `ls /tmp/my-env` while
+    # blaming the bare-env rule. It also mis-attributed real blocks -- `cat /tmp/x.env`
+    # tripped this rule instead of the .env-path-plus-reader pair it actually violates.
+    # (?m) so `env` on a non-final line of a multi-line command is still caught; without
+    # it, $ only matched end-of-string and a trailing pipeline hid the dump.
+    (r"(?m)(?:^|[|;&]|\bsudo\s+)\s*(env|printenv)\s*(\||;|&|>|$)",
      "bare env/printenv (dumps every exported secret at once)"),
     (r"\bkubectl\s+get\s+secrets?\b[^|;&]*-o\s*(yaml|json)",
      "kubectl get secret -o yaml/json (base64 blobs match no scrubber pattern)"),
