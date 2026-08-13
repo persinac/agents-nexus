@@ -3,7 +3,9 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery, homeView, selectFormView, multilineInput, textInput, confirmCheckbox, radioOnOff, buildSpawnCommand, suggestSpawnName } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery, homeView, selectFormView, multilineInput, textInput, confirmCheckbox, radioOnOff, buildSpawnCommand, suggestSpawnName, fleetPanel, fleetPanelBlocks } from './orchestrator.js';
+import { messageToBlockKit } from './providers/slack.js';
+import { messageToDiscord } from './providers/discord.js';
 
 // The addressed-bus parser lives in index.js (it needs no orchestrator state), but its
 // shape is a shared contract with formatRelay/parsePresence — a relay or presence line must
@@ -662,4 +664,68 @@ test('suggestSpawnName maps a near-miss to the closest allowlist name', () => {
   assert.equal(suggestSpawnName('zzzzz', names), null);                  // no meaningful overlap
   assert.equal(suggestSpawnName('', names), null);
   assert.equal(suggestSpawnName('store-front', []), null);              // no candidates
+});
+
+// --------------------------------------------------------------------------
+// Fleet panel — normalized Message (task 1.3).
+//
+// `fleetPanel` used to return a bare Block Kit array that index.js spread into a
+// Slack payload by hand. It now returns a normalized Message. These tests pin the
+// swap as behavior-preserving: the Block Kit is untouched, and rendering the Message
+// through the Slack renderer must reproduce the OLD inline payload exactly. If a
+// future edit changes the wire shape, this fails rather than silently altering what
+// Slack draws.
+// --------------------------------------------------------------------------
+const PANEL_AGENTS = [{ name: 'database', pane: 'w1:p2', label: 'database' }];
+
+test('fleetPanel returns an ephemeral Message wrapping the unchanged raw blocks', () => {
+  const m = fleetPanel({ agents: PANEL_AGENTS });
+  assert.equal(m.text, 'Nexus Fleet Control');
+  assert.equal(m.ephemeral, true);
+  assert.deepEqual(m.blocks, fleetPanelBlocks({ agents: PANEL_AGENTS }));
+  // No stray keys — the Message normalizer drops absent fields. `components` is the
+  // portable rendering added in 3.4; it rides alongside `blocks`, it does not replace
+  // them (messageToBlockKit prefers blocks, messageToDiscord ignores them).
+  assert.deepEqual(Object.keys(m).sort(), ['blocks', 'components', 'ephemeral', 'text']);
+});
+
+test('fleetPanel renders to usable Discord components', () => {
+  const picked = { name: 'database', pane: 'w1:p2' };
+  const out = messageToDiscord(fleetPanel({ agents: PANEL_AGENTS, picked }));
+  assert.equal(out.content, 'Nexus Fleet Control');
+  assert.equal(out.flags, 64);
+  // select row · fleet-status button · the 6 per-agent buttons chunked 5+1.
+  assert.deepEqual(out.components.map((r) => r.components.length), [1, 1, 5, 1]);
+  const [sel] = out.components[0].components;
+  assert.equal(sel.type, 3);
+  assert.equal(sel.custom_id, 'nx:pick');
+  assert.deepEqual(sel.options, [{ label: 'database', value: 'w1:p2' }]);
+  // The pane rides in the custom_id, so the Action carries it back exactly as Slack's
+  // button `value` does.
+  assert.equal(out.components[2].components[0].custom_id, 'nx:do:status|w1:p2');
+  // Discord caps action rows at 5 — the fullest panel state must stay under it.
+  assert.ok(out.components.length <= 5);
+});
+
+test('fleetPanel Slack rendering is unaffected by the added components', () => {
+  // messageToBlockKit prefers `blocks`, so adding a portable rendering must not change
+  // one byte of what Slack receives.
+  const opts = { agents: PANEL_AGENTS, picked: { name: 'database', pane: 'w1:p2' } };
+  const out = messageToBlockKit(fleetPanel(opts));
+  assert.deepEqual(out, { response_type: 'ephemeral', text: 'Nexus Fleet Control', blocks: fleetPanelBlocks(opts) });
+  assert.equal(out.components, undefined);
+});
+
+test('messageToBlockKit(fleetPanel(...)) is byte-identical to the pre-refactor payload', () => {
+  const cases = [
+    { agents: PANEL_AGENTS },                                              // panel, nothing picked
+    { agents: PANEL_AGENTS, picked: { name: 'database', pane: 'w1:p2' } }, // panel + action buttons
+    { agents: [] },                                                        // empty-fleet context block
+    { agents: PANEL_AGENTS, spawnEnabled: true },
+  ];
+  for (const opts of cases) {
+    // Exactly what index.js built inline before the extraction.
+    const before = { response_type: 'ephemeral', text: 'Nexus Fleet Control', blocks: fleetPanelBlocks(opts) };
+    assert.deepEqual(messageToBlockKit(fleetPanel(opts)), before);
+  }
 });

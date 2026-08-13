@@ -121,6 +121,17 @@ test('interactiveToAction maps a block_actions envelope', () => {
   assert.equal(a.provider, PROVIDERS.SLACK);
 });
 
+test('interactiveToAction reads a static_select choice from selected_option', () => {
+  // Slack leaves `value` undefined on a select and puts the choice in `selected_option`;
+  // reading only `value` drops the picked agent on `nx:pick`.
+  const a = interactiveToAction({
+    type: 'block_actions',
+    actions: [{ action_id: 'nx:pick', selected_option: { value: 'w1:p2' } }],
+  });
+  assert.equal(a.actionId, 'nx:pick');
+  assert.equal(a.value, 'w1:p2');
+});
+
 test('interactiveToAction returns null for non-block_actions and empties', () => {
   assert.equal(interactiveToAction({ type: 'view_submission' }), null);
   assert.equal(interactiveToAction({ type: 'block_actions', actions: [] }), null);
@@ -148,6 +159,32 @@ test('SlackAdapter.start: slash acks then emits a Command', async () => {
   assert.deepEqual(got.args, ['alpha', '30']);
 });
 
+test('SlackAdapter.start: slash acks BEFORE the handler runs', async () => {
+  // The ack must not wait on any work: this box's Socket Mode WS delivers envelopes
+  // ~2.6s into Slack's 3s window, so an ack computed after the handler misses it.
+  const socket = fakeSocket();
+  const order = [];
+  const ad = new SlackAdapter({ socket });
+  ad.onCommand(async () => { order.push('handler'); });
+  await ad.start();
+  await socket.emit('slash_commands', { body: { text: 'status' }, ack: async () => { order.push('ack'); } });
+  assert.deepEqual(order, ['ack', 'handler']);
+});
+
+test('SlackAdapter.start: onCommand also receives the raw envelope', async () => {
+  // index.js logs the literal text the user typed — bare `/nexus` normalizes to `home`,
+  // so the Command alone cannot reproduce the old log line.
+  const socket = fakeSocket();
+  let cmd = null; let raw = null;
+  const ad = new SlackAdapter({ socket });
+  ad.onCommand((c, b) => { cmd = c; raw = b; });
+  await ad.start();
+  await socket.emit('slash_commands', { body: { text: '', user_id: 'U7' }, ack: async () => {} });
+  assert.equal(cmd.name, 'home');
+  assert.equal(raw.text, '');
+  assert.equal(raw.user_id, 'U7');
+});
+
 test('SlackAdapter.start: block_actions acks then emits an Action; view_submission ignored', async () => {
   const socket = fakeSocket();
   let acks = 0; let got = null;
@@ -157,11 +194,44 @@ test('SlackAdapter.start: block_actions acks then emits an Action; view_submissi
   await socket.emit('interactive', { body: { type: 'block_actions', actions: [{ action_id: 'nx:refresh', value: 'r' }] }, ack: async () => { acks += 1; } });
   assert.equal(acks, 1);
   assert.equal(got.actionId, 'nx:refresh');
-  // view_submission must NOT be acked/dispatched by the adapter (index.js owns it).
+  // With no onViewSubmission handler registered, a modal submit is dropped unacked —
+  // the adapter must never pre-ack it, since a submit acks WITH a response.
   got = null;
   await socket.emit('interactive', { body: { type: 'view_submission' }, ack: async () => { acks += 1; } });
   assert.equal(acks, 1);
   assert.equal(got, null);
+});
+
+test('SlackAdapter.start: view_submission is handed the raw body + raw ack, unacked', async () => {
+  const socket = fakeSocket();
+  let seen = null; let ackedWith = 'NOT_CALLED';
+  const ad = new SlackAdapter({ socket });
+  ad.onAction(() => { throw new Error('block_actions path must not fire for a modal submit'); });
+  ad.onViewSubmission(async (body, ack) => {
+    seen = body;
+    // The handler owns the ack and can ack WITH a response (validation errors).
+    await ack({ response_action: 'errors', errors: { body: 'nope' } });
+  });
+  await ad.start();
+  const body = { type: 'view_submission', view: { callback_id: 'nx_msg', private_metadata: 'C1' } };
+  await socket.emit('interactive', { body, ack: async (r) => { ackedWith = r; } });
+  assert.equal(seen, body);                              // raw body, not normalized
+  assert.deepEqual(ackedWith, { response_action: 'errors', errors: { body: 'nope' } });
+});
+
+test('SlackAdapter.start: interactive logs the envelope line index.js used to print', async () => {
+  const socket = fakeSocket();
+  const lines = [];
+  const ad = new SlackAdapter({ socket, log: (m) => lines.push(m) });
+  await ad.start();
+  await socket.emit('interactive', { body: { type: 'block_actions', actions: [{ action_id: 'nx:pick' }] }, ack: async () => {} });
+  await socket.emit('interactive', { body: { type: 'view_submission' }, ack: async () => {} });
+  await socket.emit('interactive', { body: {}, ack: async () => {} });
+  assert.deepEqual(lines, [
+    'interactive type=block_actions action=nx:pick',
+    'interactive type=view_submission action=-',
+    'interactive type=- action=-',
+  ]);
 });
 
 test('SlackAdapter.reply posts the rendered payload to the reply token', async () => {

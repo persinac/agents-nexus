@@ -12,11 +12,16 @@
  *                                    / Discord `flags:64`). Default: visible in channel.
  * @property {Row[]}   [components]   Optional interactive rows (buttons / one select each).
  * @property {any[]}   [blocks]       ESCAPE HATCH: a provider-native rich payload (Slack
- *                                    Block Kit) for surfaces not yet migrated to
- *                                    `components` — currently the fleet panel. Phase 2
- *                                    migrates these to `components` and adds
- *                                    `messageToDiscord`. Adapters that can't render a raw
- *                                    foreign payload fall back to `text`.
+ *                                    Block Kit) for surfaces Slack renders more richly
+ *                                    than the portable model can express — currently the
+ *                                    fleet panel, which uses sections/context/dividers
+ *                                    that have no cross-provider equivalent.
+ *                                    A Message may carry BOTH `blocks` and `components`:
+ *                                    `messageToBlockKit` prefers `blocks` (so Slack stays
+ *                                    byte-identical), while `messageToDiscord` ignores
+ *                                    them and renders `components`. Adapters that can
+ *                                    render neither fall back to `text`, which every
+ *                                    Message has.
  *
  * @typedef {Object} Command   A slash invocation, provider-agnostic.
  * @property {string}   name        Subcommand: home|status|agents|peek|clear|stop|keep|msg|spawn|restore.
@@ -67,6 +72,26 @@ export function message(m = {}) {
 export const text = (s, opts = {}) => message({ ...opts, text: s });
 /** Ephemeral (invoker-only) text message. */
 export const ephemeral = (s, opts = {}) => message({ ...opts, text: s, ephemeral: true });
+
+// ── Shared command-text parsing ──────────────────────────────────────────────
+// Both providers hand us one free-text string (`/nexus <this>`), so the split into
+// subcommand + args lives here rather than in either adapter. That is what makes
+// `/nexus msg agent hello  there` behave identically on Slack and Discord instead of
+// by coincidence — the two adapters differ only in where they dig the string out of.
+/**
+ * @param {string} input  Everything the user typed after `/nexus`.
+ * @returns {{name: string, args: string[], rawArgs: string}}
+ */
+export function parseCommandText(input) {
+  const raw = String(input || '').trim();
+  const first = raw.split(/\s+/)[0] || '';
+  // Empty invocation is the panel. Lowercasing only the subcommand keeps arg casing
+  // intact, and `first.length` still indexes correctly because case-folding ASCII
+  // never changes length.
+  const name = (first || 'home').toLowerCase();
+  const rawArgs = raw.slice(first.length).trim();
+  return { name, args: rawArgs ? rawArgs.split(/\s+/) : [], rawArgs };
+}
 
 // ── Component builders (minimal: buttons + a single select per row) ──────────
 export const button = ({ id, text: t, value, style }) => ({
