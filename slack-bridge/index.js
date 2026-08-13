@@ -27,6 +27,9 @@ import { homedir, hostname } from 'os';
 import { SocketModeClient, LogLevel } from '@slack/socket-mode';
 import { WebClient } from '@slack/web-api';
 import * as orch from './orchestrator.js';
+import { ephemeral } from './providers/types.js';
+import { messageToBlockKit, interactiveToAction, SlackAdapter } from './providers/slack.js';
+import { DiscordAdapter } from './providers/discord.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -58,6 +61,26 @@ const NEXUS_CHANNEL = process.env.SLACK_NEXUS_CHANNEL || '';
 // behavior (post to NEXUS_CHANNEL).
 const OPERATOR_DM = process.env.SLACK_OPERATOR_DM || '';
 const PORT = parseInt(process.env.SLACK_BRIDGE_PORT || '8788', 10);
+
+// Discord (task 3.5). All three are required together — a public key without a bot
+// token can verify a request but cannot answer it — so a partial config leaves the
+// adapter inert rather than half-working. Unset = Slack-only, exactly as before.
+const DISCORD_PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY || '';
+const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || '';
+const DISCORD_APP_ID = process.env.DISCORD_APP_ID || '';
+// Optional. Registers `/nexus` to one guild (visible immediately) instead of globally
+// (up to an hour to propagate). Set it while iterating; unset to ship — but note the two
+// scopes are independent, so clear the guild scope rather than just dropping the var.
+const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID || '';
+const DISCORD_PATH = process.env.DISCORD_INTERACTIONS_PATH || '/discord/interactions';
+// Optional dedicated port for the interactions endpoint. The main bridge port also
+// carries /notify, /send, /request and /relay — unauthenticated ON PURPOSE, because they
+// are bound to loopback and trusted-local. /send and /relay inject text into agents, so
+// tunnelling that origin would publish agent-command injection to the internet with no
+// auth. When this is set we serve the Discord route, and ONLY that route, on its own
+// port: the tunnel then physically cannot reach the control endpoints, rather than being
+// merely configured not to. 0 = disabled (route stays on the main port).
+const DISCORD_HTTP_PORT = parseInt(process.env.DISCORD_HTTP_PORT || '0', 10);
 const THREAD_TTL_MS = 7 * 24 * 60 * 60 * 1000; // prune mappings older than 7 days
 // Proactive stale-card sweep cadence. Cards answered IN SLACK self-resolve; this
 // catches the ones answered locally in the CLI (or whose window closed).
@@ -989,21 +1012,21 @@ socket.on('reaction_added', async ({ event, ack }) => {
 // Approve/Deny button clicks on a permission card. The button value is the menu
 // digit; deliver it to the thread's agent, then resolve the card (drop buttons,
 // show the outcome). Requires the Slack app to have Interactivity enabled.
-socket.on('interactive', async ({ body, ack }) => {
-  const _a = body && body.actions && body.actions[0];
-  console.log(`[nexus] interactive type=${(body && body.type) || '-'} action=${(_a && _a.action_id) || '-'}`);
-  // Modal form submits must ack WITH a response (close / errors), so they own their
-  // own ack inside handleNexusSubmit rather than the blanket pre-ack below.
-  if (body && body.type === 'view_submission') { await handleNexusSubmit(body, ack); return; }
-  try { await ack(); } catch { /* already acked */ }
-  await handleInteractive(body);
-});
+//
+// The `interactive` and `slash_commands` Socket Mode listeners both live in the
+// SlackAdapter wiring further down (search "Slack ingress/egress") — registering one
+// here too would double-handle every button click.
 
 // The `/nexus` slash command. Socket Mode delivers it over this same websocket —
 // no Request URL. Bare `/nexus` (or `home`) opens the control modal; `status` /
 // `agents` reply as fast ephemeral text; the rest open their form directly.
 // --- Message-based /nexus helpers (no modals; robust to slow Socket Mode WS) ---
-function eph(text) { return { response_type: 'ephemeral', text }; }
+// A normalized ephemeral Message (NOT a Slack payload any more). Rendering it with
+// `messageToBlockKit` yields exactly the `{ response_type:'ephemeral', text }` object
+// this used to return directly — pinned by providers.test.js so the swap is provably
+// behavior-preserving. Kept as a local alias because ~15 helpers below read better
+// with it.
+const eph = ephemeral;
 
 async function respond(url, payload) {
   if (!url) return;
@@ -1095,47 +1118,46 @@ function nexusMsgPrefix(uid) {
     + '--- Request: ';
 }
 
-socket.on('slash_commands', async ({ body, ack }) => {
-  // ACK EMPTY + IMMEDIATELY (first line, zero computation) so the ack lands inside
-  // Slack's 3s window even though this deployment's Socket Mode WS delivers the
-  // envelope ~2.6s late. ALL output then goes over response_url (valid ~30 min, no
-  // deadline), so the result shows up regardless of ack timing.
-  try { await ack(); } catch (e) { /* already acked */ }
-  const url = body && body.response_url;
-  const raw = String((body && body.text) || '').trim();
-  const parts = raw.split(/\s+/);
-  const sub = (parts[0] || '').toLowerCase();
-  const chan = (body && body.channel_id) || NEXUS_CHANNEL || '';
-  const uid = body && body.user_id;
-  console.log(`[nexus] slash /nexus "${raw}" from ${uid}`);
+// ── Core `/nexus` dispatch — provider-agnostic (task 1.2) ────────────────────
+// A normalized `Command` in, normalized `Message`s out through `reply`. No Slack
+// types appear in the signature or the body, so a Discord adapter drives this
+// unchanged. The callback is named `reply` (not `respond`) deliberately: the
+// module-level `respond()` is Slack-specific, and shadowing it here would let an
+// accidental use of it slip through unnoticed.
+/**
+ * @param {import('./providers/types.js').Command} command
+ * @param {(m: import('./providers/types.js').Message) => Promise<void>} reply
+ */
+async function dispatchNexusCommand(command, reply) {
+  const { name: sub, args, rawArgs, userId: uid, channelId } = command;
+  const chan = channelId || NEXUS_CHANNEL || '';
   try {
     if (!sub || sub === 'home' || sub === 'help') {
       const agents = localAgentOptions().map((o) => ({ name: o.text, pane: o.value, label: o.text }));
-      await respond(url, { response_type: 'ephemeral', text: 'Nexus Fleet Control', blocks: orch.fleetPanel({ agents, spawnEnabled: SPAWN_ENABLED }) });
+      await reply(orch.fleetPanel({ agents, spawnEnabled: SPAWN_ENABLED }));
       return;
     }
-    if (sub === 'status') { await respond(url, { response_type: 'ephemeral', text: await statusText(parts.slice(1).join(' ')) }); return; }
-    if (sub === 'agents') { await respond(url, await agentsSummaryText(/--local\b/.test(raw))); return; }
-    if (sub === 'peek') { await respond(url, await doPeek(parts[1], parts[2])); return; }
-    if (sub === 'clear') { await respond(url, await doClearCmd(parts[1])); return; }
-    if (sub === 'stop') { await respond(url, await doStopCmd(parts[1])); return; }
-    if (sub === 'keep') { await respond(url, await doKeepCmd(parts[1], parts[2])); return; }
+    if (sub === 'status') { await reply(eph(await statusText(args.join(' ')))); return; }
+    if (sub === 'agents') { await reply(await agentsSummaryText(/--local\b/.test(rawArgs))); return; }
+    if (sub === 'peek') { await reply(await doPeek(args[0], args[1])); return; }
+    if (sub === 'clear') { await reply(await doClearCmd(args[0])); return; }
+    if (sub === 'stop') { await reply(await doStopCmd(args[0])); return; }
+    if (sub === 'keep') { await reply(await doKeepCmd(args[0], args[1])); return; }
     if (sub === 'msg' || sub === 'message') {
-      const rest2 = raw.slice(sub.length).trim();
-      const agent = rest2.split(/\s+/)[0] || '';
-      const msgText = rest2.slice(agent.length).trim();
+      const agent = args[0] || '';
+      const msgText = rawArgs.slice(agent.length).trim();
       const full = msgText ? nexusMsgPrefix(uid) + msgText : msgText;
-      await respond(url, await doMsgCmd(agent, full));
+      await reply(await doMsgCmd(agent, full));
       return;
     }
     if (sub === 'spawn') {
-      if (!SPAWN_ENABLED) { await respond(url, eph(':lock: spawn disabled (`SLACK_SPAWN_ENABLED=0`).')); return; }
-      const repo = parts[1];
-      const seed = raw.slice(sub.length).trim().slice((repo || '').length).trim();
+      if (!SPAWN_ENABLED) { await reply(eph(':lock: spawn disabled (`SLACK_SPAWN_ENABLED=0`).')); return; }
+      const repo = args[0];
+      const seed = rawArgs.slice((repo || '').length).trim();
       const allow = orch.loadAllowlist(SPAWN_ALLOWLIST_FILE);
       const names = orch.allowlistEntries(allow).map((e) => e.name);
       if (!repo) {
-        await respond(url, eph(names.length ? `spawnable: ${names.join(', ')}\nusage: \`/nexus spawn <repo> [seed]\`` : 'no spawnable repos configured.'));
+        await reply(eph(names.length ? `spawnable: ${names.join(', ')}\nusage: \`/nexus spawn <repo> [seed]\`` : 'no spawnable repos configured.'));
         return;
       }
       // Validate the name BEFORE the optimistic "spawning…" — otherwise a bad name reads
@@ -1144,29 +1166,87 @@ socket.on('slash_commands', async ({ body, ack }) => {
       const match = orch.matchAllowlist(allow, repo);
       if (!match) {
         const hint = orch.suggestSpawnName(repo, names);
-        await respond(url, eph(`:warning: \`${repo}\` isn't a spawnable repo.${hint ? ` Did you mean \`${hint}\`?` : ''}${names.length ? ` Spawnable: ${names.join(', ')}` : ''}`));
+        await reply(eph(`:warning: \`${repo}\` isn't a spawnable repo.${hint ? ` Did you mean \`${hint}\`?` : ''}${names.length ? ` Spawnable: ${names.join(', ')}` : ''}`));
         return;
       }
-      await respond(url, eph(`:rocket: spawning \`${match.name}\`…`));
+      await reply(eph(`:rocket: spawning \`${match.name}\`…`));
       // Post the spawn result to the reachable control channel — chat.postMessage to
       // the invoking channel fails channel_not_found when the bot isn't a member.
       await doSpawn(NEXUS_CHANNEL || chan, undefined, match.name, seed, uid);
       return;
     }
     if (sub === 'restore') {
-      if (!SPAWN_ENABLED) { await respond(url, eph(':lock: restore disabled.')); return; }
-      const repo = parts[1];
-      if (repo) { await respond(url, eph(`:leftwards_arrow_with_hook: restoring \`${repo}\`…`)); await doRestore(NEXUS_CHANNEL || chan, undefined, repo, uid); return; }
+      if (!SPAWN_ENABLED) { await reply(eph(':lock: restore disabled.')); return; }
+      const repo = args[0];
+      if (repo) { await reply(eph(`:leftwards_arrow_with_hook: restoring \`${repo}\`…`)); await doRestore(NEXUS_CHANNEL || chan, undefined, repo, uid); return; }
       const dormant = await ledgerCmd(['list', '--state', 'dormant', '--json']);
       const names = (Array.isArray(dormant) ? dormant : []).map((d) => d.repo || d.name);
-      await respond(url, eph(names.length ? `dormant: ${names.join(', ')}\nusage: \`/nexus restore <repo>\`` : 'no dormant agents.'));
+      await reply(eph(names.length ? `dormant: ${names.join(', ')}\nusage: \`/nexus restore <repo>\`` : 'no dormant agents.'));
       return;
     }
-    await respond(url, eph(`Unknown \`${sub}\`. Try \`/nexus\` (panel), or: status · agents · peek · clear · stop · keep · msg · spawn · restore`));
+    await reply(eph(`Unknown \`${sub}\`. Try \`/nexus\` (panel), or: status · agents · peek · clear · stop · keep · msg · spawn · restore`));
   } catch (e) {
     console.error(`[nexus] slash ${sub} failed: ${e.message}`);
-    await respond(url, eph(`:warning: ${e.message}`));
+    await reply(eph(`:warning: ${e.message}`));
   }
+}
+
+// ── Slack ingress/egress — the only place Slack types meet the core (task 2.2) ──
+// SlackAdapter owns BOTH Socket Mode listeners (`slash_commands` + `interactive`) and
+// the `response_url` POST. Everything it hands in is normalized; everything handed back
+// is a `Message`. Behavior is identical to the inline handlers this replaced: ack empty
+// first (this deployment's WS delivers envelopes ~2.6s late, so an ack computed after
+// any work misses Slack's 3s window), then all output over response_url — valid ~30 min,
+// no deadline, so the result lands regardless of ack timing.
+const slack = new SlackAdapter({
+  socket,
+  web,
+  post: respond,                            // the same error-swallowing POST as before
+  log: (m) => console.log(`[nexus] ${m}`),  // keeps the interactive log line verbatim
+});
+
+slack.onCommand(async (command, body) => {
+  // Logged from the raw envelope rather than the parsed Command on purpose: bare
+  // `/nexus` normalizes to `home`, and this line has always shown the empty string the
+  // user actually typed.
+  console.log(`[nexus] slash /nexus "${String((body && body.text) || '').trim()}" from ${body && body.user_id}`);
+  await dispatchNexusCommand(command, (m) => slack.reply(command.replyToken, m));
+});
+
+// Buttons/selects still read the raw Slack body: `handleInteractive` and the
+// permission-card paths below are not normalized yet (task 3.4 migrates the panel).
+// The adapter has already gated this to `block_actions` with a non-empty `actions`.
+slack.onAction((action, body) => handleInteractive(body));
+
+// Modal submits must ack WITH a response (close / validation errors), so
+// `handleNexusSubmit` takes the raw ack and owns it — the documented escape hatch.
+slack.onViewSubmission(handleNexusSubmit);
+
+await slack.start();
+
+// ── Discord ingress/egress (tasks 3.1–3.5) ──────────────────────────────────
+// Same core, second front end. Inert unless all three env vars are set, so this is a
+// no-op for a Slack-only deployment. The HTTP route lives with the other routes on the
+// existing server (search DISCORD_PATH); registration happens at startup, below.
+const discord = new DiscordAdapter({
+  publicKey: DISCORD_PUBLIC_KEY,
+  botToken: DISCORD_BOT_TOKEN,
+  appId: DISCORD_APP_ID,
+  guildId: DISCORD_GUILD_ID,
+  path: DISCORD_PATH,
+  log: (m) => console.log(`[nexus] ${m}`),
+});
+
+discord.onCommand(async (command) => {
+  // The interaction was already deferred with a placeholder, so every reply EDITS it.
+  await dispatchNexusCommand(command, (m) => discord.reply(command.replyToken, m));
+});
+
+discord.onAction(async (action) => {
+  await dispatchNexusAction(action, {
+    edit: (m) => discord.reply(action.replyToken, m),     // PATCH @original — panel in place
+    post: (m) => discord.followUp(action.replyToken, m),  // new message beside the panel
+  });
 });
 
 async function handleInteractive(body) {
@@ -1176,7 +1256,7 @@ async function handleInteractive(body) {
   // Nexus control-modal buttons (home → push a form / refresh). Routed before the
   // orchestrator + permission-digit paths so `nx:` action_ids never collide.
   if (typeof action.action_id === 'string' && action.action_id.startsWith('nx:')) {
-    await handleNexusButton(action, body);
+    await handleNexusButton(body);
     return;
   }
   const chan = body.channel && body.channel.id;
@@ -1860,6 +1940,39 @@ async function publishEnv(env) {
 //   POST /request { to, body, deadline_ms?, from? }      -> publish a request, await the reply
 //   GET  /health | /agents | /status
 // ---------------------------------------------------------------------------
+// Read the interaction, answer it, then do the work. Shared by the main server and the
+// dedicated Discord listener so there is exactly one implementation of the signature +
+// deadline handling.
+function serveDiscordInteraction(req, res) {
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', async () => {
+    // Buffer.concat, NOT `body += chunk` like the other routes. Discord signs the exact
+    // bytes; decoding each chunk independently corrupts any multi-byte character that
+    // straddles a chunk boundary, and the signature then fails intermittently — only on
+    // large payloads, only sometimes. Pinned by a test.
+    const rawBody = Buffer.concat(chunks);
+    let out;
+    try {
+      out = await discord.handleInteraction({
+        rawBody,
+        signature: req.headers['x-signature-ed25519'],
+        timestamp: req.headers['x-signature-timestamp'],
+      });
+    } catch (e) {
+      console.error(`[nexus] discord interaction failed: ${e.message}`);
+      out = { status: 500, json: { error: 'internal error' }, work: null };
+    }
+    res.writeHead(out.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(out.json));
+    // Only now do the real work: the response above is what beats Discord's 3s deadline,
+    // and `work` runs against the follow-up webhook (~15 min window).
+    if (out.work) {
+      out.work().catch((e) => console.error(`[nexus] discord follow-up failed: ${e.message}`));
+    }
+  });
+}
+
 const httpServer = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
@@ -2087,6 +2200,13 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
+  // Discord interactions endpoint (task 3.1). Only mounted here when there is no
+  // dedicated port — see DISCORD_HTTP_PORT for why a tunnel should not see this origin.
+  if (!DISCORD_HTTP_PORT && req.method === 'POST' && url.pathname === DISCORD_PATH) {
+    serveDiscordInteraction(req, res);
+    return;
+  }
+
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: false, error: 'not found' }));
 });
@@ -2222,17 +2342,30 @@ async function buildFormView(id, channel) {
   }
 }
 
-// Panel interactions (message buttons + select — no modal). Pick an agent, then
-// act; results post via response_url (30-min window), sidestepping trigger_id.
-async function handleNexusButton(action, body) {
-  const url = body && body.response_url;
-  const id = action.action_id;
+// ── Core panel-action dispatch — provider-agnostic (task 3.4) ────────────────
+// `edit` / `post` is the portable form of Slack's `replace_original`, which task 1.3
+// deliberately parked at the call site until Discord needed it:
+//   edit → replace the message the component lives on (Slack `replace_original:true`,
+//          Discord `PATCH /webhooks/…/messages/@original`)
+//   post → add a new message beside it (Slack `replace_original:false`,
+//          Discord follow-up webhook POST)
+// Both providers have both semantics natively; only the wire spelling differs, so the
+// pair belongs in the seam rather than in either adapter.
+/**
+ * @param {import('./providers/types.js').Action} action
+ * @param {{edit: (m: Object) => Promise<void>, post: (m: Object) => Promise<void>}} out
+ */
+async function dispatchNexusAction(action, { edit, post }) {
+  if (!action) return;
+  const id = action.actionId || '';
   try {
     if (id === 'nx:pick') {
-      const pane = action.selected_option && action.selected_option.value;
+      // `action.value` carries the choice on both providers — Slack's adapter reads it
+      // out of `selected_option`, Discord's out of `data.values[0]`.
+      const pane = action.value;
       const picked = pane ? { name: paneName(pane), pane } : null;
       const agents = localAgentOptions().map((o) => ({ name: o.text, pane: o.value, label: o.text }));
-      await respond(url, { response_type: 'ephemeral', replace_original: true, text: 'Nexus Fleet Control', blocks: orch.fleetPanel({ agents, picked, spawnEnabled: SPAWN_ENABLED }) });
+      await edit(orch.fleetPanel({ agents, picked, spawnEnabled: SPAWN_ENABLED }));
       return;
     }
     if (id.startsWith('nx:do:')) {
@@ -2247,13 +2380,24 @@ async function handleNexusButton(action, body) {
       else if (act === 'keepon') res = (await doKeepCmd(pane, 'on')).text;
       else if (act === 'keepoff') res = (await doKeepCmd(pane, 'off')).text;
       else res = `unknown action ${act}`;
-      await respond(url, { response_type: 'ephemeral', replace_original: false, text: res });
+      await post(eph(res));
       return;
     }
   } catch (e) {
     console.error(`[nexus] panel action ${id} failed: ${e.message}`);
-    await respond(url, { response_type: 'ephemeral', replace_original: false, text: `:warning: ${e.message}` });
+    await post(eph(`:warning: ${e.message}`));
   }
+}
+
+// Panel interactions (message buttons + select — no modal). Pick an agent, then
+// act; results post via response_url (30-min window), sidestepping trigger_id.
+async function handleNexusButton(body) {
+  const url = body && body.response_url;
+  const render = (m, replaceOriginal) => ({ ...messageToBlockKit(m), replace_original: replaceOriginal });
+  await dispatchNexusAction(interactiveToAction(body), {
+    edit: (m) => respond(url, render(m, true)),
+    post: (m) => respond(url, render(m, false)),
+  });
 }
 
 async function openHome(trigger_id, channel, t0 = Date.now()) {
@@ -2289,9 +2433,9 @@ async function openForm(id, trigger_id, channel, t0 = Date.now()) {
 async function agentsSummaryText(localOnly) {
   let agents = await gatherAgentsLite();
   if (localOnly) agents = agents.filter((a) => a.local);
-  if (!agents.length) return { response_type: 'ephemeral', text: '_no live agents_' };
+  if (!agents.length) return eph('_no live agents_');
   const lines = agents.map((a) => `• ${a.name} · ${a.host}${a.local ? '' : ' · remote'}`);
-  return { response_type: 'ephemeral', text: `*Live agents (${agents.length})* — \`/nexus status\` for live state\n${lines.join('\n')}` };
+  return eph(`*Live agents (${agents.length})* — \`/nexus status\` for live state\n${lines.join('\n')}`);
 }
 
 // Deliver a human's message to an agent: local → immediate send-keys (agent-send.sh
@@ -2419,6 +2563,11 @@ async function handleNexusSubmit(body, ack) {
     process.exit(1);
   }
 
+  // Register `/nexus` with Discord (idempotent bulk PUT). Deliberately not awaited and
+  // never fatal: Discord being down, rate-limited, or unconfigured must not stop the
+  // Slack bridge from coming up.
+  discord.start().catch((e) => console.error(`[nexus] discord start failed: ${e.message}`));
+
   if (!NEXUS_CHANNEL) {
     console.warn('[slack-bridge] SLACK_NEXUS_CHANNEL not set — only DMs will be handled and /notify will fail.');
   }
@@ -2426,6 +2575,29 @@ async function handleNexusSubmit(body, ack) {
   httpServer.listen(PORT, '127.0.0.1', () => {
     console.log(`[slack-bridge] notify endpoint: http://127.0.0.1:${PORT}/notify`);
   });
+
+  // Dedicated Discord listener: the ONLY route on this port is the interactions
+  // endpoint, and it authenticates every request by Ed25519 signature. This is the port
+  // a tunnel should point at — never the main one, which carries the unauthenticated
+  // loopback control endpoints (/send, /relay, /notify, /request).
+  if (DISCORD_HTTP_PORT) {
+    const wantPath = DISCORD_PATH.replace(/\/+$/, '');
+    http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://localhost');
+      // Tolerate a trailing slash. Pasting the endpoint URL with one is an easy mistake,
+      // and it would otherwise 404 Discord's verification PING with no clue why.
+      const got = u.pathname.replace(/\/+$/, '');
+      if (req.method === 'POST' && got === wantPath) { serveDiscordInteraction(req, res); return; }
+      // Log every miss on this port. It only ever receives Discord traffic, so a miss is
+      // always a misconfiguration worth seeing — a wrong path, or a GET where a POST was
+      // expected. Paths carry no secrets.
+      console.log(`[nexus] discord port: unmatched ${req.method} ${u.pathname} → 404 (expected POST ${wantPath})`);
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
+    }).listen(DISCORD_HTTP_PORT, '127.0.0.1', () => {
+      console.log(`[nexus] discord interactions on http://127.0.0.1:${DISCORD_HTTP_PORT}${DISCORD_PATH} (only route on this port)`);
+    });
+  }
 
   socket.on('connected', () => { socketConnected = true; console.log('[slack-bridge] socket mode connected'); });
   socket.on('disconnected', () => { socketConnected = false; console.log('[slack-bridge] socket mode disconnected'); });

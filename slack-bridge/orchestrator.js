@@ -16,6 +16,7 @@
  */
 import { execFile, execFileSync } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
+import { message, button, select as selectEl, actionRow } from './providers/types.js';
 
 // --------------------------------------------------------------------------
 // Config: spawnable-repo allowlist. JSON object mapping the repo name (as Spark
@@ -414,7 +415,9 @@ export function radioOnOff(block_id, { current = 'on' } = {}) {
 // agent → the caller re-renders with `picked` set to reveal per-agent action
 // buttons whose value is that pane. Pure — data in, Block Kit out.
 // --------------------------------------------------------------------------
-export function fleetPanel({ agents = [], picked = null, spawnEnabled = false } = {}) {
+// Raw Block Kit for the fleet panel. Split out from `fleetPanel` so the wire shape
+// stays directly assertable while `fleetPanel` speaks the normalized Message model.
+export function fleetPanelBlocks({ agents = [], picked = null, spawnEnabled = false } = {}) {
   const blocks = [
     { type: 'section', text: { type: 'mrkdwn', text: '*Nexus Fleet Control* — pick an agent, then choose an action.' } },
   ];
@@ -453,6 +456,44 @@ export function fleetPanel({ agents = [], picked = null, spawnEnabled = false } 
   }
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Text actions: `/nexus msg <agent> <text>` · `/nexus spawn <repo> [seed]` · `/nexus restore`' }] });
   return blocks;
+}
+
+// The same panel expressed in PORTABLE components — the interactive parts only. The
+// Slack version additionally carries section/context/divider blocks that the portable
+// model has no vocabulary for; those degrade to the Message's `text` elsewhere.
+export function fleetPanelComponents({ agents = [], picked = null } = {}) {
+  const rows = [];
+  if (agents.length) {
+    rows.push(actionRow(selectEl({
+      id: 'nx:pick',
+      placeholder: 'Pick an agent',
+      options: agents.slice(0, 100).map((a) => ({ text: cap75(a.label || a.name), value: cap75(a.pane) })),
+    })));
+    rows.push(actionRow(button({ id: 'nx:do:fleetstatus', text: '📊 Fleet status', value: '' })));
+  }
+  if (picked && picked.pane) {
+    const b = (id, t, style) => button({ id, text: t, value: cap75(picked.pane), style });
+    rows.push(actionRow(
+      b('nx:do:status', '📊 Status'), b('nx:do:peek', '👁 Peek'),
+      b('nx:do:keepon', '📌 Keep on'), b('nx:do:keepoff', '📍 Keep off'),
+      b('nx:do:clear', '🧹 Clear', 'danger'), b('nx:do:stop', '🛑 Stop', 'danger'),
+    ));
+  }
+  return rows;
+}
+
+// The fleet panel as a normalized Message, carrying BOTH renderings on purpose:
+// `messageToBlockKit` prefers `blocks` (so the Slack payload stays deep-equal to what
+// the inline builder produced), while `messageToDiscord` ignores them and renders
+// `components`. Same Message, each provider taking what it can express — the escape
+// hatch documented in providers/types.js.
+export function fleetPanel(opts = {}) {
+  return message({
+    text: 'Nexus Fleet Control',
+    ephemeral: true,
+    blocks: fleetPanelBlocks(opts),
+    components: fleetPanelComponents(opts),
+  });
 }
 
 // --------------------------------------------------------------------------

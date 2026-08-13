@@ -56,3 +56,6 @@ plugins/catalog.*.toml
 /overlay/
 /.overlay-applied
 /.overlay-applied.*
+# spark MCP index config — carries github_token / gitlab_token / webhook_secret.
+# Local-only; never commit.
+spark/

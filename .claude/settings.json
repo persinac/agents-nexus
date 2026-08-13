@@ -9,7 +9,22 @@
       "Bash(ping *)",
       "Bash(gh search *)",
       "Bash(tasklist *)",
-      "mcp__excalidraw__read_checkpoint"
+      "mcp__excalidraw__read_checkpoint",
+      "Bash(kubectl -n observability get *)",
+      "Bash(kubectl -n observability logs *)",
+      "Bash(kubectl -n argocd get *)",
+      "Bash(kubectl -n kagent-fbf get *)",
+      "Bash(kubectl -n kagent get *)",
+      "Bash(kubectl -n flashback-fleet get *)",
+      "Bash(kubectl config current-context)",
+      "Bash(kubectl config get-contexts *)",
+      "mcp__agent-memory__search_similar",
+      "mcp__agent-memory__query_notes",
+      "mcp__agent-memory__query_entity",
+      "mcp__spark__spark",
+      "mcp__spark__spark_deep",
+      "mcp__plugin_slack_slack__slack_search_channels",
+      "mcp__plugin_slack_slack__slack_read_channel"
     ]
   }
 }

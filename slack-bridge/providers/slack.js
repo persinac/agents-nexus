@@ -11,10 +11,13 @@
  * IDENTICAL to today — ack empty immediately (Socket Mode WS on this box delivers
  * envelopes ~2.6s late, so we never ack-with-payload), then reply over `response_url`.
  *
- * NOTE: `view_submission` (modal) acking is deliberately NOT handled here yet — index.js
- * still owns that path (it must ack WITH a response). It is reconciled at wiring time.
+ * `view_submission` (modal) is the one Slack-shaped escape hatch on this class: a modal
+ * submit must ack WITH a response (close / validation errors), so the adapter must not
+ * pre-ack it, and there is no normalized equivalent in the model yet. `onViewSubmission`
+ * therefore hands the handler the RAW body and the RAW ack and lets it own both. Without
+ * a handler registered the envelope is dropped, unacked — the pre-2.2 behavior.
  */
-import { PROVIDERS } from './types.js';
+import { PROVIDERS, parseCommandText } from './types.js';
 
 /**
  * Render a normalized Message → a Slack `response_url` / chat payload.
@@ -58,14 +61,8 @@ function elToBlockKit(el) {
  * @returns {import('./types.js').Command}
  */
 export function slashToCommand(body = {}) {
-  const raw = String(body.text || '').trim();
-  const first = raw.split(/\s+/)[0] || '';
-  const name = (first || 'home').toLowerCase();
-  const rawArgs = raw.slice(first.length).trim();
   return {
-    name,
-    args: rawArgs ? rawArgs.split(/\s+/) : [],
-    rawArgs,
+    ...parseCommandText(body.text),   // shared with Discord — see types.js
     userId: body.user_id,
     channelId: body.channel_id,
     replyToken: body.response_url,
@@ -85,7 +82,10 @@ export function interactiveToAction(body = {}) {
   if (!a) return null;
   return {
     actionId: a.action_id,
-    value: a.value,
+    // A static_select reports its choice in `selected_option`, and leaves `value`
+    // undefined — reading only `value` silently drops the picked agent. This mirrors
+    // Discord's `data.values[0]`, so both providers yield the same Action shape.
+    value: a.selected_option ? a.selected_option.value : a.value,
     state: body.state && body.state.values,
     userId: body.user && body.user.id,
     replyToken: body.response_url,
@@ -116,10 +116,13 @@ export class SlackAdapter {
     this.log = log || (() => {});
     this._onCommand = null;
     this._onAction = null;
+    this._onViewSubmission = null;
   }
 
   onCommand(handler) { this._onCommand = handler; }
   onAction(handler) { this._onAction = handler; }
+  /** Raw Slack modal submits: `(body, ack) => …`. The handler owns the ack. */
+  onViewSubmission(handler) { this._onViewSubmission = handler; }
 
   async start() {
     if (!this.socket) return;
@@ -127,11 +130,20 @@ export class SlackAdapter {
     // slow WS; all real output then goes over response_url. Identical to index.js today.
     this.socket.on('slash_commands', async ({ body, ack }) => {
       try { await ack(); } catch { /* already acked */ }
-      if (this._onCommand) await this._onCommand(slashToCommand(body));
+      // The raw envelope rides along as a second arg (same as `onAction`) purely so the
+      // still-Slack-owned wiring layer can log what the user literally typed. The core
+      // handler only ever reads the normalized Command.
+      if (this._onCommand) await this._onCommand(slashToCommand(body), body);
     });
     this.socket.on('interactive', async ({ body, ack }) => {
-      // Only block_actions here; view_submission stays owned by index.js until wiring.
-      if (body && body.type === 'view_submission') return;
+      const first = (body && body.actions && body.actions[0]) || null;
+      this.log(`interactive type=${(body && body.type) || '-'} action=${(first && first.action_id) || '-'}`);
+      // Modal submits ack WITH a response, so the handler owns the ack and we must not
+      // pre-ack. No handler → drop it unacked (pre-2.2 behavior).
+      if (body && body.type === 'view_submission') {
+        if (this._onViewSubmission) await this._onViewSubmission(body, ack);
+        return;
+      }
       try { await ack(); } catch { /* already acked */ }
       const action = interactiveToAction(body);
       if (action && this._onAction) await this._onAction(action, body);
