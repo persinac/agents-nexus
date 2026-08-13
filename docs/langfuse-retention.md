@@ -16,6 +16,32 @@ A trace is spread across three stores:
 
 Postgres holds no per-trace rows in v3, so it needs no pruning.
 
+## A working TTL is not durability — the rollup is
+
+**A stack recreate empties ClickHouse regardless of the TTL.** On 2026-08-13 the
+TTL was verified correctly applied at 10 days, and ClickHouse still held only
+**2 days** of observations: the containers had been recreated ~26h earlier and the
+history went with them. So the 10-day window is a *ceiling*, not a guarantee —
+any `docker compose down -v`, volume prune, or image rebuild resets it to zero.
+
+The only durable cost history is **`agents.langfuse_cost_daily` in
+nexus-postgres**, written by `scripts/langfuse-cost-snapshot.py`. That makes the
+snapshot job, not the TTL, the thing that protects history — and it means a dead
+snapshot job is a silent data-loss bug, not just a missing dashboard. It crashed
+from 2026-07-01 to 2026-08-13 and six weeks of cost history is gone permanently:
+it aged out of ClickHouse and never reached the rollup.
+
+Practical consequences:
+
+- **Check the job is green** (`launchctl list | grep langfuse-cost-snapshot`,
+  second column `0`) before trusting any cost figure. A red job means the window
+  you can still recover is shrinking daily.
+- **Snapshot before deliberately recreating the stack** if the current window
+  matters — once the volumes are gone there is no second copy.
+- `LANGFUSE_COST_LOOKBACK_DAYS` defaults to **14**, deliberately wider than the
+  10-day TTL, so a run re-aggregates everything ClickHouse still has and days
+  already in Postgres are left untouched.
+
 ## ClickHouse TTL (the retention mechanism)
 
 10-day row-level TTL on the three trace tables:

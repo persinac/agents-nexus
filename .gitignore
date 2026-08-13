@@ -15,6 +15,9 @@ __pycache__/
 *.pyo
 *.egg-info/
 .venv/
+# proxy/tests documents `.venv-test` as the dev venv for pytest (pytest is not a
+# runtime dep and is not in the image). Ignore it so nobody commits a venv.
+.venv-test/
 dist/
 build/
 .pytest_cache/

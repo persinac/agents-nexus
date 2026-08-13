@@ -114,6 +114,16 @@ services:
       ROUTE_MAX_RETRIES: ${ROUTE_MAX_RETRIES:-2}
       ROUTE_429_SHED_THRESHOLD: ${ROUTE_429_SHED_THRESHOLD:-2}
       ROUTE_429_WINDOW_SECS: ${ROUTE_429_WINDOW_SECS:-20}
+      # Per-session runaway backstop, NOT a budget. Defaults sit ~8-18x above the
+      # busiest session ever observed, so they should never fire on real work.
+      # 0 disables a ceiling. Tallies are in-memory: a proxy restart clears them.
+      # USD is only enforced when NEXUS_PRICES_PATH resolves in the container (no
+      # volume mount by default), so tokens are the live guard. GET /admin/ceilings.
+      NEXUS_SESSION_CEILING_TOKENS: ${NEXUS_SESSION_CEILING_TOKENS:-5000000000}
+      NEXUS_SESSION_CEILING_TOKENS_WORK: ${NEXUS_SESSION_CEILING_TOKENS_WORK:-5000000000}
+      NEXUS_SESSION_CEILING_USD: ${NEXUS_SESSION_CEILING_USD:-2000}
+      NEXUS_SESSION_CEILING_USD_WORK: ${NEXUS_SESSION_CEILING_USD_WORK:-2000}
+      NEXUS_PRICES_PATH: ${NEXUS_PRICES_PATH:-}
     ports:
       - "${PROXY_PORT:-4000}:4000"
 
