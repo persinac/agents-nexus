@@ -178,8 +178,9 @@ schema, or config changed, so the revert is clean.
       `http_status:404`. Runs as user unit `cloudflared-nexus-discord.service`
       (enabled). Verified publicly: Discord route 401, `/send` `/relay` `/health` `/`
       all 404 — refused at the tunnel, never reaching an origin.
-      Tailscale Funnel is still up as a second public door to the same single route;
-      `tailscale funnel --https=443 off` closes it when convenient.
+      Tailscale Funnel has since been closed — `.ts.net` is unreachable and Cloudflare is
+      the sole public path. The global `/nexus` command scope was also cleared (PUT `[]`)
+      so the guild-scoped registration is the only one, removing the duplicate entry.
       **NEVER tunnel port 8788.** It also serves `/notify`, `/send`, `/request` and
       `/relay`, which are unauthenticated *by design* because they are loopback-bound and
       trusted-local — `/send` and `/relay` inject text into agents. Exposing that origin
