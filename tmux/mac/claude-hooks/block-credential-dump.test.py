@@ -34,6 +34,12 @@ MUST_BLOCK = [
     "env",
     "env | grep AWS",
     "printenv",
+    # command-position env must still be caught after the 2026-08-13 anchoring fix
+    "sudo env",
+    "cd /tmp; env",
+    "ls /tmp && printenv > /tmp/dump",
+    # (?m): env on a non-final line was missed while $ meant end-of-STRING only
+    "ls /tmp\nenv\necho done",
     "doppler secrets",
     "doppler secrets download --no-file",
     "kubectl get secret my-secret -o yaml",
@@ -78,12 +84,39 @@ MUST_ALLOW = [
     # the ".sh" in the staged path is what made the naive INTERP regex misfire.
     "git add hooks/block-credential-dump.sh && git commit -F - <<'EOF'\nfix: git remote -v printed a PAT\nEOF",
     "cat > notes.md <<'EOF'\nNever run cat talos-config/kubeconfig.\nEOF",
+    # --- 2026-08-13: a PATH whose last token ends in "env" is not a bare `env` ---
+    # \b matches after any non-word char, so these all tripped the self-dumping rule.
+    "ls /tmp/my-env",
+    "ls /etc/env",
+    "mkdir -p build/my-env",
+    "cd ~/projects/scratch-env",
+    "python3 -m venv .venv",
+    "du -sh /var/lib/my.env",
 ]
 
-def run(cmd):
+# Verdict alone is not enough: a block attributed to the wrong rule sends the reader to
+# the wrong fix. Each case asserts what the hook's stderr must (and must not) say.
+# (command, substring required, substring forbidden or None)
+MUST_BLOCK_BECAUSE = [
+    # 2026-08-13 mis-attribution: `cat` on a .env path is a CRED-path-plus-broad-reader
+    # violation, but the over-broad bare-env rule claimed it first and named the wrong cause.
+    ("cat /tmp/nope.env", "reader:", "bare env"),
+    ("head -5 config/prod.env", "matched", "bare env"),
+    # the bare-env rule itself must still fire, and still say so
+    ("env | grep AWS", "bare env", None),
+    ("printenv", "bare env", None),
+    # unchanged: the 2026-08-12 PAT incident keeps its own attribution
+    ("git remote -v", "git remote", None),
+]
+
+def run_full(cmd):
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
     p = subprocess.run([HOOK], input=payload, capture_output=True, text=True)
-    return p.returncode
+    return p.returncode, p.stderr
+
+
+def run(cmd):
+    return run_full(cmd)[0]
 
 fails = 0
 print("  MUST BLOCK:")
@@ -100,6 +133,18 @@ for c in MUST_ALLOW:
     fails += not ok
     print(f"    {'ok  ' if ok else 'FP  '}  {c[:64]}")
 
+print("  MUST BLOCK, FOR THE RIGHT REASON:")
+for c, want, forbid in MUST_BLOCK_BECAUSE:
+    rc, err = run_full(c)
+    ok = rc == 2 and want in err and (forbid is None or forbid not in err)
+    fails += not ok
+    why = "" if ok else (
+        f"  <- rc={rc}"
+        + ("" if want in err else f" missing {want!r}")
+        + ("" if forbid is None or forbid not in err else f" wrongly blamed {forbid!r}")
+    )
+    print(f"    {'ok  ' if ok else 'MISS'}  {c[:44]:<44} [{want}]{why}")
+
 # non-Bash tools must pass straight through
 rc = run.__self__ if False else subprocess.run(
     [HOOK],
@@ -109,5 +154,6 @@ print(f"  passthrough (non-Bash tool): {'ok' if rc == 0 else 'FAIL'}")
 fails += rc != 0
 
 print(f"\n  RESULT: {'ALL PASS' if fails == 0 else str(fails) + ' FAILURES'}"
-      f"  ({len(MUST_BLOCK)} block + {len(MUST_ALLOW)} allow + 1 passthrough)")
+      f"  ({len(MUST_BLOCK)} block + {len(MUST_ALLOW)} allow"
+      f" + {len(MUST_BLOCK_BECAUSE)} attribution + 1 passthrough)")
 raise SystemExit(1 if fails else 0)
