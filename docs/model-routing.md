@@ -164,13 +164,18 @@ that most needs to leave the session's capacity pool.
 switch is `ROUTE_CLASSIFIER=0`, which restores byte-for-byte prior behaviour.
 
 **Two failure modes it must not introduce:**
-- *Transcript too large for the cheaper model.* Guarded twice: skip the downgrade when estimated
-  context exceeds `ROUTE_CLASSIFIER_CHEAP_MAXTOK` (180k — just under the 200k window every tier on
-  the ladder has), and if a downgraded call still 400s, retry once on the requested model
-  (`action: classifier-revert`). A permanent 400 denies the tool call outright — strictly worse than
-  the transient failure being avoided. Note the tension: a session long enough to trip the guard is
-  also the one whose classifier calls fail most often, and it gets no protection. `classifier-revert`
-  frequency and the `classifier call kept on …` log line are how you find out that is happening.
+- *Transcript too large for the cheaper model.* Guarded twice: skip any candidate the estimated
+  transcript would not fit (`TIER_CONTEXT` — haiku 200k, sonnet/opus 900k), and if a downgraded call
+  still 400s, retry once on the requested model (`action: classifier-revert`) and stop shedding. A
+  permanent 400 denies the tool call outright — strictly worse than the transient failure being
+  avoided.
+
+  **This started as one global 180k cap and that was wrong.** Live stage-2 calls on this fleet
+  estimate ~183k tokens, so the cap pinned them straight back onto the unavailable session model —
+  the long sessions needing the carve-out most were exactly the ones it excluded. Per-tier windows
+  fix that, since the sonnet floor holds 183k with room to spare.
+  `ROUTE_CLASSIFIER_CHEAP_MAXTOK` survives as an optional stricter global ceiling (0 = per-tier
+  only). The `classifier call kept on …` log line is how you catch a recurrence.
 - *429 becoming a denial.* For classifier calls the proxy owns 429 on the non-stream path too
   (`_is_retryable`). Everywhere else 429 is still surfaced verbatim so Claude Code's HTTP backoff
   runs; for a classifier call there is no backoff to trigger, only a denial.

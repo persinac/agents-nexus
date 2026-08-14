@@ -351,6 +351,40 @@ def test_classifier_oversized_transcript_keeps_requested_model():
         "claude-opus-4-8", CLASSIFIER_BODY, POOL, cd, 0.0, max_cheap_tokens=1) == "claude-opus-4-8"
 
 
+def _classifier_body_of(est_tokens):
+    """A classifier body whose _estimate_input_tokens lands near est_tokens."""
+    body = dict(CLASSIFIER_BODY)
+    body["messages"] = [{"role": "user", "content": "=== ACTION BEING CLASSIFIED ===\n"
+                                                    + "x" * (est_tokens * 4)}]
+    return body
+
+
+def test_classifier_183k_transcript_routes_to_sonnet():
+    """Regression for the live failure: a real stage-2 call estimated 183,250
+    tokens, and the original single 180k cap pinned it back onto the unavailable
+    session model. Sonnet holds that comfortably, so it must be used."""
+    cd = routing.Cooldowns()
+    body = _classifier_body_of(183_250)
+    assert routing.select_classifier_model(
+        "claude-opus-5", body, POOL, cd, 0.0) == "claude-sonnet-5"
+
+
+def test_classifier_skips_a_tier_that_cannot_fit():
+    """Above haiku's window the guard skips haiku but still downgrades to sonnet,
+    rather than giving up and keeping the requested model."""
+    cd = routing.Cooldowns()
+    body = _classifier_body_of(225_000)
+    assert routing.select_classifier_model(
+        "claude-opus-5", body, POOL, cd, 0.0, floor_tier="haiku") == "claude-sonnet-5"
+
+
+def test_classifier_keeps_requested_when_no_tier_fits(monkeypatch):
+    monkeypatch.setattr(routing, "TIER_CONTEXT", {"haiku": 1, "sonnet": 1, "opus": 1})
+    cd = routing.Cooldowns()
+    assert routing.select_classifier_model(
+        "claude-opus-5", _classifier_body_of(50_000), POOL, cd, 0.0) == "claude-opus-5"
+
+
 def test_classifier_skips_cooled_down_model():
     cd = routing.Cooldowns(threshold=2, window=100)
     cd.record("claude-sonnet-5", 529, 0.0)

@@ -50,12 +50,25 @@ HARD_DEPTH = _int_env("ROUTE_HARD_DEPTH", 60)
 HARD_MAX_TOKENS = _int_env("ROUTE_HARD_MAXTOK", 8192)
 
 # Auto-mode classifier calls (see select_classifier_model): the floor tier they
-# may be served from, and the estimated context above which the requested model
-# is kept. The default sits just under the 200k window every tier on the ladder
-# has, so the guard fires only when the transcript would not fit a downgrade;
-# `action: classifier-revert` in Langfuse is the signal to lower it further.
+# may be served from.
 CLASSIFIER_TIER = os.environ.get("ROUTE_CLASSIFIER_TIER", "sonnet").strip().lower()
-CLASSIFIER_CHEAP_TOKENS = _int_env("ROUTE_CLASSIFIER_CHEAP_MAXTOK", 180_000)
+
+# Usable input window per tier, for the classifier size guard only. A candidate
+# is skipped when the estimated transcript would not fit it — trading a transient
+# denial for a hard 400 is strictly worse. Sonnet carries 1M when the client's
+# context-1m beta is in play (headers are forwarded verbatim, so a 1M session's
+# classifier call keeps it); haiku tops out at 200k.
+#
+# Measured, not guessed: a real stage-2 classifier call on this fleet estimated
+# 183,250 tokens. A single global 180k cap (the first cut here) therefore pinned
+# it back onto the unavailable session model — the long sessions that need the
+# carve-out most were the ones it excluded.
+TIER_CONTEXT = {"haiku": 200_000, "sonnet": 900_000, "opus": 900_000}
+
+# Optional stricter global ceiling on top of TIER_CONTEXT. 0 = per-tier windows
+# only; set a number to force classifier calls above it back to the requested
+# model regardless of tier.
+CLASSIFIER_CHEAP_TOKENS = _int_env("ROUTE_CLASSIFIER_CHEAP_MAXTOK", 0)
 
 
 @dataclass(frozen=True)
@@ -226,10 +239,11 @@ def select_classifier_model(requested, body, pool, cooldowns, now,
     the proactive router would never fire on the one call that most needs to be
     off the session model's capacity pool.
 
-    That same transcript size is the one reason to decline: a call estimated too
-    large for the floor tier keeps the requested model, because a hard 400 for
-    exceeding a context window is a permanent denial, strictly worse than the
-    transient one this carve-out exists to avoid.
+    That same transcript size is the one reason to decline: a candidate the
+    estimated transcript would not fit is skipped (per `TIER_CONTEXT`), because a
+    hard 400 for exceeding a context window is a permanent denial, strictly worse
+    than the transient one this carve-out exists to avoid. If that leaves nothing,
+    the requested model is kept.
     """
     floor = (floor_tier or CLASSIFIER_TIER).strip().lower()
     if floor not in TIER_RANK:
@@ -238,12 +252,14 @@ def select_classifier_model(requested, body, pool, cooldowns, now,
     req = _find(pool, requested)
     if req is None:
         return requested
-    if cap and _estimate_input_tokens(body) > cap:
+    est = _estimate_input_tokens(body)
+    if cap and est > cap:
         return requested
     active = cooldowns.active(now)
     candidates = [
         m for m in pool
-        if TIER_RANK[m.tier] >= TIER_RANK[floor] and m.cost <= req.cost and m.model not in active
+        if TIER_RANK[m.tier] >= TIER_RANK[floor] and m.cost <= req.cost
+        and m.model not in active and est <= TIER_CONTEXT.get(m.tier, 0)
     ]
     if not candidates:
         return requested

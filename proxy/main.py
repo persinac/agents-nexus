@@ -219,6 +219,7 @@ def _route_config() -> dict:
             "enabled": CLASSIFIER_ROUTE_ENABLED,
             "includes_work": CLASSIFIER_ROUTE_WORK,
             "tier_floor": routing.CLASSIFIER_TIER,
+            "tier_context": routing.TIER_CONTEXT,
             "cheap_max_tokens": routing.CLASSIFIER_CHEAP_TOKENS,
             "max_retries": CLASSIFIER_MAX_RETRIES,
         },

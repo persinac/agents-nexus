@@ -120,7 +120,7 @@ services:
       ROUTE_CLASSIFIER_TIER: ${ROUTE_CLASSIFIER_TIER:-sonnet}
       ROUTE_CLASSIFIER_WORK: ${ROUTE_CLASSIFIER_WORK:-1}
       ROUTE_CLASSIFIER_MAX_RETRIES: ${ROUTE_CLASSIFIER_MAX_RETRIES:-4}
-      ROUTE_CLASSIFIER_CHEAP_MAXTOK: ${ROUTE_CLASSIFIER_CHEAP_MAXTOK:-180000}
+      ROUTE_CLASSIFIER_CHEAP_MAXTOK: ${ROUTE_CLASSIFIER_CHEAP_MAXTOK:-0}
       # Per-session runaway backstop, NOT a budget. Defaults sit ~8-18x above the
       # busiest session ever observed, so they should never fire on real work.
       # 0 disables a ceiling. Tallies are in-memory: a proxy restart clears them.
