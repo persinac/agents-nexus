@@ -97,6 +97,32 @@ def test_shed_walks_down_then_stops():
     assert routing.shed_model("claude-haiku-4-5", POOL, cd, 0.0) is None
 
 
+# ── pure: bg-session cost ceiling ────────────────────────────────────────────
+
+def test_bg_ceiling_caps_opus_to_sonnet():
+    served = routing.select_bg_ceiling("claude-opus-4-8", "claude-sonnet-5", POOL)
+    assert served == "claude-sonnet-5"
+
+
+def test_bg_ceiling_never_upgrades_below_ceiling():
+    # a bg session that itself asked for haiku keeps haiku — the ceiling caps
+    # DOWN, it never bumps a cheaper request UP to meet the ceiling
+    served = routing.select_bg_ceiling("claude-haiku-4-5", "claude-sonnet-5", POOL)
+    assert served == "claude-haiku-4-5"
+
+
+def test_bg_ceiling_at_the_ceiling_is_unchanged():
+    served = routing.select_bg_ceiling("claude-sonnet-5", "claude-sonnet-5", POOL)
+    assert served == "claude-sonnet-5"
+
+
+def test_bg_ceiling_unknown_model_passes_through():
+    # unknown requested model, or unknown ceiling model (e.g. a typo'd
+    # BG_CEILING_MODEL) — fail open, same convention as select_model
+    assert routing.select_bg_ceiling("gpt-4o-mini", "claude-sonnet-5", POOL) == "gpt-4o-mini"
+    assert routing.select_bg_ceiling("claude-opus-4-8", "not-a-real-model", POOL) == "claude-opus-4-8"
+
+
 # ── pure: backoff + cooldowns ───────────────────────────────────────────────
 
 def test_backoff_honors_retry_after_and_caps():
@@ -147,6 +173,78 @@ def test_route_enabled_downgrades_trivial_but_not_work(monkeypatch):
     # work sessions are never routed, even on a trivial turn
     w_served, w_diff = main._decide_served(True, "work-acme", trivial, "claude-opus-4-8")
     assert w_served == "claude-opus-4-8" and w_diff == "n/a"
+
+
+# ── bg-session cost ceiling ("bg-" prefix) ──────────────────────────────────
+
+def test_bg_ceiling_kill_switch_off_by_default(monkeypatch):
+    """Same convention as ROUTE_ENABLED: a new cost lever ships defaulting
+    inert. A bg- session sees no change until BG_CEILING_ENABLED=1."""
+    monkeypatch.setattr(main, "BG_CEILING_ENABLED", False)
+    huge = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "x" * 200_000}]}
+    served, difficulty = main._decide_served(True, "bg-mr-rebase", huge, "claude-opus-4-8")
+    assert served == "claude-opus-4-8" and difficulty == "n/a"
+
+
+def test_bg_ceiling_ignores_request_shape_entirely(monkeypatch):
+    """The whole point: classify_difficulty classifies both of these bodies
+    identically as "hard" by context size — that's why the difficulty router
+    (ROUTE_ENABLED) has ~zero effect on this fleet (see the REQ-007 measurement
+    note). The bg- ceiling never calls classify_difficulty at all, so a
+    trivially-shaped body and a huge one cap the same way."""
+    monkeypatch.setattr(main, "BG_CEILING_ENABLED", True)
+    monkeypatch.setattr(main, "BG_CEILING_MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(main, "_COOLDOWNS", routing.Cooldowns())
+    tiny = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
+    huge = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "x" * 200_000}],
+            "thinking": {"type": "enabled"}}
+    assert main._decide_served(True, "bg-mr-rebase", tiny, "claude-opus-4-8") == ("claude-sonnet-5", "bg-ceiling")
+    assert main._decide_served(True, "bg-mr-rebase", huge, "claude-opus-4-8") == ("claude-sonnet-5", "bg-ceiling")
+
+
+def test_bg_ceiling_never_upgrades_an_already_cheap_request(monkeypatch):
+    monkeypatch.setattr(main, "BG_CEILING_ENABLED", True)
+    monkeypatch.setattr(main, "BG_CEILING_MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(main, "_COOLDOWNS", routing.Cooldowns())
+    body = {"model": "claude-haiku-4-5", "messages": [{"role": "user", "content": "hi"}]}
+    served, difficulty = main._decide_served(True, "bg-mr-rebase", body, "claude-haiku-4-5")
+    assert served == "claude-haiku-4-5" and difficulty == "bg-ceiling"
+
+
+def test_bg_ceiling_only_applies_to_tagged_sessions(monkeypatch):
+    """Untagged, work-, and search_concierge_svc-chatbot--daily-deflection-stats-
+    style names (no bg- prefix) are unaffected — the prefix is the only signal;
+    the proxy never infers "background" from anything else."""
+    monkeypatch.setattr(main, "BG_CEILING_ENABLED", True)
+    monkeypatch.setattr(main, "BG_CEILING_MODEL", "claude-sonnet-5")
+    body = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}]}
+    for sess in (None, "general", "work-acme",
+                 "search_concierge_svc-chatbot--daily-deflection-stats"):
+        served, difficulty = main._decide_served(True, sess, body, "claude-opus-4-8")
+        assert served == "claude-opus-4-8" and difficulty == "n/a", sess
+
+
+def test_bg_ceiling_fails_open_on_error(monkeypatch):
+    monkeypatch.setattr(main, "BG_CEILING_ENABLED", True)
+
+    def _boom(*a, **k):
+        raise RuntimeError("pool lookup exploded")
+    monkeypatch.setattr(routing, "select_bg_ceiling", _boom)
+    body = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}]}
+    served, difficulty = main._decide_served(True, "bg-mr-rebase", body, "claude-opus-4-8")
+    assert served == "claude-opus-4-8" and difficulty == "n/a"
+
+
+def test_bg_ceiling_is_independent_of_route_enabled(monkeypatch):
+    """Same precedent as the classifier carve-out: this fires whether or not
+    the cost-motivated difficulty router is on."""
+    monkeypatch.setattr(main, "BG_CEILING_ENABLED", True)
+    monkeypatch.setattr(main, "BG_CEILING_MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(main, "ROUTE_ENABLED", False)
+    monkeypatch.setattr(main, "_COOLDOWNS", routing.Cooldowns())
+    body = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
+    served, difficulty = main._decide_served(True, "bg-mr-rebase", body, "claude-opus-4-8")
+    assert served == "claude-sonnet-5" and difficulty == "bg-ceiling"
 
 
 # ── admin: hot-reload ROUTE_ENABLED without a restart ───────────────────────

@@ -223,6 +223,11 @@ def _route_config() -> dict:
             "cheap_max_tokens": routing.CLASSIFIER_CHEAP_TOKENS,
             "max_retries": CLASSIFIER_MAX_RETRIES,
         },
+        "bg_ceiling": {
+            "enabled": BG_CEILING_ENABLED,
+            "model": BG_CEILING_MODEL,
+            "prefix": BG_SESSION_PREFIX,
+        },
     }
 
 
@@ -273,6 +278,27 @@ WORK_HARD_FAIL_MSG = (
     + (f" Reconnect with: {WORK_RECONNECT_HINT}" if WORK_RECONNECT_HINT else "")
 )
 
+# ── Session-class cost ceiling ("bg-" sessions) ─────────────────────────────
+# Phase 2 of docs/model-routing.md, redesigned 2026-08-14 after measuring that
+# classify_difficulty's request-shape signal has ~zero effect on this fleet's
+# traffic (99.3% of turns classify "hard" by context size alone, background or
+# interactive — Claude Code resends the accumulating transcript every turn).
+# The signal that actually separates cost-safe-to-downgrade traffic here is
+# session identity, not this turn's shape: unattended cron/mission sessions
+# measured 100% Opus with zero downshift in the same window. Sessions opt in
+# by prefixing their own name `bg-` — the same mechanism `open-claude.sh`
+# already uses to derive every session's `sess/<name>/` tag; this proxy adds
+# no new tagging channel, only a new thing to do once a session has one.
+#
+# Deliberately excludes Conductor missions: config/conductor.yaml already does
+# quality-aware model selection with its own escalation policy (retry at
+# higher effort after failures, model pinned by design). A blanket downgrade
+# here would silently defeat that without Conductor's own retry logic ever
+# seeing it. Tag simple, single-model scheduled jobs — not fleet-wide.
+BG_SESSION_PREFIX = "bg-"
+BG_CEILING_ENABLED = os.environ.get("BG_CEILING_ENABLED", "0") == "1"
+BG_CEILING_MODEL = os.environ.get("BG_CEILING_MODEL", "claude-sonnet-5")
+
 
 @app.get("/admin/ceilings")
 async def get_ceilings():
@@ -296,6 +322,10 @@ async def get_ceilings():
 
 def _is_work(session_id: str | None) -> bool:
     return bool(session_id and session_id.startswith(WORK_SESSION_PREFIX))
+
+
+def _is_bg(session_id: str | None) -> bool:
+    return bool(session_id and session_id.startswith(BG_SESSION_PREFIX))
 
 
 def _upstream_for(session_id: str | None) -> str:
@@ -403,7 +433,9 @@ def _decide_served(is_messages, session_id, body, requested_model, is_classifier
 
     Classifier calls are decided first and ignore all of those gates except
     fail-open — they are pinned off the session model whether or not the
-    cost-motivated router is enabled."""
+    cost-motivated router is enabled. The bg- ceiling is decided next, also
+    independent of ROUTE_ENABLED: it is a session-class cap, not a per-turn
+    difficulty classification, so classify_difficulty never runs for it."""
     if is_classifier and body:
         try:
             served = routing.select_classifier_model(
@@ -419,6 +451,16 @@ def _decide_served(is_messages, session_id, body, requested_model, is_classifier
             return served, "classifier"
         except Exception as e:
             log.warning("classifier routing failed (fail-open to %s): %s", requested_model, e)
+            return requested_model, "n/a"
+    if BG_CEILING_ENABLED and is_messages and body and _is_bg(session_id):
+        try:
+            served = routing.select_bg_ceiling(requested_model, BG_CEILING_MODEL, _ROUTE_POOL)
+            if served != requested_model:
+                log.info("bg ceiling: sess=%s requested=%s served=%s",
+                         session_id, requested_model, served)
+            return served, "bg-ceiling"
+        except Exception as e:
+            log.warning("bg ceiling failed (fail-open to %s): %s", requested_model, e)
             return requested_model, "n/a"
     if not (ROUTE_ENABLED and is_messages and body and not _is_work(session_id)):
         return requested_model, "n/a"

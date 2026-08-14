@@ -203,6 +203,32 @@ def select_model(requested, difficulty, pool, cooldowns, downgrade_tiers, now) -
     return best.model
 
 
+# ── background-session cost ceiling ("bg-" sessions) ────────────────────────
+# Measured against real fleet traffic (2026-08-14): classify_difficulty's
+# request-shape signal does not predict whether a session needs frontier
+# judgment — 99.3% of ALL turns classified "hard" by context size alone in the
+# retained window, background or interactive, because Claude Code resends the
+# accumulating transcript every turn. What actually varies is session
+# identity: unattended cron/mission sessions ran 100% Opus with zero downshift
+# in that same window. select_bg_ceiling therefore ignores difficulty
+# entirely and caps by session class instead — see main.py's `_is_bg`.
+
+def select_bg_ceiling(requested: str, ceiling_model: str, pool: list[Model]) -> str:
+    """Cap a background-tagged session's served model at ceiling_model's cost.
+
+    Never upgrades: if `requested` is already cheaper than or equal to the
+    ceiling (e.g. a bg session explicitly asking for haiku), it passes through
+    unchanged. Unknown models on either side fail open to `requested` — same
+    convention as select_model."""
+    req = _find(pool, requested)
+    ceiling = _find(pool, ceiling_model)
+    if req is None or ceiling is None:
+        return requested
+    if req.cost <= ceiling.cost:
+        return requested
+    return ceiling.model
+
+
 # ── auto-mode classifier carve-out ─────────────────────────────────────────
 # Claude Code's auto permission mode adjudicates every mutating tool call with a
 # separate /v1/messages call. That call inherits the session model, so a pinned

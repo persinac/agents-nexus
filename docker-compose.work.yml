@@ -234,6 +234,15 @@ services:
       # interfaces, not loopback, so empty leaves that switch open to the LAN.
       # Set a value in .env; until you do, the endpoint is unauthenticated.
       ROUTE_ADMIN_TOKEN: ${ROUTE_ADMIN_TOKEN:-}
+      # Session-class cost ceiling ("bg-" sessions, docs/model-routing.md).
+      # Independent of ROUTE_ENABLED, same precedent as the classifier
+      # carve-out above: unattended cron/mission sessions measured 100% Opus
+      # with zero downshift (2026-08-14), because classify_difficulty's
+      # request-shape signal classifies 99.3% of ALL turns "hard" regardless
+      # of who's watching. A session opts in by prefixing its own name
+      # `bg-` — nothing here infers "background" from anything else.
+      BG_CEILING_ENABLED: ${BG_CEILING_ENABLED:-0}
+      BG_CEILING_MODEL: ${BG_CEILING_MODEL:-claude-sonnet-5}
     ports:
       - "${PROXY_PORT:-4000}:4000"
     healthcheck:
