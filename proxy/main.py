@@ -59,6 +59,22 @@ _COOLDOWNS = routing.Cooldowns(
     threshold=routing._int_env("ROUTE_429_SHED_THRESHOLD", 2),
     window=float(os.environ.get("ROUTE_429_WINDOW_SECS", "20")),
 )
+
+# ── Auto-mode classifier carve-out ────────────────────────────────────────────
+# Deliberately independent of ROUTE_ENABLED: this is a RESILIENCE control, not a
+# cost one. Claude Code fails closed on a classifier error, so an overloaded
+# session model turns into a denied Bash call rather than a retry the user sees.
+# The proxy owns that failure instead of forwarding it. ROUTE_CLASSIFIER=0
+# restores today's behaviour byte-for-byte.
+CLASSIFIER_ROUTE_ENABLED = os.environ.get("ROUTE_CLASSIFIER", "1") == "1"
+# Applies to work sessions too — a scoped exception to "work sessions always
+# passthrough". Only body["model"] changes, never the upstream, so corp gateway
+# auth and attribution are untouched, and a permission classification is not the
+# main-loop turn whose quality that invariant protects. Set 0 to exempt work.
+CLASSIFIER_ROUTE_WORK = os.environ.get("ROUTE_CLASSIFIER_WORK", "1") == "1"
+# Classifier calls are short; spend more attempts on one than on a main-loop turn
+# before giving up and letting the client fail closed.
+CLASSIFIER_MAX_RETRIES = routing._int_env("ROUTE_CLASSIFIER_MAX_RETRIES", 4)
 # ROUTE_ENABLED / ROUTE_DOWNGRADE_TIERS can be flipped at runtime via /admin/route
 # (no container restart → no fleet blip). The env values above are only the boot
 # defaults; runtime overrides are in-memory and revert on restart. Optional token
@@ -199,6 +215,13 @@ def _route_config() -> dict:
         "max_retries": ROUTE_MAX_RETRIES,
         "pool": [{"model": m.model, "tier": m.tier, "cost": m.cost} for m in _ROUTE_POOL],
         "cooldowns_active": sorted(_COOLDOWNS.active(time.monotonic())),
+        "classifier": {
+            "enabled": CLASSIFIER_ROUTE_ENABLED,
+            "includes_work": CLASSIFIER_ROUTE_WORK,
+            "tier_floor": routing.CLASSIFIER_TIER,
+            "cheap_max_tokens": routing.CLASSIFIER_CHEAP_TOKENS,
+            "max_retries": CLASSIFIER_MAX_RETRIES,
+        },
     }
 
 
@@ -334,7 +357,10 @@ async def proxy(request: Request, path: str):
     is_stream = bool(body.get("stream"))
     requested_model = body.get("model")
     t0 = time.monotonic()
-    served_model, difficulty = _decide_served(is_messages, session_id, body, requested_model)
+    is_classifier = _is_classifier_call(is_messages, session_id, body_bytes)
+    served_model, difficulty = _decide_served(
+        is_messages, session_id, body, requested_model, is_classifier,
+    )
 
     method = request.method
     params = dict(request.query_params)
@@ -342,20 +368,57 @@ async def proxy(request: Request, path: str):
     if is_stream:
         return await _stream_response(
             path, body_bytes, body, headers, params, t0, session_id,
-            requested_model, served_model, difficulty,
+            requested_model, served_model, difficulty, is_classifier,
         )
     return await _nonstream_response(
         method, path, body_bytes, body, headers, params, t0, session_id,
-        is_messages, requested_model, served_model, difficulty,
+        is_messages, requested_model, served_model, difficulty, is_classifier,
     )
 
 
 # ── routing decision + request shaping ─────────────────────────────────────
 
-def _decide_served(is_messages, session_id, body, requested_model):
+def _is_classifier_call(is_messages, session_id, body_bytes) -> bool:
+    """Whether this request is an auto-mode permission classification the proxy
+    should shield (own its transient failures, keep it off the session model)."""
+    if not (CLASSIFIER_ROUTE_ENABLED and is_messages):
+        return False
+    if _is_work(session_id) and not CLASSIFIER_ROUTE_WORK:
+        return False
+    return routing.is_classifier_request(body_bytes)
+
+
+def _is_retryable(status: int, is_classifier: bool) -> bool:
+    """Statuses worth another attempt (or a shed). 429 counts only for classifier
+    calls: everywhere else it is surfaced verbatim so Claude Code's own HTTP-429
+    backoff runs, but a surfaced classifier 429 becomes a permission denial."""
+    return status in routing.RETRYABLE or (is_classifier and status == 429)
+
+
+def _decide_served(is_messages, session_id, body, requested_model, is_classifier=False):
     """Return (served_model, difficulty). Fail-open to the requested model:
     routing is skipped when ROUTE_ENABLED=0, for non-messages, for work sessions,
-    or on any classify/select error."""
+    or on any classify/select error.
+
+    Classifier calls are decided first and ignore all of those gates except
+    fail-open — they are pinned off the session model whether or not the
+    cost-motivated router is enabled."""
+    if is_classifier and body:
+        try:
+            served = routing.select_classifier_model(
+                requested_model, body, _ROUTE_POOL, _COOLDOWNS, time.monotonic(),
+            )
+            # Logged at info because "the guard kept the requested model" is the
+            # one case where a classifier outage still reaches the client, and it
+            # is invisible in Langfuse (no model change → nothing to compare).
+            if served == requested_model:
+                log.info("classifier call kept on %s (est=%d tokens, floor=%s)",
+                         requested_model, routing._estimate_input_tokens(body),
+                         routing.CLASSIFIER_TIER)
+            return served, "classifier"
+        except Exception as e:
+            log.warning("classifier routing failed (fail-open to %s): %s", requested_model, e)
+            return requested_model, "n/a"
     if not (ROUTE_ENABLED and is_messages and body and not _is_work(session_id)):
         return requested_model, "n/a"
     try:
@@ -406,34 +469,37 @@ def _routing_meta(requested_model, served_model, difficulty, action, retries):
 
 async def _nonstream_response(
     method, path, body_bytes, body, headers, params, t0, session_id,
-    is_messages, requested_model, served_model, difficulty,
+    is_messages, requested_model, served_model, difficulty, is_classifier=False,
 ):
     upstream = _upstream_for(session_id)
     is_work = _is_work(session_id)
 
     model = served_model
-    action = "downgrade" if served_model and served_model != requested_model else "passthrough"
+    changed = bool(served_model and served_model != requested_model)
+    action = ("classifier" if is_classifier else "downgrade") if changed else "passthrough"
+    max_retries = CLASSIFIER_MAX_RETRIES if is_classifier else ROUTE_MAX_RETRIES
     retries = 0
+    reverted = False
     r = None
     last_exc = None
 
     while True:
         content = _body_for_model(model, requested_model, body, body_bytes)
-        for attempt in range(ROUTE_MAX_RETRIES + 1):
+        for attempt in range(max_retries + 1):
             try:
                 r = await client.request(method, f"{upstream}/{path}",
                                          content=content, headers=headers, params=params)
                 last_exc = None
             except httpx.HTTPError as e:
                 r, last_exc = None, e
-                if attempt < ROUTE_MAX_RETRIES:
+                if attempt < max_retries:
                     retries += 1
                     await asyncio.sleep(routing.backoff_delays(attempt))
                     continue
                 break
-            if r.status_code in routing.RETRYABLE:
+            if _is_retryable(r.status_code, is_classifier):
                 _COOLDOWNS.record(model, r.status_code, time.monotonic())
-                if attempt < ROUTE_MAX_RETRIES:
+                if attempt < max_retries:
                     retries += 1
                     await asyncio.sleep(routing.backoff_delays(attempt, _retry_after_seconds(r)))
                     continue
@@ -444,10 +510,27 @@ async def _nonstream_response(
                 _COOLDOWNS.record(model, 429, time.monotonic())
             break  # 2xx / 4xx / final → committed
 
-        if r is not None and r.status_code not in routing.RETRYABLE:
+        # A downgraded classifier call that 400s is almost always a transcript
+        # over the smaller model's context window. Retry once on the model the
+        # client actually asked for: a permanent 400 denies the tool call outright,
+        # which is worse than the transient failure this carve-out avoids.
+        if (is_classifier and not reverted and r is not None
+                and r.status_code == 400 and model != requested_model):
+            log.warning("classifier 400 on %s — reverting to requested %s",
+                        model, requested_model)
+            model, action, reverted = requested_model, "classifier-revert", True
+            continue
+
+        if r is not None and not _is_retryable(r.status_code, is_classifier):
             break
-        # connect error or retryable-exhausted → shed down-ladder (personal only)
-        if is_work:
+        # connect error or retryable-exhausted → shed down-ladder. Work sessions
+        # never shed a main-loop turn; a classifier call may, since shedding it
+        # only changes which Anthropic model answers, not the upstream.
+        if is_work and not is_classifier:
+            break
+        # Already back on the requested model — shedding would only return to the
+        # cheaper model that just rejected this body.
+        if reverted:
             break
         nxt = routing.shed_model(model, _ROUTE_POOL, _COOLDOWNS, time.monotonic())
         if not nxt or nxt == model:
@@ -477,7 +560,7 @@ async def _nonstream_response(
 
 async def _stream_response(
     path, body_bytes, body, headers, params, t0, session_id,
-    requested_model, served_model, difficulty,
+    requested_model, served_model, difficulty, is_classifier=False,
 ):
     """Open the upstream stream and decide the outcome BEFORE returning a
     StreamingResponse: FastAPI flushes 200+headers the instant the body starts,
@@ -489,7 +572,9 @@ async def _stream_response(
     is_work = _is_work(session_id)
 
     model = served_model
-    action = "downgrade" if served_model and served_model != requested_model else "passthrough"
+    changed = bool(served_model and served_model != requested_model)
+    action = ("classifier" if is_classifier else "downgrade") if changed else "passthrough"
+    max_retries = CLASSIFIER_MAX_RETRIES if is_classifier else ROUTE_MAX_RETRIES
     retries = 0
     resp = None
     last_exc = None
@@ -498,7 +583,7 @@ async def _stream_response(
         content = _body_for_model(model, requested_model, body, body_bytes)
         committed = False
         retryable = False  # terminal status is a retryable 5xx/429 (resp kept open)
-        for attempt in range(ROUTE_MAX_RETRIES + 1):
+        for attempt in range(max_retries + 1):
             try:
                 req = client.build_request("POST", f"{upstream}/{path}",
                                            content=content, headers=headers, params=params)
@@ -506,7 +591,7 @@ async def _stream_response(
                 last_exc = None
             except httpx.HTTPError as e:
                 resp, last_exc = None, e
-                if attempt < ROUTE_MAX_RETRIES:
+                if attempt < max_retries:
                     retries += 1
                     await asyncio.sleep(routing.backoff_delays(attempt))
                     continue
@@ -516,7 +601,7 @@ async def _stream_response(
                 break
             if resp.status_code in routing.RETRYABLE or resp.status_code == 429:
                 _COOLDOWNS.record(model, resp.status_code, time.monotonic())
-                if attempt < ROUTE_MAX_RETRIES:
+                if attempt < max_retries:
                     ra = _retry_after_seconds(resp)
                     await resp.aclose()
                     resp = None
@@ -532,7 +617,7 @@ async def _stream_response(
         if resp is not None and not retryable:
             break  # non-retryable error status → surface verbatim
         # retryable-exhausted (resp holds the last 5xx/429) OR connect-exhausted (resp None)
-        if is_work:
+        if is_work and not is_classifier:
             break  # work never sheds — surface the real status (or 502 if resp None)
         nxt = routing.shed_model(model, _ROUTE_POOL, _COOLDOWNS, time.monotonic())
         if not nxt or nxt == model:

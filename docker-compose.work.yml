@@ -206,6 +206,13 @@ services:
       ROUTE_MAX_RETRIES: ${ROUTE_MAX_RETRIES:-2}
       ROUTE_429_SHED_THRESHOLD: ${ROUTE_429_SHED_THRESHOLD:-2}
       ROUTE_429_WINDOW_SECS: ${ROUTE_429_WINDOW_SECS:-20}
+      # Auto-mode classifier shield — resilience, so ON by default and independent
+      # of ROUTE_ENABLED (docs/model-routing.md §6).
+      ROUTE_CLASSIFIER: ${ROUTE_CLASSIFIER:-1}
+      ROUTE_CLASSIFIER_TIER: ${ROUTE_CLASSIFIER_TIER:-sonnet}
+      ROUTE_CLASSIFIER_WORK: ${ROUTE_CLASSIFIER_WORK:-1}
+      ROUTE_CLASSIFIER_MAX_RETRIES: ${ROUTE_CLASSIFIER_MAX_RETRIES:-4}
+      ROUTE_CLASSIFIER_CHEAP_MAXTOK: ${ROUTE_CLASSIFIER_CHEAP_MAXTOK:-180000}
       # Per-session runaway backstop, NOT a budget. Defaults sit ~8-18x above the
       # busiest session ever observed, so they should never fire on real work.
       # 0 disables a ceiling. Tallies are in-memory: a proxy restart clears them.
