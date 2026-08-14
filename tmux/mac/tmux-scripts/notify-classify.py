@@ -15,9 +15,22 @@ Any error -> exit 10 with a deterministic fallback summary (fail safe to "ask").
 
 Policy: local reads (Read/Glob/Grep/LS/NotebookRead) -> read (no LLM, fast).
 Bash -> hard denylist (rm/sudo/dd/redirect/pipe-to-shell/--force/...) forces modify,
-otherwise an Anthropic Haiku call (litellm) decides + summarizes. Writes / MCP / web
-egress / unknown -> modify (LLM summarizes, decision forced modify). Compound shell
-commands are "read" only if every part is read-only.
+otherwise a deterministic read-only allowlist (git/kubectl/helm/terraform/docker/
+gh/aws, curl/wget/sed/find/mv with care), otherwise an Anthropic Haiku call
+(litellm) decides + summarizes. Writes / MCP / web egress / unknown -> modify (LLM
+summarizes, decision forced modify). Compound shell commands are "read" only if
+every part is read-only.
+
+Loosened 2026-08-14 per Alex — more confident given block-credential-dump.sh as a
+separate, independent layer for the credential-exposure threat specifically. That
+hook does NOT cover any of the below; each of these is its own risk call:
+  - kubectl/aws: all read verbs allowlisted. exec/cp/attach/debug/run/port-forward/
+    proxy stay excluded on purpose — they execute code, copy data into a live
+    resource, or open a network tunnel, none of which is "read".
+  - A force-less `git push` now auto-approves. -f/--force/--force-with-lease/--hard
+    still hard-deny unconditionally, checked before this allowlisting ever runs.
+  - `mv` auto-approves unless the segment touches a credential-ish path or uses -f.
+  - `chmod -R`/`chown -R` removed from the hard denylist (falls to the LLM now).
 
 Env: AN=agent name, PANE=tmux pane id, KIND=notification_type, FB=fallback text.
 Anthropic key loaded from the repo .env; default api base (the .env base is container-only).
@@ -35,9 +48,14 @@ READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread"}
 
 _DENY = re.compile(
     r"(\brm\b|\brmdir\b|\bsudo\b|\bdd\b|\bmkfs|\bshutdown\b|\breboot\b|\bkillall\b"
-    r"|:\(\)\s*\{|>\s*/dev/|\bgit\s+push\b|--force\b|--hard\b"
+    r"|:\(\)\s*\{|>\s*/dev/"
+    # Force pushes always hard-deny, checked before the git-push allowlisting below
+    # ever runs. --force/--force-with-lease/--hard catch the long forms anywhere in
+    # the command; the git-push-scoped clause closes the short-form `-f` gap without
+    # blocking every unrelated `-f` flag (grep -f, curl -f, ...) fleet-wide.
+    r"|\bgit\s+push\b[^|;&]*-f\b|--force\b|--hard\b"
     r"|\|\s*(sh|bash|zsh)\b|\b(curl|wget)\b[^|]*\|\s*(sh|bash)"
-    r"|\bchmod\s+-R|\bchown\s+-R|\bnpm\s+publish\b|\btruncate\b|\bmv\s)",
+    r"|\bnpm\s+publish\b|\btruncate\b)",
     re.I,
 )
 
@@ -54,12 +72,22 @@ _READ_CMDS = frozenset({
     "sleep", "test", "readlink", "type", "id", "ps", "top", "free", "uptime", "comm",
 })
 _READ_SUB = {
+    # push added 2026-08-14: a force-less push is content-inert on the local side and
+    # any force variant is already hard-denied above, unconditionally, before this
+    # allowlist is ever consulted -- so "push" reaching here is guaranteed force-less.
     "git": frozenset({"status", "log", "diff", "show", "merge-base", "range-diff",
                       "rev-parse", "rev-list", "blame", "ls-files", "ls-tree", "describe",
                       "shortlog", "reflog", "cat-file", "for-each-ref", "show-ref",
-                      "fetch", "whatchanged", "grep", "version", "remote"}),
+                      "fetch", "whatchanged", "grep", "version", "remote", "push"}),
+    # diff/events/auth/wait added 2026-08-14 (none mutate cluster state). "auth" needs
+    # a further check below -- `auth can-i` is read but `auth reconcile -f rbac.yaml`
+    # applies RBAC changes, so membership here alone is not enough for it. Deliberately
+    # excluded: exec/cp/attach/debug/run (execute code or create a resource),
+    # port-forward/proxy (open a network tunnel -- not a "read" of anything), config
+    # (can mutate the local kubeconfig, e.g. delete-context/use-context).
     "kubectl": frozenset({"get", "describe", "logs", "top", "explain", "api-resources",
-                          "api-versions", "version", "cluster-info"}),
+                          "api-versions", "version", "cluster-info", "diff", "events",
+                          "auth", "wait"}),
     "helm": frozenset({"template", "diff", "get", "list", "status", "show", "history",
                        "version", "lint"}),
     "terraform": frozenset({"plan", "show", "output", "validate", "version", "providers"}),
@@ -73,13 +101,23 @@ _HTTP_WRITE = re.compile(
     r"(-X\s*(post|put|patch|delete)|--data\b|--data-[a-z]+|(^|\s)-d\b"
     r"|--upload-file|(^|\s)-T\b|(^|\s)-[oO]\b|--output)", re.I)
 
+# mv auto-approves (added 2026-08-14) EXCEPT when it touches a credential-ish path
+# (same spirit as block-credential-dump.sh's CRED list, trimmed to what's relevant
+# here) or forces an overwrite with -f. This is deliberately narrow -- it is not a
+# general data-loss guard, just enough to keep a careless mv off dotfiles/secrets.
+_MV_SENSITIVE = re.compile(
+    r"(\.ssh\b|\.aws\b|\.kube\b|\.npmrc\b|\.netrc\b|id_rsa|id_ed25519"
+    r"|\.pem\b|\.env\b|\.git/config|secrets?\.ya?ml)", re.I)
+
 
 # Global flags that take a separate-token value and can appear BEFORE the
 # subcommand (e.g. `kubectl --context prod get`, `git -C /repo show`). Their value
-# is skipped when locating the real subcommand.
+# is skipped when locating the real subcommand. --endpoint-url/--output added
+# 2026-08-14 for `aws --profile x --region y ec2 describe-instances`-style commands.
 _VALUE_FLAGS = frozenset({
     "-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "--as",
     "--server", "-s", "-C", "--git-dir", "--work-tree", "--profile", "--region", "-o",
+    "--endpoint-url", "--output",
 })
 
 
@@ -96,6 +134,36 @@ def _subcommand(toks):
             continue
         return t
     return ""
+
+
+def _strip_leading_flags(toks):
+    """Drop a leading run of flags (and their value-tokens) from toks. Used by the
+    aws check, which needs TWO positional tokens (service, then action) rather than
+    _subcommand's single one."""
+    i = 0
+    while i < len(toks) and toks[i].startswith("-"):
+        i += 2 if ("=" not in toks[i] and toks[i] in _VALUE_FLAGS) else 1
+    return toks[i:]
+
+
+def _aws_is_read(toks):
+    """AWS CLI read heuristic (added 2026-08-14): `aws s3 ls`/`presign`, or
+    `aws <service> <get-*|describe-*|list-*|head-*>` -- the same prefix convention
+    AWS's own read-only IAM policy examples use. Anything else (create-/put-/delete-/
+    update-/modify-/run-/terminate-/tag-/attach-/... or a shape this can't parse)
+    returns False and falls through to the LLM -- this never silently approves an
+    unrecognized action."""
+    rest = _strip_leading_flags(toks[1:])                # drop 'aws' + global flags
+    if not rest:
+        return False
+    service = rest[0].lower()
+    rest = _strip_leading_flags(rest[1:])
+    if not rest:
+        return False
+    action = rest[0].lower()
+    if service == "s3":
+        return action in ("ls", "presign")
+    return action.startswith(("get-", "describe-", "list-", "head-"))
 
 
 def _segment_is_read(seg):
@@ -122,12 +190,24 @@ def _segment_is_read(seg):
         return "-i" not in toks                                    # not in-place
     if cmd == "find":
         return not re.search(r"-(delete|exec|execdir|ok|fprint|fls|fprintf)\b", seg)
+    if cmd == "mv":
+        return "-f" not in toks and not _MV_SENSITIVE.search(seg)
+    if cmd == "aws":
+        return _aws_is_read(toks)
     if cmd in _READ_CMDS:
         return True
     if cmd in _READ_SUB:
         sub = _subcommand(toks[1:])                                # skip leading flags (e.g. --context X)
         if cmd == "gh":  # gh subcommands need a read action (view/list/status)
             return sub in _READ_SUB[cmd] and bool(re.search(r"\b(view|list|status|get)\b", seg))
+        if cmd == "kubectl" and sub == "auth":  # can-i is read; reconcile applies RBAC
+            return bool(re.search(r"\bcan-i\b", seg))
+        if cmd == "git" and sub == "push":
+            # Self-contained, not just relying on the caller's _DENY pre-check: plain
+            # frozenset membership can't see flags, and a segment-level check here is
+            # what actually inspects THIS segment for a force flag, the same way the
+            # mv check below inspects its own segment rather than trusting a caller.
+            return "-f" not in toks and not re.search(r"--force", seg, re.I)
         return sub in _READ_SUB[cmd]
     return False
 
@@ -144,8 +224,8 @@ _PROMPT = """You are the middle-man between an autonomous coding agent and its h
 {{"decision":"read|modify","category":"<2-4 word label>","summary":"<one or two sentences>"}}
 
 decision rules:
-- "read" = the command only INSPECTS and does not change files, branches, remotes, deployed resources, or download-and-run / install anything. Treat ALL of these as read: git status/log/diff/show/branch -l/rev-parse/merge-base/range-diff/blame/ls-files, `git fetch` (updates only remote-tracking refs — safe), kubectl get/describe/logs/top, helm template/diff/get/list, terraform plan, docker ps/images/logs/inspect, and cat/ls/grep/find(without -delete)/head/tail (incl. -f follow)/wc/echo/which/jq.
-- "modify" = changes state: writes/edits/deletes/moves files, redirects to a file (> or >>), git add/commit/push/reset/checkout/merge/rebase/stash, kubectl apply/create/delete/patch/scale/rollout/edit, helm install/upgrade/uninstall, terraform apply/destroy, package installs, sudo, or piping into a shell.
+- "read" = the command only INSPECTS and does not change files, branches, remotes, deployed resources, or download-and-run / install anything. Treat ALL of these as read: git status/log/diff/show/branch -l/rev-parse/merge-base/range-diff/blame/ls-files, `git fetch` (updates only remote-tracking refs — safe), a force-less `git push` (no -f/--force/--force-with-lease), kubectl get/describe/logs/top/diff/events/auth/wait, helm template/diff/get/list, terraform plan, docker ps/images/logs/inspect, AWS CLI actions named get-*/describe-*/list-*/head-* (and plain `aws s3 ls`/`presign`), a plain `mv` that doesn't touch a credential-ish path (.ssh/.aws/.kube/.env/id_rsa/...) and isn't forced with -f, and cat/ls/grep/find(without -delete)/head/tail (incl. -f follow)/wc/echo/which/jq.
+- "modify" = changes state: writes/edits/deletes files, redirects to a file (> or >>), a FORCED git push (-f/--force/--force-with-lease), git add/commit/reset/checkout/merge/rebase/stash, kubectl apply/create/delete/patch/scale/rollout/edit/exec/cp/attach/debug/run/port-forward, AWS CLI actions named create-*/put-*/delete-*/update-*/modify-*/run-*/terminate-*/tag-*/attach-* (or any shape you can't confidently place in the read list above), helm install/upgrade/uninstall, terraform apply/destroy, package installs, sudo, or piping into a shell.
 - Compound command (&&, ||, ;, |): "read" only if EVERY part is read; one modifying part makes the whole "modify".
 - BE DECISIVE: if every part is plainly an inspection, answer "read" — do NOT hedge to "modify" just because the domain (git/k8s/deploy) feels operational. Reserve "modify" for an actual state change or genuine ambiguity. Your decision MUST agree with your summary: if the summary concludes nothing is modified, decision is "read".
 
