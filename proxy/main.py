@@ -409,13 +409,13 @@ def _decide_served(is_messages, session_id, body, requested_model, is_classifier
             served = routing.select_classifier_model(
                 requested_model, body, _ROUTE_POOL, _COOLDOWNS, time.monotonic(),
             )
-            # Logged at info because "the guard kept the requested model" is the
-            # one case where a classifier outage still reaches the client, and it
-            # is invisible in Langfuse (no model change → nothing to compare).
-            if served == requested_model:
-                log.info("classifier call kept on %s (est=%d tokens, floor=%s)",
-                         requested_model, routing._estimate_input_tokens(body),
-                         routing.CLASSIFIER_TIER)
+            # Unconditional: a silent downgrade is indistinguishable from "never
+            # reached the proxy" in every other signal here (Langfuse only sees
+            # the served model, no request-level log exists elsewhere). This line
+            # is the one place that proves a classifier call arrived at all.
+            log.info("classifier decision: requested=%s served=%s est=%d tokens floor=%s",
+                     requested_model, served, routing._estimate_input_tokens(body),
+                     routing.CLASSIFIER_TIER)
             return served, "classifier"
         except Exception as e:
             log.warning("classifier routing failed (fail-open to %s): %s", requested_model, e)
@@ -500,6 +500,9 @@ async def _nonstream_response(
                 break
             if _is_retryable(r.status_code, is_classifier):
                 _COOLDOWNS.record(model, r.status_code, time.monotonic())
+                if is_classifier:
+                    log.info("classifier %s on %s, attempt %d/%d",
+                             r.status_code, model, attempt + 1, max_retries + 1)
                 if attempt < max_retries:
                     retries += 1
                     await asyncio.sleep(routing.backoff_delays(attempt, _retry_after_seconds(r)))
@@ -602,6 +605,9 @@ async def _stream_response(
                 break
             if resp.status_code in routing.RETRYABLE or resp.status_code == 429:
                 _COOLDOWNS.record(model, resp.status_code, time.monotonic())
+                if is_classifier:
+                    log.info("classifier %s on %s (stream), attempt %d/%d",
+                             resp.status_code, model, attempt + 1, max_retries + 1)
                 if attempt < max_retries:
                     ra = _retry_after_seconds(resp)
                     await resp.aclose()
