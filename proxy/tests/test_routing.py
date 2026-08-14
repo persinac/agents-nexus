@@ -300,6 +300,193 @@ async def test_stream_midstream_drop_is_not_retried(orch):
     assert calls["n"] == 1  # NO retry after the first byte
 
 
+# ── auto-mode classifier carve-out ──────────────────────────────────────────
+# Claude Code fails CLOSED when a permission-classifier call errors: the tool call
+# is denied, not retried and not re-prompted. These guard that the proxy keeps
+# those calls off the session model and owns their transient failures.
+
+CLASSIFIER_BODY = {
+    "model": "claude-opus-4-8",
+    "system": "<cc_automode_permissions>\nrules\n</cc_automode_permissions>",
+    "messages": [{"role": "user", "content": "=== ACTION BEING CLASSIFIED ===\nBash: ls"}],
+}
+
+
+def test_classifier_detected_by_either_marker():
+    perms = json.dumps({"system": "<cc_automode_permissions>x"}).encode()
+    action = json.dumps({"messages": [{"content": "=== ACTION BEING CLASSIFIED ==="}]}).encode()
+    assert routing.is_classifier_request(perms)
+    assert routing.is_classifier_request(action)
+    # an ordinary turn is not a classification, and empty bytes never raise
+    ordinary = json.dumps({"messages": [{"role": "user", "content": "run the tests"}]}).encode()
+    assert not routing.is_classifier_request(ordinary)
+    assert not routing.is_classifier_request(b"")
+
+
+def test_classifier_pinned_off_requested_model_at_floor_tier():
+    cd = routing.Cooldowns()
+    # default floor is sonnet — cheapest tier >= sonnet that is <= opus in cost
+    assert routing.select_classifier_model(
+        "claude-opus-4-8", CLASSIFIER_BODY, POOL, cd, 0.0) == "claude-sonnet-5"
+    # an explicit haiku floor goes all the way down
+    assert routing.select_classifier_model(
+        "claude-opus-4-8", CLASSIFIER_BODY, POOL, cd, 0.0, floor_tier="haiku") == "claude-haiku-4-5"
+
+
+def test_classifier_never_upgrades_and_ignores_unknown_models():
+    cd = routing.Cooldowns()
+    # requested is already below the floor → left alone, never lifted to sonnet
+    assert routing.select_classifier_model(
+        "claude-haiku-4-5", CLASSIFIER_BODY, POOL, cd, 0.0) == "claude-haiku-4-5"
+    assert routing.select_classifier_model(
+        "gpt-4o-mini", CLASSIFIER_BODY, POOL, cd, 0.0) == "gpt-4o-mini"
+
+
+def test_classifier_oversized_transcript_keeps_requested_model():
+    """A classifier transcript too large for the cheaper model must NOT be
+    downgraded: a 400 for exceeding the context window denies the tool call
+    permanently, which is worse than the transient failure being avoided."""
+    cd = routing.Cooldowns()
+    assert routing.select_classifier_model(
+        "claude-opus-4-8", CLASSIFIER_BODY, POOL, cd, 0.0, max_cheap_tokens=1) == "claude-opus-4-8"
+
+
+def _classifier_body_of(est_tokens):
+    """A classifier body whose _estimate_input_tokens lands near est_tokens."""
+    body = dict(CLASSIFIER_BODY)
+    body["messages"] = [{"role": "user", "content": "=== ACTION BEING CLASSIFIED ===\n"
+                                                    + "x" * (est_tokens * 4)}]
+    return body
+
+
+def test_classifier_183k_transcript_routes_to_sonnet():
+    """Regression for the live failure: a real stage-2 call estimated 183,250
+    tokens, and the original single 180k cap pinned it back onto the unavailable
+    session model. Sonnet holds that comfortably, so it must be used."""
+    cd = routing.Cooldowns()
+    body = _classifier_body_of(183_250)
+    assert routing.select_classifier_model(
+        "claude-opus-5", body, POOL, cd, 0.0) == "claude-sonnet-5"
+
+
+def test_classifier_skips_a_tier_that_cannot_fit():
+    """Above haiku's window the guard skips haiku but still downgrades to sonnet,
+    rather than giving up and keeping the requested model."""
+    cd = routing.Cooldowns()
+    body = _classifier_body_of(225_000)
+    assert routing.select_classifier_model(
+        "claude-opus-5", body, POOL, cd, 0.0, floor_tier="haiku") == "claude-sonnet-5"
+
+
+def test_classifier_keeps_requested_when_no_tier_fits(monkeypatch):
+    monkeypatch.setattr(routing, "TIER_CONTEXT", {"haiku": 1, "sonnet": 1, "opus": 1})
+    cd = routing.Cooldowns()
+    assert routing.select_classifier_model(
+        "claude-opus-5", _classifier_body_of(50_000), POOL, cd, 0.0) == "claude-opus-5"
+
+
+def test_classifier_skips_cooled_down_model():
+    cd = routing.Cooldowns(threshold=2, window=100)
+    cd.record("claude-sonnet-5", 529, 0.0)
+    cd.record("claude-sonnet-5", 529, 0.0)  # trips cooldown
+    served = routing.select_classifier_model(
+        "claude-opus-4-8", CLASSIFIER_BODY, POOL, cd, 1.0, floor_tier="haiku")
+    assert served == "claude-haiku-4-5"
+
+
+def test_classifier_routed_even_with_route_disabled(monkeypatch):
+    """The carve-out is resilience, not cost: it fires with the cost router off."""
+    monkeypatch.setattr(main, "_COOLDOWNS", routing.Cooldowns())
+    monkeypatch.setattr(main, "ROUTE_ENABLED", False)
+    served, difficulty = main._decide_served(
+        True, None, CLASSIFIER_BODY, "claude-opus-4-8", True)
+    assert difficulty == "classifier" and served != "claude-opus-4-8"
+
+
+def test_classifier_call_detection_gates(monkeypatch):
+    raw = json.dumps(CLASSIFIER_BODY).encode()
+    monkeypatch.setattr(main, "CLASSIFIER_ROUTE_ENABLED", True)
+    monkeypatch.setattr(main, "CLASSIFIER_ROUTE_WORK", True)
+    assert main._is_classifier_call(True, None, raw)
+    assert main._is_classifier_call(True, "work-acme", raw)     # work included by default
+    assert not main._is_classifier_call(False, None, raw)       # non-/v1/messages
+    monkeypatch.setattr(main, "CLASSIFIER_ROUTE_WORK", False)
+    assert not main._is_classifier_call(True, "work-acme", raw)  # work exempted
+    assert main._is_classifier_call(True, None, raw)             # personal still shielded
+    monkeypatch.setattr(main, "CLASSIFIER_ROUTE_ENABLED", False)
+    assert not main._is_classifier_call(True, None, raw)         # kill switch
+
+
+def _recording(status_by_model):
+    """Handler answering per requested model; records the models it was asked for."""
+    seen = []
+
+    def handler(request):
+        model = json.loads(request.content)["model"]
+        seen.append(model)
+        status = status_by_model.get(model, 200)
+        if status == 200:
+            return httpx.Response(200, json={"content": [], "usage": {}})
+        return httpx.Response(status, json={"type": "error", "error": {"message": "boom"}})
+    return handler, seen
+
+
+@pytest.mark.asyncio
+async def test_classifier_429_is_retried_not_surfaced(orch):
+    """A surfaced 429 is a permission DENIAL, so the proxy owns it for classifier
+    calls — unlike a main-loop turn, where it is passed through for CC's backoff."""
+    handler, calls = _scripted([429, 429, 200])
+    orch(handler)
+    raw = json.dumps(CLASSIFIER_BODY).encode()
+    res = await main._nonstream_response(
+        "POST", "v1/messages", raw, dict(CLASSIFIER_BODY), {}, {}, 0.0, None,
+        True, "claude-opus-4-8", "claude-opus-4-8", "classifier", True,
+    )
+    assert res.status_code == 200
+    assert calls["n"] == 3
+
+    # same script, ordinary turn → surfaced verbatim on the first 429, no retry
+    handler2, calls2 = _scripted([429, 429, 200])
+    orch(handler2)
+    body = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}]}
+    res2 = await main._nonstream_response(
+        "POST", "v1/messages", json.dumps(body).encode(), body, {}, {}, 0.0, None,
+        True, "claude-opus-4-8", "claude-opus-4-8", "normal",
+    )
+    assert res2.status_code == 429 and calls2["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_classifier_400_reverts_to_requested_model(orch):
+    """Belt for the size heuristic: if the cheaper model rejects the transcript,
+    fall back to the model the client asked for rather than denying the call."""
+    handler, seen = _recording({"claude-sonnet-5": 400, "claude-opus-4-8": 200})
+    orch(handler)
+    raw = json.dumps(CLASSIFIER_BODY).encode()
+    res = await main._nonstream_response(
+        "POST", "v1/messages", raw, dict(CLASSIFIER_BODY), {}, {}, 0.0, None,
+        True, "claude-opus-4-8", "claude-sonnet-5", "classifier", True,
+    )
+    assert res.status_code == 200
+    assert seen == ["claude-sonnet-5", "claude-opus-4-8"]
+
+
+@pytest.mark.asyncio
+async def test_classifier_may_shed_on_work_session(orch):
+    """Work sessions never shed a main-loop turn, but a classifier call may: only
+    body["model"] changes, never the upstream, so corp attribution is intact."""
+    handler, seen = _recording({"claude-sonnet-5": 529, "claude-haiku-4-5": 200})
+    orch(handler)
+    raw = json.dumps(CLASSIFIER_BODY).encode()
+    res = await main._nonstream_response(
+        "POST", "v1/messages", raw, dict(CLASSIFIER_BODY), {}, {}, 0.0, "work-acme",
+        True, "claude-opus-4-8", "claude-sonnet-5", "classifier", True,
+    )
+    assert res.status_code == 200
+    assert seen[-1] == "claude-haiku-4-5"           # shed down-ladder after retries
+    assert seen.count("claude-sonnet-5") == 1 + main.CLASSIFIER_MAX_RETRIES
+
+
 @pytest.mark.asyncio
 async def test_work_session_hardfails_no_bypass_and_no_shed(orch):
     handler, calls = _scripted([503])  # always 503

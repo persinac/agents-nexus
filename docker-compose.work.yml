@@ -217,6 +217,23 @@ services:
       NEXUS_SESSION_CEILING_USD: ${NEXUS_SESSION_CEILING_USD:-2000}
       NEXUS_SESSION_CEILING_USD_WORK: ${NEXUS_SESSION_CEILING_USD_WORK:-2000}
       NEXUS_PRICES_PATH: ${NEXUS_PRICES_PATH:-}
+      # Auto-mode classifier carve-out (docs/model-routing.md §6). Deliberately
+      # independent of ROUTE_ENABLED — this is a RESILIENCE control, not a cost
+      # one. Claude Code fails closed on a classifier error, so an overloaded
+      # session model surfaces as a denied Bash call; the proxy retries and
+      # downgrades that call instead of forwarding the failure. 0 restores the
+      # pre-carve-out behaviour byte-for-byte.
+      ROUTE_CLASSIFIER: ${ROUTE_CLASSIFIER:-1}
+      ROUTE_CLASSIFIER_TIER: ${ROUTE_CLASSIFIER_TIER:-sonnet}
+      ROUTE_CLASSIFIER_WORK: ${ROUTE_CLASSIFIER_WORK:-1}
+      ROUTE_CLASSIFIER_MAX_RETRIES: ${ROUTE_CLASSIFIER_MAX_RETRIES:-4}
+      ROUTE_CLASSIFIER_CHEAP_MAXTOK: ${ROUTE_CLASSIFIER_CHEAP_MAXTOK:-0}
+      # Guards the mutating POST /admin/route, which flips ROUTE_ENABLED for the
+      # whole fleet at runtime. main.py:81 calls an empty token "fine on a
+      # localhost-only box" — but the port mapping below publishes on ALL
+      # interfaces, not loopback, so empty leaves that switch open to the LAN.
+      # Set a value in .env; until you do, the endpoint is unauthenticated.
+      ROUTE_ADMIN_TOKEN: ${ROUTE_ADMIN_TOKEN:-}
     ports:
       - "${PROXY_PORT:-4000}:4000"
     healthcheck:

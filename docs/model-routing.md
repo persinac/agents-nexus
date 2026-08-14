@@ -32,7 +32,7 @@ Anthropic models — **without ever degrading or breaking Claude Code**. Strictl
 - **Never cross vendor.** Candidates are Anthropic only. Within Anthropic, downgrades move
   *down* the size ladder `haiku < sonnet < opus`; never up, never to another vendor.
 - **Work sessions always passthrough** (`_is_work()` short-circuits) — no routing/downgrade,
-  same-model transient retry only.
+  same-model transient retry only. One scoped exception: auto-mode classifier calls (§6).
 - **Streaming: commit the outcome before the first byte.** Once a chunk is yielded the model
   is committed; no retry after that.
 - **Preserve prompt caching** — only `body["model"]` is rewritten; `cache_control`, `system`,
@@ -104,6 +104,11 @@ ROUTE_MAX_RETRIES=2
 ROUTE_429_SHED_THRESHOLD=2
 ROUTE_429_WINDOW_SECS=20
 # ROUTE_POOL_FILE=/app/pool.json
+ROUTE_CLASSIFIER=1                  # shield auto-mode classifier calls (§6; own switch)
+ROUTE_CLASSIFIER_TIER=sonnet        # floor tier those calls may be served from
+ROUTE_CLASSIFIER_WORK=1             # include work sessions (model only, never the upstream)
+ROUTE_CLASSIFIER_MAX_RETRIES=4
+ROUTE_CLASSIFIER_CHEAP_MAXTOK=150000
 ```
 Pass through the `proxy` service in `docker-compose.yml` / `docker-compose.work.yml` with the
 same `${VAR:-default}` style as `LANGFUSE_*`. No new service.
@@ -130,6 +135,60 @@ the kill switch.)
 Add a cheaper model = append a pool entry. A sub-Haiku **cross-vendor** entry needs the Anthropic
 ⇄ provider translation leg — deferred to a LiteLLM `/v1/messages` sidecar per IDEAS #31, off by
 default.
+
+### 6. Auto-mode classifier carve-out (added 2026-08-14)
+
+**Problem.** Claude Code's auto permission mode adjudicates every mutating tool call with its own
+`/v1/messages` call, and that call inherits the session model. With `model: opus[1m]` pinned in
+`~/.claude/settings.json`, every permission decision depended on the scarcest capacity pool in the
+account — and the client **fails closed**: on a classifier error it denies the tool call rather than
+retrying or prompting (`Auto mode classifier unavailable, denying with retry guidance (fail
+closed)`, verified in the 2.1.232 binary). One 529 therefore reads to the agent as "Bash is not
+allowed" while read-only tools keep working, which is the symptom that motivated this change.
+
+Not the context-exhaustion failure recorded in the memory stack: 2.1.232 separates the two — a
+too-long classifier transcript *falls back to prompting*, an unavailable classifier *denies*.
+
+**Detection.** `routing.is_classifier_request(body_bytes)` — byte-substring test for either
+`=== ACTION BEING CLASSIFIED ===` or `<cc_automode_permissions>`, both stable literals in the
+2.1.232 classifier prompt. Raw bytes, so no parse step and nothing that can raise on the hot path.
+
+**Selection.** `routing.select_classifier_model()` pins the call to the cheapest Anthropic model at
+or above `ROUTE_CLASSIFIER_TIER` (default `sonnet`, matching the client's own
+`getClassifierSonnet5Default`) that costs no more than the requested model and is not in cooldown.
+It deliberately does **not** consult `classify_difficulty`: a classifier transcript carries much of
+the session, so difficulty always reads `hard` and the cost router would never fire on the one call
+that most needs to leave the session's capacity pool.
+
+**Not gated on `ROUTE_ENABLED`** — this is a resilience control, not a cost control. Its own kill
+switch is `ROUTE_CLASSIFIER=0`, which restores byte-for-byte prior behaviour.
+
+**Two failure modes it must not introduce:**
+- *Transcript too large for the cheaper model.* Guarded twice: skip any candidate the estimated
+  transcript would not fit (`TIER_CONTEXT` — haiku 200k, sonnet/opus 900k), and if a downgraded call
+  still 400s, retry once on the requested model (`action: classifier-revert`) and stop shedding. A
+  permanent 400 denies the tool call outright — strictly worse than the transient failure being
+  avoided.
+
+  **This started as one global 180k cap and that was wrong.** Live stage-2 calls on this fleet
+  estimate ~183k tokens, so the cap pinned them straight back onto the unavailable session model —
+  the long sessions needing the carve-out most were exactly the ones it excluded. Per-tier windows
+  fix that, since the sonnet floor holds 183k with room to spare.
+  `ROUTE_CLASSIFIER_CHEAP_MAXTOK` survives as an optional stricter global ceiling (0 = per-tier
+  only). The `classifier call kept on …` log line is how you catch a recurrence.
+- *429 becoming a denial.* For classifier calls the proxy owns 429 on the non-stream path too
+  (`_is_retryable`). Everywhere else 429 is still surfaced verbatim so Claude Code's HTTP backoff
+  runs; for a classifier call there is no backoff to trigger, only a denial.
+
+**Work sessions are included** (`ROUTE_CLASSIFIER_WORK=1`) — the scoped exception to the
+always-passthrough invariant. Only `body["model"]` changes, never the upstream, so corp gateway auth
+and attribution are untouched, and a permission classification is not the main-loop turn whose
+quality that invariant protects. Such a call may also shed down-ladder on a work session, for the
+same reason. `ROUTE_CLASSIFIER_WORK=0` exempts work.
+
+**Langfuse.** `action` is `classifier` when the model was repinned and `classifier-revert` after a
+400 fallback; `difficulty` is `classifier`. `GET /admin/route` reports the whole block under
+`classifier`.
 
 ## Files
 | File | Change |

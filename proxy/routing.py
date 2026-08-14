@@ -49,6 +49,27 @@ HARD_TOKENS = _int_env("ROUTE_HARD_TOKENS", 40000)
 HARD_DEPTH = _int_env("ROUTE_HARD_DEPTH", 60)
 HARD_MAX_TOKENS = _int_env("ROUTE_HARD_MAXTOK", 8192)
 
+# Auto-mode classifier calls (see select_classifier_model): the floor tier they
+# may be served from.
+CLASSIFIER_TIER = os.environ.get("ROUTE_CLASSIFIER_TIER", "sonnet").strip().lower()
+
+# Usable input window per tier, for the classifier size guard only. A candidate
+# is skipped when the estimated transcript would not fit it — trading a transient
+# denial for a hard 400 is strictly worse. Sonnet carries 1M when the client's
+# context-1m beta is in play (headers are forwarded verbatim, so a 1M session's
+# classifier call keeps it); haiku tops out at 200k.
+#
+# Measured, not guessed: a real stage-2 classifier call on this fleet estimated
+# 183,250 tokens. A single global 180k cap (the first cut here) therefore pinned
+# it back onto the unavailable session model — the long sessions that need the
+# carve-out most were the ones it excluded.
+TIER_CONTEXT = {"haiku": 200_000, "sonnet": 900_000, "opus": 900_000}
+
+# Optional stricter global ceiling on top of TIER_CONTEXT. 0 = per-tier windows
+# only; set a number to force classifier calls above it back to the requested
+# model regardless of tier.
+CLASSIFIER_CHEAP_TOKENS = _int_env("ROUTE_CLASSIFIER_CHEAP_MAXTOK", 0)
+
 
 @dataclass(frozen=True)
 class Model:
@@ -180,6 +201,69 @@ def select_model(requested, difficulty, pool, cooldowns, downgrade_tiers, now) -
         return requested
     best = min(candidates, key=lambda m: (m.cost, TIER_RANK[m.tier]))
     return best.model
+
+
+# ── auto-mode classifier carve-out ─────────────────────────────────────────
+# Claude Code's auto permission mode adjudicates every mutating tool call with a
+# separate /v1/messages call. That call inherits the session model, so a pinned
+# 1M-context Opus makes each permission decision depend on the scarcest capacity
+# pool in the account — and when it fails the client does not retry or prompt, it
+# DENIES ("Auto mode classifier unavailable, denying with retry guidance (fail
+# closed)"). A blip therefore reads to the agent as "Bash is not allowed".
+#
+# Both markers below are stable literals in the 2.1.232 classifier prompt: the
+# injected permissions block in the system prompt, and the action header in the
+# user turn. Matching either is enough; matching on raw bytes means no parse step
+# and nothing that can raise on the hot path.
+CLASSIFIER_MARKERS = (b"=== ACTION BEING CLASSIFIED ===", b"<cc_automode_permissions>")
+
+
+def is_classifier_request(body_bytes: bytes) -> bool:
+    """True when these request bytes are an auto-mode permission classification."""
+    if not body_bytes:
+        return False
+    try:
+        return any(marker in body_bytes for marker in CLASSIFIER_MARKERS)
+    except TypeError:
+        return False
+
+
+def select_classifier_model(requested, body, pool, cooldowns, now,
+                            floor_tier=None, max_cheap_tokens=None) -> str | None:
+    """Model to serve an auto-mode classifier call: the cheapest Anthropic model
+    at or above `floor_tier` that is not in cooldown and not more expensive than
+    the requested model. Never upgrades, never crosses vendor.
+
+    Unlike `select_model` this does NOT consult difficulty — a classifier call
+    carries much of the session transcript, so difficulty always reads "hard" and
+    the proactive router would never fire on the one call that most needs to be
+    off the session model's capacity pool.
+
+    That same transcript size is the one reason to decline: a candidate the
+    estimated transcript would not fit is skipped (per `TIER_CONTEXT`), because a
+    hard 400 for exceeding a context window is a permanent denial, strictly worse
+    than the transient one this carve-out exists to avoid. If that leaves nothing,
+    the requested model is kept.
+    """
+    floor = (floor_tier or CLASSIFIER_TIER).strip().lower()
+    if floor not in TIER_RANK:
+        floor = "sonnet"
+    cap = CLASSIFIER_CHEAP_TOKENS if max_cheap_tokens is None else max_cheap_tokens
+    req = _find(pool, requested)
+    if req is None:
+        return requested
+    est = _estimate_input_tokens(body)
+    if cap and est > cap:
+        return requested
+    active = cooldowns.active(now)
+    candidates = [
+        m for m in pool
+        if TIER_RANK[m.tier] >= TIER_RANK[floor] and m.cost <= req.cost
+        and m.model not in active and est <= TIER_CONTEXT.get(m.tier, 0)
+    ]
+    if not candidates:
+        return requested
+    return min(candidates, key=lambda m: (m.cost, TIER_RANK[m.tier])).model
 
 
 def shed_model(current, pool, cooldowns, now) -> str | None:
