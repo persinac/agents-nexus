@@ -4,8 +4,7 @@
     "claude-opus-5":    {"input": 5.0, "output": 25.0},
     "claude-opus-4-8":  {"input": 5.0, "output": 25.0},
     "claude-sonnet-5":  {"input": 2.0, "output": 10.0,
-                         "valid_until": "2026-08-31",
-                         "_note": "introductory rate; standard is $3/$15 from 2026-09-01"},
+                         "_note": "$2/$10 is the standing rate — confirmed by Anthropic email to Alex 2026-08-14 that it is not changing. The published 2026-08-31 intro expiry no longer applies, so no valid_until: it would have fired a spurious expiry warning on 2026-09-01 for a live rate."},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0}
   },
   "cache_read_mult": 0.10,
