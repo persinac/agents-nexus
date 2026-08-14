@@ -32,27 +32,28 @@ import sys
 # traffic (work-*) is real per-token spend. Override without editing code via
 # scripts/routing-prices.json (see load_prices). Current 2026-07-20; Sonnet 5 is
 # on introductory pricing ($2/$10) through 2026-08-31, then $3/$15.
-PRICES = {
-    "claude-opus-4-8":  {"input": 5.0, "output": 25.0},
-    "claude-sonnet-5":  {"input": 2.0, "output": 10.0},
-    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
-}
-CACHE_READ_MULT = 0.10    # cache-read priced 0.1x base input
-CACHE_WRITE_MULT = 1.25   # 5-min cache-creation priced 1.25x base input
+# Populated exclusively from scripts/routing-prices.json by load_prices(). Kept
+# empty on purpose: a hardcoded copy here silently diverged from the JSON — both
+# tables were missing claude-opus-5 while agreeing with each other, so nothing
+# flagged it. One table, one place to update.
+PRICES: dict[str, dict[str, float]] = {}
+CACHE_READ_MULT = 0.10    # overwritten from the JSON; see load_prices()
+CACHE_WRITE_MULT = 1.25   # overwritten from the JSON; see load_prices()
 
 CH = ["docker", "exec", "langfuse-clickhouse", "clickhouse-client"]
 
 
 def load_prices() -> None:
-    """Overlay scripts/routing-prices.json (sibling) onto the built-in defaults,
-    so rates update without code edits and the nightly snapshot picks them up."""
+    """Load scripts/routing-prices.json — the only price table. Exits if it is
+    unreadable: there is no built-in fallback any more, so continuing would
+    price every model at zero and print a confidently empty report."""
     global CACHE_READ_MULT, CACHE_WRITE_MULT
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "routing-prices.json")
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-    except (OSError, ValueError):
-        return
+    except (OSError, ValueError) as exc:
+        sys.exit(f"cannot read the price table {path}: {exc}")
     for m, p in (data.get("models") or {}).items():
         if isinstance(p, dict) and "input" in p and "output" in p:
             PRICES[m] = {"input": float(p["input"]), "output": float(p["output"])}
@@ -60,6 +61,9 @@ def load_prices() -> None:
         CACHE_READ_MULT = float(data["cache_read_mult"])
     if "cache_write_mult" in data:
         CACHE_WRITE_MULT = float(data["cache_write_mult"])
+    if not PRICES:
+        sys.exit(f"the price table {path} lists no models — refusing to report "
+                 "every model at zero cost")
 
 
 def ch(query: str) -> list[list[str]]:
@@ -71,16 +75,38 @@ def ch(query: str) -> list[list[str]]:
     return [ln.split("\t") for ln in out.stdout.splitlines() if ln.strip()]
 
 
+_WARNED: set[str] = set()
+
+
+def _warn_once(key: str, msg: str) -> None:
+    if key not in _WARNED:
+        _WARNED.add(key)
+        print(f"  ! {msg}", file=sys.stderr)
+
+
 def price(model: str, u: dict) -> float:
-    """$ for a turn's usage buckets at `model`'s rates (fuzzy model match)."""
+    """$ for a turn's usage buckets at `model`'s rates.
+
+    Exact match, then a same-tier substitute — but the substitute now ANNOUNCES
+    itself. It used to be silent, which is how claude-opus-5 read as correctly
+    priced for months: it fell through to claude-opus-4-8, and the two happen to
+    share $5/$25. The figure was right by coincidence, and would have become a
+    plausible wrong number the first time an Opus shipped at a new price.
+    The nightly snapshot deliberately has no equivalent fallback — see
+    resolve_price() there — because its output is the durable record."""
     p = PRICES.get(model)
     if p is None:  # tolerate dated ids: match on tier keyword
         for k, v in PRICES.items():
             tier = k.split("-")[1]  # opus|sonnet|haiku
             if tier in (model or "").lower():
                 p = v
+                _warn_once(model, f"{model} has no price entry — using {k} rates "
+                                  f"(${v['input']}/${v['output']}). Add it to "
+                                  f"routing-prices.json.")
                 break
     if p is None:
+        _warn_once(model, f"{model} has no price entry and no same-tier match — "
+                          f"counting it as $0. Add it to routing-prices.json.")
         return 0.0
     inp, out = p["input"], p["output"]
     return (
@@ -181,12 +207,18 @@ def main() -> None:
         print("    (no opus-requested turns in window)")
 
     # ── E. per-agent spend + cache-safe sonnet-pin headroom ──────────────────
+    # NOT routing-gated, unlike A-D. Those compare requested vs served and so
+    # genuinely need metadata['routing']; per-agent SPEND does not care whether
+    # proactive downgrade is on. Sharing the gated Wo made E read empty on every
+    # box running the default ROUTE_ENABLED=0 — i.e. the one section that answers
+    # "what is this fleet costing per agent" was dark for a reason unrelated to it.
+    WoE = f"o.start_time > now() - INTERVAL {window}"
     rows = ch(f"""SELECT t.session_id AS agent, o.provided_model_name AS model, count(),
                  sum(o.usage_details['input']), sum(o.usage_details['output']),
                  sum(o.usage_details['cache_read_input_tokens']),
                  sum(o.usage_details['cache_creation_input_tokens'])
                  FROM observations o INNER JOIN traces t ON o.trace_id = t.id
-                 WHERE {Wo} GROUP BY agent, model""")
+                 WHERE {WoE} AND o.type = 'GENERATION' GROUP BY agent, model""")
     agents: dict = {}
     for agent, model, turns, i, o, cr, cw in rows:
         u = {"input": int(i), "output": int(o),
@@ -200,16 +232,16 @@ def main() -> None:
         if int(turns) > a["top"][1]:
             a["top"] = (model, int(turns))
     print(f"\n[E] per-agent list-value $ ({window}) + cache-safe sonnet-pin headroom")
-    print(f"    {'agent':<40}{'turns':>6}{'model':>9}{'out/turn':>9}{'list-$':>9}{'pin→sonnet':>12}")
+    print(f"    {'agent':<40}{'turns':>6}{'model':>9}{'out/turn':>9}{'list-$':>10}{'pin→sonnet':>14}")
     for agent, a in sorted(agents.items(), key=lambda kv: kv[1]["cost"], reverse=True)[:12]:
         tier = (a["top"][0] or "?").replace("claude-", "").split("-")[0]
         opt = a["out"] // a["turns"] if a["turns"] else 0
         pin = f"save ${a['save']:.2f}" if a["save"] > 0.01 else "—"
-        print(f"    {agent[:40]:<40}{a['turns']:>6}{tier:>9}{opt:>9}{'$'+format(a['cost'],'.2f'):>9}{pin:>12}")
+        print(f"    {agent[:40]:<40}{a['turns']:>6}{tier:>9}{opt:>9}{'$'+format(a['cost'],'.2f'):>10}{pin:>14}")
     print("    candidates = opus-dominant rows with a pin→sonnet number (whole-session pin keeps cache)")
 
     print("\n--- caveats ---")
-    print("  * $ = Anthropic LIST value (PRICES / routing-prices.json). Personal traffic is on the")
+    print("  * $ = Anthropic LIST value (scripts/routing-prices.json). Personal traffic is on the")
     print("    subscription, so it's a quota/budget proxy, not cash; only work-* sessions are real $.")
     print("  * [C]/[D] per-TURN downgrade loses the requested model's per-model cache, so a real")
     print("    downgraded big turn skews to fresh input and can be net-negative — [D] is an upper bound.")

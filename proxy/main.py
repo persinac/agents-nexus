@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import AsyncGenerator
 
@@ -63,6 +64,100 @@ _COOLDOWNS = routing.Cooldowns(
 # defaults; runtime overrides are in-memory and revert on restart. Optional token
 # guards the mutating POST — empty = open (fine on a localhost-only box).
 ROUTE_ADMIN_TOKEN = os.environ.get("ROUTE_ADMIN_TOKEN", "").strip()
+
+# ── Per-session runaway ceilings ──────────────────────────────────────────────
+# A BACKSTOP, not a budget. Defaults sit ~8-18x above the busiest session ever
+# observed (1.6k turns / 282M tokens / ~$240 over two days), so they should never
+# fire during real work — they exist to stop a pathological loop. The proxy is
+# the only chokepoint that sees every agent regardless of spawn path.
+#
+# Tokens are the primary unit: they need no price table and are exactly what runs
+# away. The USD ceiling is OPTIONAL and only enforced when NEXUS_PRICES_PATH
+# points at a readable scripts/routing-prices.json — the proxy image has no
+# volume mounts, so by default that file is not in the container and the dollar
+# check is skipped rather than silently approximated off a blended rate.
+# Set to 0 to disable either ceiling.
+CEILING_TOKENS = int(os.environ.get("NEXUS_SESSION_CEILING_TOKENS", "5000000000"))
+CEILING_TOKENS_WORK = int(os.environ.get("NEXUS_SESSION_CEILING_TOKENS_WORK", "5000000000"))
+CEILING_USD = float(os.environ.get("NEXUS_SESSION_CEILING_USD", "2000"))
+CEILING_USD_WORK = float(os.environ.get("NEXUS_SESSION_CEILING_USD_WORK", "2000"))
+PRICES_PATH = os.environ.get("NEXUS_PRICES_PATH", "").strip()
+
+_TOKEN_KEYS = ("input", "output", "cache_read_input_tokens", "cache_creation_input_tokens")
+# session -> {"tokens": int, "usd": float, "turns": int}. In-memory and per
+# process: a proxy restart resets every session's tally. Acceptable for a
+# runaway backstop (a loop that outlives a restart re-trips within minutes) and
+# it keeps the hot path free of a datastore.
+_SESSION_SPEND: dict[str, dict[str, float]] = {}
+_PRICES: dict[str, dict] = {}
+_CACHE_READ_MULT = 0.10
+_CACHE_WRITE_MULT = 1.25
+
+
+def _load_prices() -> None:
+    """Optional. Without it the token ceiling still works; only USD is skipped."""
+    global _CACHE_READ_MULT, _CACHE_WRITE_MULT
+    if not PRICES_PATH:
+        return
+    try:
+        with open(PRICES_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        log.warning("ceilings: cannot read NEXUS_PRICES_PATH=%s (%s) — "
+                    "USD ceiling disabled, token ceiling still active",
+                    PRICES_PATH, exc)
+        return
+    for name, p in (data.get("models") or {}).items():
+        if isinstance(p, dict) and "input" in p and "output" in p:
+            _PRICES[name] = {"input": float(p["input"]), "output": float(p["output"])}
+    _CACHE_READ_MULT = float(data.get("cache_read_mult", 0.10))
+    _CACHE_WRITE_MULT = float(data.get("cache_write_mult", 1.25))
+    log.info("ceilings: loaded %d model prices from %s", len(_PRICES), PRICES_PATH)
+
+
+_load_prices()
+
+
+def _turn_usd(model: str | None, ud: dict) -> float:
+    """USD for one turn, or 0.0 when the model has no price entry. Exact-name
+    then date-suffix-stripped, matching scripts/langfuse-cost-snapshot.py — no
+    tier fallback, so an unknown model reads as 0 rather than as a guess."""
+    if not _PRICES or not model:
+        return 0.0
+    p = _PRICES.get(model) or _PRICES.get(re.sub(r"-20[0-9]{6}$", "", model))
+    if not p:
+        return 0.0
+    inp = p["input"]
+    return (ud.get("input", 0) * inp
+            + ud.get("cache_creation_input_tokens", 0) * inp * _CACHE_WRITE_MULT
+            + ud.get("cache_read_input_tokens", 0) * inp * _CACHE_READ_MULT
+            + ud.get("output", 0) * p["output"]) / 1_000_000
+
+
+def _account_usage(session_id: str | None, model: str | None, ud: dict) -> None:
+    """Add one completed turn to its session's running tally."""
+    acc = _SESSION_SPEND.setdefault(session_id or "(untagged)",
+                                    {"tokens": 0, "usd": 0.0, "turns": 0})
+    acc["tokens"] += sum(int(ud.get(k, 0) or 0) for k in _TOKEN_KEYS)
+    acc["usd"] += _turn_usd(model, ud)
+    acc["turns"] += 1
+
+
+def _ceiling_breach(session_id: str | None) -> str | None:
+    """Human-readable reason this session is over a ceiling, else None."""
+    acc = _SESSION_SPEND.get(session_id or "(untagged)")
+    if not acc:
+        return None
+    work = _is_work(session_id)
+    tok_cap = CEILING_TOKENS_WORK if work else CEILING_TOKENS
+    usd_cap = CEILING_USD_WORK if work else CEILING_USD
+    if tok_cap and acc["tokens"] >= tok_cap:
+        return (f"session token ceiling reached: {int(acc['tokens']):,} >= {tok_cap:,} "
+                f"over {acc['turns']} turns")
+    if _PRICES and usd_cap and acc["usd"] >= usd_cap:
+        return (f"session cost ceiling reached: ${acc['usd']:,.2f} >= ${usd_cap:,.2f} "
+                f"over {acc['turns']} turns")
+    return None
 
 
 @app.on_event("shutdown")
@@ -155,6 +250,26 @@ WORK_HARD_FAIL_MSG = (
 )
 
 
+@app.get("/admin/ceilings")
+async def get_ceilings():
+    """Current per-session tallies and the configured caps. Read-only — the way
+    to clear a tally is a proxy restart (it is in-memory by design)."""
+    return {
+        "caps": {
+            "personal": {"tokens": CEILING_TOKENS, "usd": CEILING_USD},
+            "work": {"tokens": CEILING_TOKENS_WORK, "usd": CEILING_USD_WORK},
+        },
+        "usd_enforced": bool(_PRICES),
+        "prices_path": PRICES_PATH or None,
+        "sessions": {
+            k: {"turns": v["turns"], "tokens": int(v["tokens"]),
+                "usd": round(v["usd"], 4), "over": _ceiling_breach(k)}
+            for k, v in sorted(_SESSION_SPEND.items(),
+                               key=lambda kv: kv[1]["tokens"], reverse=True)
+        },
+    }
+
+
 def _is_work(session_id: str | None) -> bool:
     return bool(session_id and session_id.startswith(WORK_SESSION_PREFIX))
 
@@ -191,6 +306,30 @@ async def proxy(request: Request, path: str):
             body = json.loads(body_bytes)
         except json.JSONDecodeError:
             pass
+
+    # Pre-request ceiling gate. Only /v1/messages — a health check or a token
+    # count must never be refused. Checked BEFORE the upstream call so a runaway
+    # stops costing money at the next turn boundary rather than after it.
+    if is_messages:
+        breach = _ceiling_breach(session_id)
+        if breach:
+            log.error("REFUSED sess/%s: %s", session_id or "(untagged)", breach)
+            return Response(
+                status_code=403,
+                media_type="application/json",
+                content=json.dumps({
+                    "type": "error",
+                    "error": {
+                        "type": "permission_error",
+                        "message": (
+                            f"nexus-proxy refused this request: {breach}. "
+                            "This is a per-session runaway backstop, not a quota. "
+                            "Raise NEXUS_SESSION_CEILING_TOKENS / _USD, or restart "
+                            "nexus-proxy to clear the in-memory tally."
+                        ),
+                    },
+                }),
+            )
 
     is_stream = bool(body.get("stream"))
     requested_model = body.get("model")
@@ -494,12 +633,16 @@ async def _log_generation(body: dict, response: dict, t0: float, session_id: str
         metadata = {"latency_ms": round((time.monotonic() - t0) * 1000)}
         if routing_meta:
             metadata["routing"] = routing_meta
+        ud = _usage_details(usage)
+        # Accounted here, not inside _emit_trace: the ceiling is a safety control
+        # and must keep counting on a box where Langfuse is down or unconfigured.
+        _account_usage(session_id, body.get("model"), ud)
         _emit_trace(
             name="messages",
             session_id=session_id,
             body=body,
             output=output,
-            usage_details=_usage_details(usage),
+            usage_details=ud,
             metadata=metadata,
         )
     except Exception as e:
@@ -583,6 +726,9 @@ async def _log_stream(body: dict, chunks: list[bytes], t0: float, session_id: st
         }
         if routing_meta:
             metadata["routing"] = routing_meta
+        # Same reason as the non-stream path: account before tracing, so the
+        # ceiling keeps counting even if Langfuse emission fails.
+        _account_usage(session_id, body.get("model"), _usage_details(usage_acc))
         _emit_trace(
             name="messages-stream",
             session_id=session_id,

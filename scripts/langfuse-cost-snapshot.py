@@ -26,8 +26,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -53,13 +55,78 @@ def docker_bin() -> str:
 
 DOCKER = docker_bin()
 
+# ── Prices: scripts/routing-prices.json is the single source of truth ────────
+# Cost is computed HERE from the token buckets, not read from Langfuse's
+# total_cost column. Langfuse prices a turn only if its own `models` table knows
+# the model, and that table lagged claude-opus-5/sonnet-5 by months — 2,813 of
+# 2,823 turns came back NULL, and float(None) crashed this job for six weeks
+# while the rollup silently froze. The four token buckets are always correct
+# (they come straight from the API's usage block), so they are the safe basis.
+PRICES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "routing-prices.json")
+DATE_SUFFIX = re.compile(r"-20[0-9]{6}$")
+
+
+def load_prices() -> tuple[dict, float, float]:
+    """Read the price table, or exit. Deliberately fails loudly: an unreadable
+    table must not degrade into pricing every row at zero, which is the silent
+    failure this whole change exists to remove."""
+    try:
+        with open(PRICES_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        sys.exit(f"[cost-snapshot] cannot read {PRICES_PATH}: {exc}")
+
+    models = data.get("models") or {}
+    if not models:
+        sys.exit(f"[cost-snapshot] {PRICES_PATH} lists no models — "
+                 "refusing to price all traffic at zero")
+
+    today = dt.date.today().isoformat()
+    for name, price in sorted(models.items()):
+        expiry = price.get("valid_until")
+        if expiry and today > expiry:
+            sys.stderr.write(
+                f"[cost-snapshot] WARNING: the {name} price expired {expiry} "
+                f"(today is {today}). Cost for it is wrong until "
+                f"routing-prices.json is updated.\n")
+
+    return (models,
+            float(data.get("cache_read_mult", 0.10)),
+            float(data.get("cache_write_mult", 1.25)))
+
+
+def resolve_price(model: str, models: dict) -> dict | None:
+    """Exact name, then the name minus a trailing -YYYYMMDD (the API reports
+    e.g. claude-haiku-4-5-20251001 while the table is keyed on the alias).
+
+    No tier-keyword fallback, unlike routing-report.py's price(). Matching
+    'opus' would price claude-opus-5 off claude-opus-4-8 — invisible today only
+    because both are $5/$25, and a plausible wrong number the moment they
+    diverge. This rollup is the only durable cost history, so an unrecognised
+    model must be visibly unpriced rather than quietly approximated."""
+    if model in models:
+        return models[model]
+    return models.get(DATE_SUFFIX.sub("", model))
+
+
+def turn_cost(row: dict, price: dict, cache_read_mult: float,
+              cache_write_mult: float) -> float:
+    """USD for one (day, project, model) group at that model's list rates."""
+    inp = price["input"]
+    return round((
+        row["input_tokens"] * inp
+        + row["cache_creation_tokens"] * inp * cache_write_mult
+        + row["cache_read_tokens"] * inp * cache_read_mult
+        + row["output_tokens"] * price["output"]
+    ) / 1_000_000, 6)
+
+
 # ── ClickHouse: aggregate observations → one row per (day, project, model) ───
 CH_QUERY = f"""
 SELECT toString(toDate(start_time))                 AS day,
        project_id,
        coalesce(provided_model_name, 'unknown')     AS model,
        count()                                       AS observations,
-       toString(round(sum(total_cost), 6))           AS total_cost,
        sum(usage_details['input'])                   AS input_tokens,
        sum(usage_details['output'])                  AS output_tokens,
        sum(usage_details['cache_creation_input_tokens']) AS cache_creation_tokens,
@@ -89,24 +156,28 @@ def run(cmd: list[str], *, stdin: str | None = None) -> str:
     return res.stdout
 
 
-def fetch_rows() -> list[dict]:
+def fetch_rows() -> tuple[list[dict], list[str]]:
+    """Returns (rows, unpriced_models). An unpriced row keeps its token counts
+    and carries total_cost=None → SQL NULL, so it is visibly missing a price
+    rather than indistinguishable from a genuinely free day."""
+    models, cache_read_mult, cache_write_mult = load_prices()
     out = run([
         DOCKER, "exec", CH_CONTAINER, "clickhouse-client",
         "--user", CH_USER, "--password", CH_PASSWORD,
         "--format", "JSONEachRow", "-q", CH_QUERY,
     ])
     rows: list[dict] = []
+    unpriced: set[str] = set()
     for line in out.splitlines():
         line = line.strip()
         if not line:
             continue
         r = json.loads(line)
-        rows.append({
+        row = {
             "day": r["day"],
             "project_id": r["project_id"],
             "model": r["model"],
             "observations": int(r["observations"]),
-            "total_cost": round(float(r["total_cost"]), 6),
             "input_tokens": int(r["input_tokens"]),
             "output_tokens": int(r["output_tokens"]),
             "cache_creation_tokens": int(r["cache_creation_tokens"]),
@@ -115,8 +186,15 @@ def fetch_rows() -> list[dict]:
             # nested objects so jsonb_to_recordset lands them straight into jsonb
             "cost_details": json.loads(r["cost_json"]),
             "usage_details": json.loads(r["usage_json"]),
-        })
-    return rows
+        }
+        price = resolve_price(row["model"], models)
+        if price is None:
+            unpriced.add(row["model"])
+            row["total_cost"] = None
+        else:
+            row["total_cost"] = turn_cost(row, price, cache_read_mult, cache_write_mult)
+        rows.append(row)
+    return rows, sorted(unpriced)
 
 
 # ── Postgres: upsert via jsonb_to_recordset (dollar-quoted, injection-safe) ──
@@ -182,19 +260,29 @@ def main() -> None:
     ap.add_argument("--emit-json", metavar="PATH", help="also dump the full rollup to a JSON file")
     args = ap.parse_args()
 
-    rows = fetch_rows()
+    rows, unpriced = fetch_rows()
     if not rows:
         print("[cost-snapshot] no GENERATION observations in window — nothing to snapshot")
         return
 
     days = sorted({r["day"] for r in rows})
-    total = sum(r["total_cost"] for r in rows)
+    total = sum(r["total_cost"] for r in rows if r["total_cost"] is not None)
     print(f"[cost-snapshot] aggregated {len(rows)} (day×model) rows across "
           f"{len(days)} days ({days[0]}…{days[-1]}), ${total:,.2f} total")
 
+    # Counted and named, never silently dropped: a model missing from the price
+    # table is the one thing that makes the total quietly too low.
+    if unpriced:
+        n = sum(1 for r in rows if r["total_cost"] is None)
+        sys.stderr.write(
+            f"[cost-snapshot] WARNING: {n} row(s) carry NULL cost — no price entry for "
+            f"{', '.join(unpriced)}. Token counts are still correct. "
+            f"Add the model to {PRICES_PATH} and re-run to price them.\n")
+
     if args.dry_run:
         for r in rows[:10]:
-            print(f"  {r['day']}  {r['model']:<28} ${r['total_cost']:>10,.4f}  "
+            cost = "     (none)" if r["total_cost"] is None else f"${r['total_cost']:>10,.4f}"
+            print(f"  {r['day']}  {r['model']:<28} {cost}  "
                   f"{r['total_tokens']:>12,} tok  ({r['observations']} obs)")
         if len(rows) > 10:
             print(f"  … and {len(rows) - 10} more")
