@@ -61,7 +61,37 @@ const NEXUS_CHANNEL = process.env.SLACK_NEXUS_CHANNEL || '';
 // the bot DM — rather than a busy channel they may not be watching. Empty → legacy
 // behavior (post to NEXUS_CHANNEL).
 const OPERATOR_DM = process.env.SLACK_OPERATOR_DM || '';
-const PORT = parseInt(process.env.SLACK_BRIDGE_PORT || '8788', 10);
+const PORT = parseInt(process.env.NEXUS_BUS_PORT || process.env.SLACK_BRIDGE_PORT || '8788', 10);
+
+// --- Build stamp (surfaced on /health) ---
+// A long-lived bridge drifts from the working tree: the unit keeps running the code it
+// was started with while the repo moves on. With no version on the wire, an agent reading
+// /health cannot tell whether a field's ABSENCE means "this build predates it" or "the
+// feature is off" — and will misdiagnose the second as the first. Resolved once at startup
+// (env wins, so a container can stamp it without a .git), never on the request path.
+const BUILD_COMMIT = (() => {
+  if (process.env.NEXUS_BUILD_COMMIT) return process.env.NEXUS_BUILD_COMMIT.trim();
+  try {
+    const sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: __dirname, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    let dirty = '';
+    try {
+      const st = execFileSync('git', ['status', '--porcelain'], {
+        cwd: __dirname, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (st) dirty = '-dirty';
+    } catch { /* status is best-effort */ }
+    return sha + dirty;
+  } catch {
+    return 'unknown';
+  }
+})();
+const BUILD_STARTED_AT = new Date().toISOString();
+const PKG_VERSION = (() => {
+  try { return JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8')).version || '0.0.0'; }
+  catch { return '0.0.0'; }
+})();
 
 // Discord (task 3.5). All three are required together — a public key without a bot
 // token can verify a request but cannot answer it — so a partial config leaves the
@@ -144,13 +174,16 @@ const LEDGER_FILE = process.env.AGENT_LEDGER || join(HOME, '.tmux', 'agent-ledge
 // posts an addressed, sender-tagged line to SLACK_AGENTS_CHANNEL. Every host's
 // bridge sees it over Socket Mode and the one whose registry owns the target
 // delivers it (handleBusMessage). Inert unless both vars are set.
-const BUS_ENABLED = process.env.SLACK_BUS_ENABLED === '1';
+// The master bus switch. `NEXUS_BUS_ENABLED` is the current name; `SLACK_BUS_ENABLED` is a
+// DEPRECATED alias kept because it is exported in live agent shells and systemd units. The
+// name is a fossil of the Slack-only era — the bus it gates is NATS. Grep for either.
+const BUS_ENABLED = (process.env.NEXUS_BUS_ENABLED ?? process.env.SLACK_BUS_ENABLED) === '1';
 const AGENTS_CHANNEL = process.env.SLACK_AGENTS_CHANNEL || '';
 // Max chars of an A2A message body the bus forwards. Slack's text field allows ~40k,
 // so this is a sanity bound, not a hard ceiling. Over it, capWithMarker appends a
 // visible truncation marker (never silent). Raising it is safe; chunking (IDEAS #30h)
 // removes the limit entirely. Was a silent `.slice(0, 1500)` — the bug integration-tests caught.
-const BUS_MAX_CHARS = parseInt(process.env.SLACK_BUS_MAX_CHARS || '8000', 10);
+const BUS_MAX_CHARS = parseInt(process.env.NEXUS_BUS_MAX_CHARS || process.env.SLACK_BUS_MAX_CHARS || '8000', 10);
 
 // --- A2A bus transport selection (default 'slack'; 'nats' = NATS + JetStream) ---
 // The bus medium is pluggable: `slack` (default) keeps the #nexus-agents channel path
@@ -202,7 +235,10 @@ let natsReady = false;      // true once connected + subscribed
 // shared store. Opt-in (SLACK_PRESENCE_ENABLED=1) — only useful with 2+ live bridges, so a
 // solo-host install leaves it off to avoid a pointless heartbeat. Enable it per-machine (the
 // repo `.env`) when a second host joins, for cross-host FQDN election + reachability.
-const SELF_HOST = (process.env.SLACK_PRESENCE_HOST || hostname() || 'unknown').trim();
+// This bridge's presence host — the FIRST segment of every FQDN it publishes. `NEXUS_HOST`
+// is the current name; `SLACK_PRESENCE_HOST` is a DEPRECATED alias (the value it names is a
+// NATS KV key component, nothing to do with Slack). Same alias applies in agent-resolve.sh.
+const SELF_HOST = (process.env.NEXUS_HOST || process.env.SLACK_PRESENCE_HOST || hostname() || 'unknown').trim();
 // Slack-channel presence gossip. OFF in single-host (NATS KV presence is the sole source there).
 const PRESENCE_ENABLED = SLACK_A2A_ACTIVE && BUS_ENABLED && !!AGENTS_CHANNEL && process.env.SLACK_PRESENCE_ENABLED === '1';
 // FQDN presence (v2): publish per-instance { name, workspace, pane } records instead of a
@@ -1934,7 +1970,7 @@ const httpServer = http.createServer((req, res) => {
   if (req.method === 'GET' && url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const busUp = BUS_ENABLED && (BUS_TRANSPORT === 'nats' ? natsReady : !!AGENTS_CHANNEL);
-    res.end(JSON.stringify({ ok: true, connected: socketConnected, threads: threadMap.size, bus: busUp, transport: BUS_TRANSPORT, a2a_mode: A2A_MODE, nats: BUS_TRANSPORT === 'nats' ? natsReady : undefined, presence: PRESENCE_ENABLED, host: SELF_HOST }));
+    res.end(JSON.stringify({ ok: true, connected: socketConnected, threads: threadMap.size, bus: busUp, transport: BUS_TRANSPORT, a2a_mode: A2A_MODE, nats: BUS_TRANSPORT === 'nats' ? natsReady : undefined, presence: PRESENCE_ENABLED, host: SELF_HOST, commit: BUILD_COMMIT, version: PKG_VERSION, started_at: BUILD_STARTED_AT }));
     return;
   }
 
@@ -1946,13 +1982,22 @@ const httpServer = http.createServer((req, res) => {
       (async () => {
         try {
           const snap = await natsTransport.presenceSnapshot();   // [{host,workspace,name,pane,ts}]
-          const idKey = (a) => `${(a.workspace || '').toLowerCase()} ${(a.name || '').toLowerCase()}`;
+          const idKey = (a) => `${(a.workspace || '').toLowerCase()}\u0000${(a.name || '').toLowerCase()}`;
           const counts = new Map();
           for (const a of snap) counts.set(idKey(a), (counts.get(idKey(a)) || 0) + 1);
-          const agents = snap.map((a) => ({
-            name: a.name, workspace: a.workspace || '', pane: a.pane || '', host: a.host || SELF_HOST,
-            owner: a.host || SELF_HOST, collided: (counts.get(idKey(a)) || 0) > 1,
-          })).sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+          // `fqdn` is the ADDRESS you type (`agent-send.sh <host>/<workspace>/<name>`); `kv` is
+          // the dot-encoded key the same identity has in the presence bucket. Both are emitted
+          // because a reader with only the parts has to guess the join, and guessing the wrong
+          // separator is exactly the mistake this endpoint should make impossible.
+          const agents = snap.map((a) => {
+            const host = a.host || SELF_HOST, workspace = a.workspace || '', name = a.name;
+            return {
+              name, workspace, pane: a.pane || '', host,
+              fqdn: [host, workspace, name].filter(Boolean).join('/'),
+              kv: orch.fqdnToKvKey({ host, workspace, name }),
+              owner: host, collided: (counts.get(idKey(a)) || 0) > 1,
+            };
+          }).sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
           const hosts = new Set(snap.map((a) => a.host || SELF_HOST));
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, presence: 'nats-kv', self: SELF_HOST, hosts: hosts.size, agents,
@@ -2561,7 +2606,9 @@ async function handleNexusSubmit(body, ack) {
       // path (reply-intercept → resolve → idle-gated deliver of the kind-rendered text). A
       // legacy {to,from,msg} record still parses as a `msg`. ack-on-receive: the in-memory
       // busQueue idle-gates a busy recipient as today. (Ack-on-idle — holding the JetStream
-      // message un-acked until delivery so a hold survives a restart — is a tracked follow-up.)
+      // message un-acked until delivery so a hold survives a restart — is specified but NOT
+      // implemented: see openspec/changes/a2a-ack-on-idle. Until it lands, a hold lives only
+      // in memory, so a restart mid-hold loses it and a queue-cap eviction discards it.)
       await natsTransport.subscribe(async (envelope, msg) => {
         try { const env = orch.parseEnvelope(envelope); if (env) routeEnvelope(env); }
         catch (e) { console.error(`[nats] delivery failed for ${envelope && envelope.to}: ${e.message}`); }

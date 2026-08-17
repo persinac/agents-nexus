@@ -1,5 +1,28 @@
 # Slack → NATS A2A cutover guide
 
+> ## ✅ THIS CUTOVER IS COMPLETE — 2026-08-17
+>
+> **NATS is the fleet's only A2A transport.** Slack carries the human notify/reply leg and
+> nothing else. This page is now the **record of how it was done and the runbook for redoing
+> it** (a new host, a rebuild) — not a proposal. Live values on `alex-nexus`:
+>
+> | | |
+> |---|---|
+> | Broker | `nats://mqtt.flashbackfleet.com:4222` — server `nats-mqtt-prod`, NATS 2.11.11 |
+> | `NEXUS_A2A_MODE` | `multi-host` |
+> | `NEXUS_BUS_TRANSPORT` | `nats` |
+> | Presence KV | `nexus_presence`, FQDN-keyed `<host>.<workspace>.<name>`, per-entry TTL |
+> | Live hosts | `alex-nexus`, `melvin` |
+>
+> Confirm any of it yourself: `curl -s localhost:8788/health` (shows `transport`, `a2a_mode`,
+> and the running `commit`) and `curl -s localhost:8788/agents` (the presence KV, read live —
+> each entry carries a paste-ready `fqdn`). To read the bucket with the bridge out of the
+> loop — or when the bridge is down — `~/.tmux/nx-kv.sh keys` talks to the broker directly.
+>
+> **Naming caveat:** a lot of the plumbing still says "slack" — `slack-bridge.service`,
+> `SLACK_BUS_ENABLED`, `--via-slack`. Those are deprecated aliases retained for compatibility;
+> **none of them routes over Slack.** Prefer `NEXUS_BUS_ENABLED` and `--via-bus`.
+
 Move agent-to-agent (A2A) messaging off the Slack `#nexus-agents` bus onto a **NATS + JetStream**
 transport. Works for a **single host** (one box, local broker) and a **multi-host** fleet (a shared,
 reachable broker). The **human notify/reply leg stays on Slack** in both modes — `#nexus`, `/notify`,
@@ -14,7 +37,8 @@ threads, and `/relay` are unchanged. Only A2A (`/send`, presence, inbound delive
 ## What actually changes
 
 - **`agent-send.sh` is unchanged** — it still `POST`s `:8788/send`. The transport swap is entirely
-  bridge-side, so no agent-facing verbs change (`<host>/<name>`, `--relay`, `--via-slack` all keep working).
+  bridge-side, so no agent-facing verbs change (`<host>/<name>`, `--relay`, `--via-bus` all keep working).
+  `--via-slack` survives as a deprecated alias of `--via-bus`; it forces the bus, and the bus is NATS.
 - The **stream, per-host durable consumer, and presence KV bucket are auto-provisioned by the bridge
   on startup** — idempotent (`ensureStream`/`ensureKv`, `add`-if-missing). There is **no separate
   setup script**: bring up the broker, start the bridge, done.
@@ -60,7 +84,7 @@ All live in the active profile `.env` (git-ignored). The bridge reads them fill-
 | `NATS_A2A_STREAM` | `NEXUS_A2A` | JetStream stream name. |
 | `NATS_A2A_SUBJECT_PREFIX` | `nexus.a2a` | Subject root. |
 | `NATS_PRESENCE_KV` | `nexus_presence` | Presence KV bucket. |
-| `SLACK_BUS_ENABLED` | `1` | **Master switch** — must stay `1`; gates `POST /send` + delivery even under NATS. |
+| `NEXUS_BUS_ENABLED` | `1` | **Master switch** — must stay `1`; gates `POST /send` + delivery even under NATS. `SLACK_BUS_ENABLED` is the deprecated alias and is still honoured. |
 
 > `SLACK_AGENTS_CHANNEL` is **not required** for NATS A2A (single-host ignores it). Keep your
 > Slack bot/app tokens set — the human notify/reply leg still uses them.
@@ -147,7 +171,7 @@ old `NATS_CREDS`/`NATS_TOKEN`, appends the new auth, and restarts.
    ```bash
    curl -s localhost:8788/health
    # expect: "transport":"nats","a2a_mode":"single-host","nats":true,"presence":false
-   agent-send.sh --via-slack <a-live-agent-name> "ping via nats"
+   agent-send.sh --via-bus <a-live-agent-name> "ping via nats"
    # → delivered; JetStream stream + durable consumer advance by 1
    ```
 
@@ -224,4 +248,9 @@ Bridge returns to the Slack `#nexus-agents` bus + in-memory idle-gate. No data l
   `nats` image has neither, so the `/healthz` healthcheck fails.
 - **KV keys forbid `~`** (subjects allow it) — the codec escapes with `~` for subjects and `=` for KV
   keys. Already handled; noted so you don't "fix" it.
-- **`SLACK_BUS_ENABLED=1` is still the master switch** even under NATS — leave it on.
+- **The master switch is still a master switch under NATS** — `NEXUS_BUS_ENABLED=1` (or its
+  deprecated alias `SLACK_BUS_ENABLED=1`) must stay on, or `POST /send` refuses regardless of transport.
+- **The `slack` in the names is a fossil, not a code path.** `slack-bridge.service`, the
+  `slack-bridge/` directory, `SLACK_*` env vars, `--via-slack` — all retained for compatibility,
+  none of them routes A2A over Slack. Renaming them is deliberate future work, not a quick fix:
+  they are load-bearing across systemd units, symlinks, and agent muscle memory.

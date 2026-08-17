@@ -25,14 +25,16 @@ NEXUS_TMUX_DIR="${NEXUS_TMUX_DIR:-$HOME/.tmux}"
 
 _nx_lc() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
 
-# This machine's presence host: explicit override, else the short hostname.
-nx_self_host() { printf '%s' "${SLACK_PRESENCE_HOST:-$(hostname -s 2>/dev/null)}"; }
+# This machine's presence host: explicit override, else the short hostname. This is the
+# FIRST segment of every FQDN this box publishes into the NATS presence KV. NEXUS_HOST is
+# the current name; SLACK_PRESENCE_HOST is a DEPRECATED alias (same value, fossil name).
+nx_self_host() { printf '%s' "${NEXUS_HOST:-${SLACK_PRESENCE_HOST:-$(hostname -s 2>/dev/null)}}"; }
 
 # Cached list of KNOWN remote hosts from the bridge's /agents (self + peers).
 # Only consulted when presence is enabled; cached ~5s to avoid per-call curls.
 _nx_known_hosts_cached() {
   local cache="${TMPDIR:-/tmp}/nx-known-hosts.${UID:-$(id -u)}"
-  local port="${SLACK_BRIDGE_PORT:-8788}" age=999 mtime now
+  local port="${NEXUS_BUS_PORT:-${SLACK_BRIDGE_PORT:-8788}}" age=999 mtime now
   if [ -f "$cache" ]; then
     mtime=$(stat -f %m "$cache" 2>/dev/null || stat -c %Y "$cache" 2>/dev/null || echo 0)
     now=$(date +%s); age=$(( now - mtime ))

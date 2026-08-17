@@ -4,7 +4,7 @@
 The built-in SendMessage tool only reaches agents the current orchestrator spawned;
 it cannot reach PEER agents in other tmux windows/hosts. This hook intercepts
 SendMessage calls and, when `to` is a registered peer, delivers the message through
-the fleet Slack bus (agent-send.sh --via-slack, local fallback) and DENIES the native
+the fleet NATS bus (agent-send.sh --via-bus, local fallback) and DENIES the native
 call so the model treats it as sent. For non-peer targets (main, spawned subagents,
 agentIds, unknown names) it stays out of the way and lets the native tool run.
 
@@ -95,21 +95,21 @@ def main():
         allow()                        # main / subagent / unknown -> native
 
     # Peer target: route through the bus, fall back to local tmux send-keys.
-    rc, out = send("--via-slack", to, msg)
+    rc, out = send("--via-bus", to, msg)
     if rc == 0:
         log("routed bus -> %s" % to)
-        deny("Routed to '%s' via the Slack agent bus (bus-by-default). The native "
+        deny("Routed to '%s' via the NATS agent bus (bus-by-default). The native "
              "SendMessage cannot reach peer agents in other windows/hosts, so it was "
              "delivered through the bus instead. Delivered OK — do not retry." % to)
 
     rc2, out2 = send("--local", to, msg)
     if rc2 == 0:
         log("bus down, local -> %s" % to)
-        deny("Slack bus was unreachable; delivered to '%s' locally via tmux send-keys "
+        deny("NATS bus was unreachable; delivered to '%s' locally via pane injection "
              "instead. Delivered OK — do not retry." % to)
 
     log("FAILED -> %s : %s | %s" % (to, out.strip()[-200:], out2.strip()[-200:]))
-    deny("Failed to deliver to '%s' via the Slack bus and local tmux. The native "
+    deny("Failed to deliver to '%s' via the NATS bus and locally. The native "
          "SendMessage also cannot reach this peer agent. Surface this delivery failure; "
          "do not silently retry." % to)
 

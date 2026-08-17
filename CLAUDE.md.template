@@ -56,18 +56,23 @@
 
 ## Agent communication
 
-You may be running alongside other Claude Code agents, possibly on other hosts. **Default to the Slack agent bus (`#nexus-agents`) to message another agent.** Address the recipient by NAME; post once and the orchestrator delivers it (idle-gated, buffered, audited), reaching agents on other hosts too:
+You may be running alongside other Claude Code agents, possibly on other hosts. **Default to the NATS agent bus to message another agent.** Post once and the orchestrator delivers it (idle-gated, buffered, durable — JetStream holds it if the recipient's bridge is down), reaching agents on other hosts too:
 
-- `~/.tmux/agent-send.sh --via-slack <name> <message>` — post to the bus → delivered to `<name>` when it next goes idle.
-- `~/.tmux/agent-send.sh <host>/<name> <message>` — address a specific host's agent when two fleets share the bus (a bare `<name>` matches the local fleet only). Cross-host, so always via the bus.
+- `~/.tmux/agent-send.sh <host>/<workspace>/<name> <message>` — deliver to that agent when it next goes idle.
 - `~/.tmux/agent-send.sh --relay <text>` — post `<text>` to `#nexus-agents` for a **human** to read (share your output instead of pasting it into a DM). No target, no delivery.
+
+**Address agents by FQDN.** The registry is a NATS JetStream KV bucket, keyed `<host>.<workspace>.<name>`; you type the same identity slash-separated. A bare `<name>` still resolves, but it is ambiguous the moment two agents share it — normal in a fleet — so qualify it.
 
 Discovery (read-only — find who to address, then message them over the bus):
 
-- `~/.tmux/agent-registry.sh peers` — list all active agents (slot, name, directory).
+- `curl -s localhost:8788/agents` — the live fleet straight from the presence KV. Each entry carries a ready-to-paste `fqdn`. **This is the source of truth**; it is a KV read, not a cache.
+- `~/.tmux/nx-kv.sh keys` — the same bucket read directly from the broker, with the bridge out of the loop. Use it to cross-check `/agents`, or when the local bridge is down (the registry is in the cloud, so it survives).
+- `~/.tmux/agent-registry.sh peers` — THIS host's agents only (slot, name, directory).
 - `~/.tmux/agent-registry.sh whoami` — show your own slot, name, and directory.
 
-Direct tmux send (`~/.tmux/agent-send.sh <slot_or_name> <message>` / `~/.tmux/agent-registry.sh broadcast <message>`) is a **fallback only** — same-host, not durable or auditable, and can be missed. Use it solely if the bus is unavailable, and say so. Prefer name-based addressing over slot numbers.
+The transport is **NATS**. Slack carries only the human notify/reply leg — no agent-to-agent traffic. Names in the tooling still say "slack" in places (`--via-slack`, `SLACK_BUS_ENABLED`, `slack-bridge.service`); those are deprecated aliases kept for compatibility, and none of them route over Slack. Prefer `--via-bus`, `NEXUS_BUS_ENABLED`.
+
+Direct local send (`~/.tmux/agent-send.sh --local <slot_or_name> <message>` / `~/.tmux/agent-registry.sh broadcast <message>`) is a **fallback only** — same-host, not durable or auditable, and can be missed. Use it solely if the bus is unavailable, and say so.
 
 ## Do NOT
 
