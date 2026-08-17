@@ -48,7 +48,12 @@ READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread"}
 
 _DENY = re.compile(
     r"(\brm\b|\brmdir\b|\bsudo\b|\bdd\b|\bmkfs|\bshutdown\b|\breboot\b|\bkillall\b"
-    r"|:\(\)\s*\{|>\s*/dev/"
+    # /dev/null explicitly excluded (2026-08-17): a raw-device write (dd/cat > /dev/sda)
+    # is what this guards against; >/dev/null and 2>/dev/null are the standard
+    # discard idiom and were being hard-denied by this alone, unconditionally
+    # overriding even an LLM "read" verdict (classify()'s `safe` gate short-circuits
+    # before the LLM result is ever consulted).
+    r"|:\(\)\s*\{|>\s*/dev/(?!null\b)"
     # Force pushes always hard-deny, checked before the git-push allowlisting below
     # ever runs. --force/--force-with-lease/--hard catch the long forms anywhere in
     # the command; the git-push-scoped clause closes the short-form `-f` gap without
@@ -166,10 +171,58 @@ def _aws_is_read(toks):
     return action.startswith(("get-", "describe-", "list-", "head-"))
 
 
+def _split_top_level(cmd):
+    """Split on &&, ||, ;, | -- but ONLY at paren-depth 0 and outside quotes, so a
+    subshell/group `( a || b )` or a quoted string containing these characters isn't
+    torn into unparseable fragments (each half then failing `_segment_is_read` on an
+    unrecognized leading token like a stray `(git`). Added 2026-08-17: the naive
+    `re.split(r"&&|\\|\\||;|\\|", cmd)` this replaces broke exactly this shape on a
+    fully read-only compound command, forcing it to the LLM/modify fallback."""
+    segs, buf, depth, quote, i, n = [], [], 0, None, 0, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if quote:
+            buf.append(c)
+            if c == quote and cmd[i - 1] != "\\":
+                quote = None
+            i += 1
+            continue
+        if c in ("'", '"'):
+            quote = c
+            buf.append(c)
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+            buf.append(c)
+            i += 1
+            continue
+        if c == ")":
+            depth = max(0, depth - 1)
+            buf.append(c)
+            i += 1
+            continue
+        if depth == 0:
+            if cmd[i:i + 2] in ("&&", "||"):
+                segs.append("".join(buf)); buf = []; i += 2
+                continue
+            if c in (";", "|"):
+                segs.append("".join(buf)); buf = []; i += 1
+                continue
+        buf.append(c)
+        i += 1
+    segs.append("".join(buf))
+    return segs
+
+
 def _segment_is_read(seg):
     seg = seg.strip()
     if not seg:
         return True
+    # A whole parenthesized group `( ... )` -- recurse on its interior with the same
+    # depth/quote-aware splitter rather than treating the literal `(cmd` as a command.
+    if seg.startswith("(") and seg.endswith(")"):
+        return all(_segment_is_read(s) for s in _split_top_level(seg[1:-1]))
     toks = seg.split()
     while toks:  # strip VAR=val prefixes and benign command wrappers
         b = os.path.basename(toks[0])
@@ -212,12 +265,23 @@ def _segment_is_read(seg):
     return False
 
 
+# Redirects that DISCARD output or duplicate a stream (2>/dev/null, &>/dev/null,
+# 2>&1) don't persist anything new -- stripped before the write-redirect check so
+# they don't force an otherwise all-read compound command to the LLM/modify
+# fallback. A real write (`> file`, `>> file`) is untouched by this and still
+# trips the check below. Added 2026-08-17: a fully read-only `cd && echo
+# "$(git rev-parse ...)" && ...` with three `2>/dev/null`s was falling through
+# to the LLM on this alone.
+_SAFE_REDIRECT = re.compile(r"[12&]?>&?(/dev/null|[0-2]\b)")
+
+
 def _deterministic_read(cmd):
     """True only if EVERY segment is a known read-only operation. Any output redirect
-    (>, >>) or unrecognized command falls through to the LLM."""
-    if ">" in cmd:
+    (>, >>) that isn't a discard/fd-dup, or an unrecognized command, falls through to
+    the LLM."""
+    if ">" in _SAFE_REDIRECT.sub("", cmd):
         return False
-    return all(_segment_is_read(s) for s in re.split(r"&&|\|\||;|\|", cmd))
+    return all(_segment_is_read(s) for s in _split_top_level(cmd))
 
 _PROMPT = """You are the middle-man between an autonomous coding agent and its human operator on Slack. The agent paused to ask permission to use a tool. Reply with ONLY a compact JSON object:
 
