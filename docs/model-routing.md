@@ -190,6 +190,24 @@ same reason. `ROUTE_CLASSIFIER_WORK=0` exempts work.
 400 fallback; `difficulty` is `classifier`. `GET /admin/route` reports the whole block under
 `classifier`.
 
+### 7. Host-side backstop: `automode-watchdog` (added 2026-08-17)
+
+This carve-out cuts the failure rate but doesn't eliminate it — nexus-proxy logs can show every
+classifier call correctly served on sonnet-5 and the denial still happens (sonnet gets stressed
+too, or the proxy's own retry/backoff pushes latency past whatever timeout Claude Code enforces
+client-side). Real incident: `svc-chatbot` hit 13 fail-closed denials in 40 minutes on 2026-08-17
+while the proxy was routing every classifier call correctly the whole time. Nothing alerted a
+human or retried the call — no hook fires for this denial at all.
+
+`tmux/mac/tmux-scripts/automode-watchdog.py` is the host-side backstop: it tails each live pane's
+own transcript file for the `toolDenialKind` field Claude Code stamps on the denial, and on a
+repeated burst cycles that pane to Manual permission mode (not `bypassPermissions` — confirmed
+unreachable from a live session) so it can keep working via the existing `notify-classify.py` ask
+gate instead of the classifier, then reverts once idle. Full design rationale, the confirmed
+`toolDenialKind` values, and the mode-cycling mechanics are documented in the script's own
+docstring — not duplicated here. Launchd unit:
+`launchd/com.agents-nexus.automode-watchdog.plist`.
+
 ## Files
 | File | Change |
 |---|---|

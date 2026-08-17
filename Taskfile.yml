@@ -501,6 +501,22 @@ tasks:
     cmds:
       - python3 scripts/permission-suggest.py --apply
 
+  launchd:install:automode-watchdog:
+    desc: "(opt-in) Install launchd daemon that self-heals Claude Code's fail-closed auto-mode classifier denials (cycles a stuck pane to Manual mode, reverts once idle)"
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" launchd/com.agents-nexus.automode-watchdog.plist > ~/Library/LaunchAgents/com.agents-nexus.automode-watchdog.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.automode-watchdog.plist
+      - echo "Installed — polls every 8s (logs at /tmp/agents-nexus-automode-watchdog.log). AUTOMODE_WATCHDOG_ENABLED=0 in ~/.tmux/env.sh to disable without uninstalling."
+
+  launchd:uninstall:automode-watchdog:
+    desc: Remove the automode-watchdog launchd daemon
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.automode-watchdog.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.automode-watchdog.plist
+
   launchd:install:all:
     desc: Install every com.agents-nexus.* launchd job in launchd/*.plist
     vars:
