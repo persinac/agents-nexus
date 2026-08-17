@@ -101,15 +101,35 @@ other pane shares. Where neither applies, the pane is SKIPPED, not guessed at: a
 missed self-heal leaves a pane exactly as stuck as it would be without this
 daemon, while cycling an innocent pane's mode actively breaks it.
 
+## No debounce, by request (2026-08-17)
+
+The first cut required 2 denials within a 90s WINDOW before acting, to absorb a
+single flaky classifier call rather than react to it. Measured against the real
+2026-08-17 incident this bought little: once a burst starts, denials landed
+15-40s apart (e.g. 17:20:13, 17:20:31, 17:20:34, 17:20:48), so the 2-of-90s gate
+added only about one POLL_SECONDS' worth of extra latency over reacting to the
+first one. Changed to THRESHOLD=1 / POLL_SECONDS=4 so the very first fail-closed
+denial triggers a reaction, detected within one poll cycle. Traded away: a
+genuine one-off blip (classifier down for a single call, then fine) now cycles
+the pane's permission mode same as a sustained outage would — accepted because
+the fallback (Manual mode) is itself low-cost and self-reverts on idle. WINDOW
+and THRESHOLD are still both real knobs — set AUTOMODE_WATCHDOG_THRESHOLD above
+1 to bring the debounce back.
+
 ## Config (env, all optional — these are host-side tmux vars, not compose vars;
 ## set them in `~/.tmux/env.sh` or the plist's EnvironmentVariables, not .env.example)
 
   AUTOMODE_WATCHDOG_ENABLED          default 1     master kill switch
   AUTOMODE_WATCHDOG_AUTOFIX          default 1     0 = alert to Slack only,
                                                     never touch a pane's mode
-  AUTOMODE_WATCHDOG_POLL_SECONDS     default 8
-  AUTOMODE_WATCHDOG_THRESHOLD        default 2     denials within WINDOW
-                                                    before acting on a pane
+  AUTOMODE_WATCHDOG_POLL_SECONDS     default 4
+  AUTOMODE_WATCHDOG_THRESHOLD        default 1     denials within WINDOW
+                                                    before acting on a pane —
+                                                    at the default of 1, the
+                                                    very first fail-closed
+                                                    denial qualifies and
+                                                    WINDOW is moot; only
+                                                    matters if raised above 1
   AUTOMODE_WATCHDOG_WINDOW_SECONDS   default 90
   AUTOMODE_WATCHDOG_MAX_CYCLES       default 5     shift+tab presses before
                                                     giving up on one pane
@@ -144,8 +164,8 @@ PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 
 ENABLED = os.environ.get("AUTOMODE_WATCHDOG_ENABLED", "1") != "0"
 AUTOFIX = os.environ.get("AUTOMODE_WATCHDOG_AUTOFIX", "1") != "0"
-POLL_SECONDS = float(os.environ.get("AUTOMODE_WATCHDOG_POLL_SECONDS", "8"))
-THRESHOLD = int(os.environ.get("AUTOMODE_WATCHDOG_THRESHOLD", "2"))
+POLL_SECONDS = float(os.environ.get("AUTOMODE_WATCHDOG_POLL_SECONDS", "4"))
+THRESHOLD = int(os.environ.get("AUTOMODE_WATCHDOG_THRESHOLD", "1"))
 WINDOW_SECONDS = float(os.environ.get("AUTOMODE_WATCHDOG_WINDOW_SECONDS", "90"))
 MAX_CYCLES = int(os.environ.get("AUTOMODE_WATCHDOG_MAX_CYCLES", "5"))
 MAX_ESCALATION_SECONDS = float(os.environ.get("AUTOMODE_WATCHDOG_MAX_ESCALATION_SECONDS", "7200"))

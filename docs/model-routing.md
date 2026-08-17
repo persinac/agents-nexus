@@ -200,8 +200,8 @@ while the proxy was routing every classifier call correctly the whole time. Noth
 human or retried the call — no hook fires for this denial at all.
 
 `tmux/mac/tmux-scripts/automode-watchdog.py` is the host-side backstop: it tails each live pane's
-own transcript file for the `toolDenialKind` field Claude Code stamps on the denial, and on a
-repeated burst cycles that pane to Manual permission mode (not `bypassPermissions` — confirmed
+own transcript file for the `toolDenialKind` field Claude Code stamps on the denial, and on the
+first one cycles that pane to Manual permission mode (not `bypassPermissions` — confirmed
 unreachable from a live session) so it can keep working via the existing `notify-classify.py` ask
 gate instead of the classifier, then reverts once idle. Full design rationale, the confirmed
 `toolDenialKind` values, and the mode-cycling mechanics are documented in the script's own
