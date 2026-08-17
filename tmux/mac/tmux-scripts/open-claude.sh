@@ -317,6 +317,22 @@ fi
 
 # ── Build claude args ──────────────────────────────────────────────────────
 claude_args=()
+# CLAUDE_EXTRA_ARGS - verbatim extra flags, word-split on purpose.
+#
+# For genuinely unattended spawns. CLAUDE_PERMISSION_MODE alone cannot get there,
+# because EVERY posture has its own first-run dialog and a spawned pane sits on
+# whichever one it hits with nobody to answer:
+#   manual            -> "Do you want to proceed?" at the first tool call
+#   bypassPermissions -> "you accept all responsibility" consent, persisted
+#                        nowhere in ~/.claude.json, so it returns every session
+#   auto              -> "Set up auto mode for your environment?" onboarding
+# `claude --dangerously-skip-permissions` is the one that comes up running, and
+# it is a FLAG not a mode, so it needs a passthrough. Observed on real panes.
+#
+# Unquoted expansion is deliberate: flags, not paths with spaces. Unset for every
+# normal launch, so default behaviour is unchanged.
+# shellcheck disable=SC2206
+[ -n "${CLAUDE_EXTRA_ARGS:-}" ] && claude_args+=(${CLAUDE_EXTRA_ARGS})
 [ -n "$MY_NAME" ]       && claude_args+=(--name "$MY_NAME")
 [ -n "$CLAUDE_MODEL" ]  && claude_args+=(--model "$CLAUDE_MODEL")
 [ -n "$CLAUDE_EFFORT" ] && claude_args+=(--effort "$CLAUDE_EFFORT")
