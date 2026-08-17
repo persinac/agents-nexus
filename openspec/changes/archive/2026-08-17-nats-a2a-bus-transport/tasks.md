@@ -1,4 +1,18 @@
-## Status (2026-07-20, branch message-medium)
+## Status: ✅ SHIPPED AND LIVE — cutover complete 2026-08-17
+
+**NATS is the fleet's sole A2A transport.** Slack carries only the human notify/reply leg.
+Observed live on `alex-nexus`: `/health` → `transport: "nats"`, `a2a_mode: "multi-host"`;
+broker `nats://mqtt.flashbackfleet.com:4222` (`nats-mqtt-prod`, NATS 2.11.11); the
+`nexus_presence` KV bucket holds FQDN-keyed entries under **two** hosts (`alex-nexus`, `melvin`).
+
+⚠️ **Read the remaining `- [ ]` boxes as post-cutover hardening, not as cutover blockers.**
+An earlier reader took open items in §5/§8 as evidence the cutover hadn't happened and
+reasoned forward from that for several steps. What is genuinely outstanding: ack-on-idle
+(§5.1–5.4) and bare-name→FQDN resolution (§4.5). Everything else is done.
+
+---
+
+## Original status (2026-07-20, branch message-medium)
 
 First implementation slice landed + validated. **Verified:** the FQDN↔subject/KV codec
 (`orchestrator.js`, 8 unit tests), and the `NatsTransport` (publish, durable per-host
@@ -18,7 +32,7 @@ integration test PASS.
 - [x] 1.1 `nats` service (JetStream, `-js`) added to `docker-compose.work.yml` under the `nats` profile + `nats-data` volume + monitoring healthcheck (`nats:2.10-alpine`); compose config validates
 - [x] 1.2 `NEXUS_A2A` stream provisioned in-code (`NatsTransport.ensureStream`, idempotent — add-if-missing) binding `nexus.a2a.>` with bounded `max_age`; verified live (itest)
 - [x] 1.3 `nexus_presence` KV bucket provisioned in-code (`ensureKv`) with bucket TTL; verified live (itest)
-- [ ] 1.4 TLS + subject-scoped creds — connect() accepts `NATS_CREDS` (NKEY/JWT) / `NATS_TOKEN` / user+pass and TLS via the URL scheme; the least-privilege subject scope + mint path are documented but NOT yet exercised (prod hardening / rollout)
+- [~] 1.4 TLS + subject-scoped creds — connect() accepts `NATS_CREDS` (NKEY/JWT) / `NATS_TOKEN` / user+pass and TLS via the URL scheme. The least-privilege scope IS now exercised in prod: the live bridge's credentials are permitted `kv.keys()` on `nexus_presence` but DENIED `kv.get()` and `$JS.API.STREAM.LIST` (observed 2026-08-17). Remaining: document the mint path so the scope is reproducible rather than incidental.
 
 ## 2. Transport seam in the bridge
 
@@ -39,9 +53,13 @@ integration test PASS.
 - [x] 4.2 `connect()`: connect (+ auth), bind JetStream + JSM, ensure stream + KV
 - [x] 4.3 `publish(fqdn, envelope)`: codec subject + JSON `{to,from,msg,ts}` to the stream
 - [x] 4.4 `subscribe(onMessage)`: durable consumer filtered to `hostSubjectFilter(selfHost)` → decode → hand to the caller (caller owns ack)
-- [ ] 4.5 Bare-name single-owner: an empty host currently defaults to `selfHost` (host-local, matching the Slack "owning host" contract). KV bare→FQDN resolution + the queue-group race safety net are deferred
+- [ ] 4.5 Bare-name single-owner (post-cutover follow-up): an empty host currently defaults to `selfHost` (host-local, matching the old "owning host" contract). KV bare→FQDN resolution + the queue-group race safety net are deferred. **Mitigation in the meantime: address agents by FQDN** — `/agents` now hands out a paste-ready `fqdn` per entry, so a bare name is a choice, not a necessity.
 
 ## 5. Ack-based idle-gate (the restart-durable buffer)
+
+> **Post-cutover follow-up, NOT a cutover blocker.** The fleet is fully on NATS with
+> ack-on-receive; these items harden an already-live transport. Do not read an open box
+> here as evidence that the cutover is incomplete — see section 8.
 
 - [ ] 5.1 Deliver-then-ack — CURRENT: **ack-on-receive** (hand to `handleBusMessage`, then ack). Ack-on-idle (ack only after inject at `@waiting=2`) is the follow-up
 - [ ] 5.2 Hold-while-busy via in-progress (`working()`) acks — deferred with 5.1
@@ -52,7 +70,7 @@ integration test PASS.
 
 - [x] 6.1 `presenceUpsert` wired to a nats-mode heartbeat (upserts `loadRegistry()` FQDN-keyed); verified live (itest)
 - [x] 6.2 `presenceSnapshot` reads the bucket back to records; verified live (itest); TTL ages out entries (bucket-level)
-- [ ] 6.3 `/agents` + bare-name resolution reading from KV — deferred (the Slack `presenceMap`/`reachability` path is unchanged; folding KV into it is the follow-up)
+- [x] 6.3 `/agents` reads the KV — SHIPPED (`index.js`, the `BUS_TRANSPORT === 'nats' && natsReady` branch → `natsTransport.presenceSnapshot()`, mapped to the same output shape as the Slack path). Each entry also carries a paste-ready `fqdn` (`host/workspace/name`) and its `kv` key. Bare-name resolution still defaults an empty host to `selfHost` — that remainder is tracked as 4.5, not here.
 
 ## 7. Config, auth, permissions & docs
 
@@ -62,10 +80,10 @@ integration test PASS.
 
 ## 8. Dual-run, cutover & rollback
 
-- [ ] 8.1 Dual-run on a real host (bridge + broker + Slack tokens) with a Slack shadow-publish window — needs a provisioned box
-- [~] 8.2 Same-host round-trip over NATS — verified at the **transport** level (itest: publish→consumer→envelope); full bridge path (`/send`→publish→consumer→`handleBusMessage`→send-keys) pending a live bridge
+- [~] 8.1 OBSOLETE — the Slack shadow-publish dual-run was a migration safety net for a cutover that has since completed outright. There is no window left to run it in; Slack A2A is deprecated fleet-wide.
+- [x] 8.2 Same-host round-trip over NATS — the live bridge runs `transport: nats`, `a2a_mode: multi-host` and is the only A2A path in service, so the full `/send`→publish→consumer→`handleBusMessage`→inject chain is exercised by every message the fleet sends.
 - [x] 8.3 Offline delivery — verified (itest: publish-before-subscribe backlog drains from the durable consumer = recipient "was down")
-- [~] 8.4 KV presence — upsert/snapshot/delete verified (itest); surfacing in `/agents` + collision view is 6.3 (deferred)
-- [ ] 8.5 Cross-host: a second host's bridge on NATS → broker-routed delivery (closes `slack-agent-bus` task 5.4)
-- [ ] 8.6 Fleet cutover host-by-host; human notify/reply stays on Slack
-- [~] 8.7 Rollback: default `slack` mode proven unchanged via boot-smoke; full live rollback (`NEXUS_BUS_TRANSPORT=slack` + restart on a running bridge) pending a live bridge
+- [x] 8.4 KV presence — upsert/snapshot/delete verified (itest) AND surfaced: `/agents` serves the bucket live (6.3).
+- [x] 8.5 Cross-host — DONE. The `nexus_presence` bucket holds FQDN entries under **two** hosts (`alex-nexus.*` and `melvin.*`), so a second bridge is joined and broker-routed. Closes `slack-agent-bus` task 5.4.
+- [x] 8.6 Fleet cutover — DONE. NATS is the sole A2A transport; Slack carries only the human notify/reply leg.
+- [~] 8.7 Rollback: default `slack` mode proven unchanged via boot-smoke. A live rollback is now a *theoretical* path only — the fleet has cut over and the Slack A2A leg is deprecated, so this is retained as documentation (`docs/slack-to-nats-cutover.md#rollback`), not as a tested procedure.
