@@ -1,3 +1,24 @@
+## Status: ✅ IDENTITY MODEL LIVE — Slack-gossip publish path SUPERSEDED (2026-08-17)
+
+**FQDN instance identity is in production**, but by a different road than this change built.
+The live path is the **NATS presence KV**: `transports/nats-transport.js` keys every entry with
+`orchestrator.js#fqdnToKvKey` as `<host>.<workspace>.<name>`, unconditionally — no flag involved.
+The `nexus_presence` bucket currently holds FQDN entries across `alex-nexus` and `melvin`, and
+`GET /agents` serves them (now with a paste-ready `fqdn` per entry).
+
+What this change ALSO built — the **Slack-channel gossip v2 wire format** gated on
+`SLACK_PRESENCE_FQDN` — is now dormant: `SLACK_A2A_ACTIVE = !SINGLE_HOST` and the fleet's A2A,
+presence included, is on NATS. The parse/format/election logic (§1–§3) is still live and unit-
+tested; only its Slack *transport* leg is retired.
+
+⚠️ **`SLACK_PRESENCE_FQDN` being off does NOT mean FQDN presence is off.** That inference was
+made in this repo and it was wrong — the flag governs a deprecated Slack gossip payload, not the
+KV. Check the KV (or `/agents`), never the flag. The deferred items in §6/§7 below are therefore
+closed as superseded rather than pending: they can never be executed, because the leg they
+verify is out of service.
+
+---
+
 ## 1. Presence wire format v2 (consume-side first, flag-gated)
 
 - [x] 1.1 Add `SLACK_PRESENCE_FQDN` (default off) config read at bridge startup (`index.js`), gated on presence being on
@@ -38,11 +59,11 @@
 - [x] 6.1 `docs/slack-bridge.md`: `SLACK_PRESENCE_FQDN` flag row, v2 `/agents` shape, and a "FQDN presence — instance identity" subsection
 - [x] 6.2 `docs/agent-bus-instance-addressing.md`: addendum — cross-host instance addressing now in scope (pane-handle + no-forced-unique-names decisions unchanged)
 - [x] 6.3 `docs/agent-bus-roadmap.md`: note that Phase C's per-instance presence structure is now delivered here
-- [ ] 6.4 **DEFERRED to operator rollout:** enable `SLACK_PRESENCE_FQDN=1` on a host, restart the bridge, verify a two-instance host is fully addressable cross-host. Not done here to avoid restarting the live bridge mid-fleet-work (this box is crash-prone). Flag defaults off, so the running bridge is unaffected until deliberately enabled.
+- [~] 6.4 **SUPERSEDED — will not be done.** This asked to enable `SLACK_PRESENCE_FQDN=1` and verify cross-host instance addressing over Slack gossip. The fleet cut over to NATS instead, where FQDN keying is inherent and flagless, and cross-host addressability is demonstrated by the `nexus_presence` bucket carrying both `alex-nexus.*` and `melvin.*` entries. Enabling the flag now would light up a deprecated Slack leg for no gain.
 
 ## 7. Verification
 
 - [x] 7.1 Logic verified by unit tests (`node --test`, 40 pass): v1/v2 parse, dedup, identity collisions (intra + cross-host), per-instance reachability, back-compat; `node --check` on both bridge files; `openspec validate --strict` passes.
-- [ ] 7.2 **DEFERRED (live e2e, needs flag on):** `melvin/… → alex-nexus/interactive/general` delivers instance-exact; ambiguous bare name logs candidates instead of dropping.
-- [ ] 7.3 **DEFERRED (live e2e):** mixed-version fleet — a v1 peer reachable by unique name; a v2 host's duplicates addressable from another v2 host.
-- [ ] 7.4 **DEFERRED (live e2e):** idle-gate + no-loop preserved on the new qualified paths.
+- [~] 7.2 **SUPERSEDED (Slack-gossip e2e).** The equivalent NATS path is live: `alex-nexus/interactive/general` is an addressable FQDN in the presence KV today, and instance-exact routing rides `hostSubjectFilter` + the per-host durable consumer rather than gossip.
+- [~] 7.3 **SUPERSEDED (Slack-gossip e2e).** A mixed v1/v2 gossip fleet cannot arise — there is no gossip. Under NATS every entry is FQDN-keyed at write time, so there is no bare-name wire format left to be compatible with.
+- [~] 7.4 **SUPERSEDED as written (Slack-gossip e2e).** The idle-gate itself is unchanged and still in force on the NATS delivery path; its remaining hardening is tracked in `nats-a2a-bus-transport` §5 (ack-on-idle), which is the right home for it.
