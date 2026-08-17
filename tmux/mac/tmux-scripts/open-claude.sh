@@ -216,14 +216,14 @@ fi
 # ── Agent communication tools ─────────────────────────────────────────────
 REGISTRY_SCRIPT="$NEXUS_TMUX_DIR/agent-registry.sh"
 SEND_SCRIPT="$NEXUS_TMUX_DIR/agent-send.sh"
-# Is the Slack agent bus live? Probe the local bridge's health (cheap, <1s) so we
-# document the bus as the DEFAULT transport only when it can actually deliver.
-# `--via-slack` force-routes through the bridge regardless of the agent's
-# SLACK_BUS_ENABLED, so the bridge's own bus state — not an env var — is the
-# right signal. No bridge / bus off -> fall back to the tmux-only guidance.
+# Is the agent bus live? Probe the local bridge's health (cheap, <1s) so we document
+# the bus as the DEFAULT transport only when it can actually deliver. `--via-bus`
+# force-routes through the bridge regardless of the agent's NEXUS_BUS_ENABLED, so the
+# bridge's own bus state — not an env var — is the right signal. No bridge / bus off ->
+# fall back to the local-only guidance.
 bus_on=0
 if command -v curl >/dev/null 2>&1; then
-  case "$(curl -s --max-time 1 "http://127.0.0.1:${SLACK_BRIDGE_PORT:-8788}/health" 2>/dev/null)" in
+  case "$(curl -s --max-time 1 "http://127.0.0.1:${NEXUS_BUS_PORT:-${SLACK_BRIDGE_PORT:-8788}}/health" 2>/dev/null)" in
     *'"bus":true'*) bus_on=1 ;;
   esac
 fi
@@ -231,15 +231,20 @@ registry_section=""
 if [ "${NEXUS_INJECT_REGISTRY:-1}" = "1" ] && [ "${NEXUS_CONTEXT_MODE:-full}" != "pointer" ] && [ -x "$REGISTRY_SCRIPT" ]; then
   peers_output=$("$REGISTRY_SCRIPT" peers --exclude "$MY_PANE_ID" 2>/dev/null || true)
   if [ "$bus_on" = "1" ]; then
-    comms_body="**To message another agent, DEFAULT to the Slack agent bus (\`#nexus-agents\`).** Address the recipient by NAME — post once and the orchestrator delivers it idle-gated, buffered, and audited (and it reaches agents on other hosts):
-  - \`$SEND_SCRIPT --via-slack <name> <message>\` — post to the bus; delivered to <name> when it next goes idle
+    comms_body="**To message another agent, DEFAULT to the NATS agent bus.** Post once and the orchestrator delivers it idle-gated, buffered, and durable (JetStream holds it if the recipient's bridge is down), across hosts:
+  - \`$SEND_SCRIPT <host>/<workspace>/<name> <message>\` — deliver to that agent when it next goes idle
+
+**Address agents by FQDN.** The registry is a NATS JetStream KV bucket keyed \`<host>.<workspace>.<name>\`; you type the same identity slash-separated. You are \`${MY_HOST}/<your-workspace>/${MY_NAME}\`. A bare name still resolves, but it is ambiguous the moment two agents share it — which is normal in a fleet — so qualify it.
 
 Discovery (read-only — find who to address, then message them over the bus):
-  - \`$REGISTRY_SCRIPT peers --exclude ${MY_PANE_ID}\` — list all active agents (slot, name, directory)
+  - \`curl -s localhost:${NEXUS_BUS_PORT:-${SLACK_BRIDGE_PORT:-8788}}/agents\` — the live fleet from the KV; each entry carries a ready-to-paste \`fqdn\`
+  - \`$REGISTRY_SCRIPT peers --exclude ${MY_PANE_ID}\` — THIS host's agents only (slot, name, directory)
   - \`$REGISTRY_SCRIPT whoami --exclude ${MY_PANE_ID}\` — show your own slot, name, and directory
 
-Fallback — direct tmux send (same-host only; NOT durable or auditable and can be missed). Prefer the bus; only use this for a local/ephemeral ping, and say that you did:
-  - \`$SEND_SCRIPT <slot_or_name> <message>\` — send-keys straight to a same-host agent
+The transport is NATS. Slack carries only the human notify/reply leg — no agent-to-agent traffic. \`--via-slack\` survives as a deprecated alias of \`--via-bus\`; despite the name it forces the NATS bus.
+
+Fallback — direct local send (same-host only; NOT durable or auditable and can be missed). Prefer the bus; only use this for a local/ephemeral ping, and say that you did:
+  - \`$SEND_SCRIPT --local <slot_or_name> <message>\` — inject straight into a same-host agent's pane
   - \`$REGISTRY_SCRIPT broadcast --exclude ${MY_PANE_ID} <message>\` — send to ALL other agents at once"
   else
     comms_body="To message another agent:
@@ -281,7 +286,7 @@ if [ "${NEXUS_CONTEXT_MODE:-full}" = "pointer" ]; then
     _pl="${_pl}- Prior knowledge: query the agent-memory MCP (\`search_similar\`/\`query_notes\`, project \`${project_slug}\`) before non-trivial work."$'\n'
   fi
   if [ "${NEXUS_INJECT_REGISTRY:-1}" = "1" ] && [ -x "$REGISTRY_SCRIPT" ]; then
-    _pl="${_pl}- Peers / messaging: you are agent **${MY_NAME}** on **${MY_HOST}** in a multi-agent system. Run \`$REGISTRY_SCRIPT peers --exclude ${MY_PANE_ID}\` for the live roster, then message by NAME with \`$SEND_SCRIPT --via-slack <name> <message>\` (Slack bus; durable, cross-host) or \`$SEND_SCRIPT <slot_or_name> <message>\` (same-host tmux ping)."$'\n'
+    _pl="${_pl}- Peers / messaging: you are agent **${MY_NAME}** on **${MY_HOST}** in a multi-agent system. Get the live fleet from the NATS presence KV with \`curl -s localhost:${NEXUS_BUS_PORT:-${SLACK_BRIDGE_PORT:-8788}}/agents\` (each entry carries a ready-to-paste \`fqdn\`; \`$REGISTRY_SCRIPT peers --exclude ${MY_PANE_ID}\` lists THIS host only), then message by FQDN with \`$SEND_SCRIPT <host>/<workspace>/<name> <message>\` (NATS bus; durable, cross-host). Add \`--local\` for a same-host pane injection."$'\n'
   fi
   if [ -n "$_pl" ]; then
     pointer_section="## Context (load on demand)

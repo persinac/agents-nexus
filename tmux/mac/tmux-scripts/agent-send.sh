@@ -15,7 +15,10 @@
 #         send-keys if the bus is unreachable. Two things still stay local: a bare
 #         control digit (idle-gating a permission-menu input would deadlock it) and
 #         a window with no registered agent (no name to route by).
-#   - --via-slack forces the bus path (for a name); --local forces send-keys.
+#   - --via-bus forces the bus path (for a name); --local forces send-keys.
+#     `--via-slack` is a DEPRECATED ALIAS of --via-bus, kept working because it is
+#     baked into agent instructions. It does NOT send over Slack — the bus it forces
+#     is NATS. Nothing about this flag chooses a transport; that is NEXUS_BUS_TRANSPORT.
 #   - A namespaced NAME `host/name` is inherently cross-host (names a specific
 #     bridge) → always routes through the bus; errors if the bus is off.
 #   - --relay posts <message> to #nexus-agents for a HUMAN to read (no target,
@@ -24,9 +27,9 @@
 # Set SLACK_A2A_SAMEHOST in the AGENT shell env (~/.tmux/env.sh) — NOT in the
 # bridge's env — so the bridge's own deliveries stay local and never loop.
 #
-# Usage: agent-send.sh [--via-slack|--local] <slot_or_name_or_%pane|host/name> <message>
-#        agent-send.sh [--via-slack] <target> --stdin        # body from stdin  (SAFE for untrusted text)
-#        agent-send.sh [--via-slack] <target> --body-file F  # body from a file (SAFE for untrusted text)
+# Usage: agent-send.sh [--via-bus|--local] <slot_or_name_or_%pane|host/name> <message>
+#        agent-send.sh [--via-bus] <target> --stdin        # body from stdin  (SAFE for untrusted text)
+#        agent-send.sh [--via-bus] <target> --body-file F  # body from a file (SAFE for untrusted text)
 #        agent-send.sh --relay <message>
 # Accepts a pane id (%NN, exact), a slot number (window index), an agent name, or
 # a namespaced `host/name` for a specific remote bridge.
@@ -47,7 +50,7 @@
 # A variable's VALUE is not re-expanded, so $(...) inside $body stays literal.
 # Single-quoting the whole arg is NOT a general fix (apostrophes break it).
 
-VIA_SLACK=0
+VIA_BUS=0     # --via-bus (alias: the deprecated --via-slack) — force the bus, not send-keys
 FORCE_LOCAL=0
 RELAY=0
 KIND=""       # typed-envelope kind (Phase B): request | reply | event ; empty = msg (unchanged)
@@ -60,7 +63,8 @@ BODY_FILE=""  # --body-file <path>: read the body from a file (injection-safe ch
 # plain `msg`, unchanged. --reply takes the correlation id; --reply-to takes an address.
 while true; do
   case "$1" in
-    --via-slack) VIA_SLACK=1; shift ;;
+    --via-bus)   VIA_BUS=1; shift ;;
+    --via-slack) VIA_BUS=1; shift ;;   # deprecated alias — forces the NATS bus, not Slack
     --local)     FORCE_LOCAL=1; shift ;;
     --relay)     RELAY=1; shift ;;
     --request)   KIND="request"; shift ;;
@@ -78,7 +82,7 @@ done
 if [ "$RELAY" = "1" ]; then
   TARGET=""
 else
-  TARGET="${1:?"Usage: agent-send.sh [--via-slack|--local|--relay] <slot_or_name> <message>"}"
+  TARGET="${1:?"Usage: agent-send.sh [--via-bus|--local|--relay] <slot_or_name> <message>"}"
   shift
 fi
 # --stdin / --body-file may appear in the body position (after <target>), not only
@@ -104,8 +108,11 @@ fi
 
 SESSION="${TMUX_AGENT_SESSION:-agents}"
 REGISTRY_DIR="$HOME/.tmux/registry"
-BRIDGE_PORT="${SLACK_BRIDGE_PORT:-8788}"
-BUS_ENABLED="${SLACK_BUS_ENABLED:-0}"
+# NEXUS_* are the current names; the SLACK_* forms are DEPRECATED aliases still exported
+# in live agent shells. Neither the port nor the switch has anything to do with Slack —
+# the bus behind them is NATS.
+BRIDGE_PORT="${NEXUS_BUS_PORT:-${SLACK_BRIDGE_PORT:-8788}}"
+BUS_ENABLED="${NEXUS_BUS_ENABLED:-${SLACK_BUS_ENABLED:-0}}"
 # nx-resolve: the shared address grammar (workspace/host parsing + workspace scoping).
 [ -f "$HOME/.tmux/agent-resolve.sh" ] && . "$HOME/.tmux/agent-resolve.sh"
 # Same-host routing: 'local' (fast send-keys, default) or 'channel' (route NAME
@@ -278,10 +285,10 @@ if [ "$RELAY" = "1" ]; then
   route_via_relay; exit $?
 fi
 
-# --via-slack, OR a typed kind (--request/--reply/--event), forces the bus regardless of
+# --via-bus, OR a typed kind (--request/--reply/--event), forces the bus regardless of
 # locality — a typed envelope (id + correlation) is built by the bridge, so it can't take the
 # local send-keys fast path. The owning host delivers. Requires the bus enabled.
-if [ "$VIA_SLACK" = "1" ] || [ -n "$KIND" ]; then
+if [ "$VIA_BUS" = "1" ] || [ -n "$KIND" ]; then
   if [ -n "$KIND" ] && [ "$BUS_ENABLED" != "1" ]; then
     echo "--${KIND} needs the bus (set SLACK_BUS_ENABLED=1); typed A2A is bus-only." >&2
     exit 1

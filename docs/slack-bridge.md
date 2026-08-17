@@ -236,8 +236,9 @@ Flow:
    delivers it locally (`handleBusMessage`). The others ignore it — no host delivers twice.
 5. The recipient sees `↩ from <sender>: …` and can reply with `sender: <reply>` back through the bus.
 
-`agent-send.sh --via-slack <name> <msg>` forces the bus path even for a local target;
-`--local` forces the fast `send-keys` path.
+`agent-send.sh --via-bus <name> <msg>` forces the bus path even for a local target;
+`--local` forces the fast `send-keys` path. (`--via-slack` is a deprecated alias of
+`--via-bus` — it forces the *bus*, and since the cutover the bus is NATS, not Slack.)
 
 **Namespaced addressing (`host/name`).** A bare `<name>` is matched against each
 bridge's *own* registry — fine within one fleet, but ambiguous the moment two people
@@ -327,9 +328,14 @@ on is affected; traffic to other agents is unchanged. Set
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `SLACK_BUS_ENABLED` | `0` (off) | Master switch. On the **bridge** it enables `POST /send` + delivery on `#nexus-agents`. In an **agent's** env it tells `agent-send.sh` to attempt the bus for a non-local name (else it prints "Agent not found", as today). |
-| `SLACK_AGENTS_CHANNEL` | — | Channel id of `#nexus-agents`. Required on the bridge for the bus to be live. |
-| `SLACK_BRIDGE_PORT` | `8788` | Port `agent-send.sh` POSTs `/send` + `/relay` to (shared with `/notify`). |
+> **Names:** the current variables are `NEXUS_BUS_ENABLED`, `NEXUS_BUS_PORT`, `NEXUS_BUS_MAX_CHARS`,
+> `NEXUS_HOST`. Their `SLACK_*` spellings below are **deprecated aliases**, still honoured (the
+> `NEXUS_*` name wins when both are set) and still what most `.env` files on disk actually say.
+> They are fossils of the pre-NATS bus, not a Slack code path.
+
+| `NEXUS_BUS_ENABLED` (alias `SLACK_BUS_ENABLED`) | `0` (off) | Master switch, and it still gates everything under NATS. On the **bridge** it enables `POST /send` + delivery. In an **agent's** env it tells `agent-send.sh` to attempt the bus for a non-local name (else it prints "Agent not found"). |
+| `SLACK_AGENTS_CHANNEL` | — | Channel id of `#nexus-agents`. Was required for the Slack bus; **not used by NATS A2A** — the human notify/reply leg still needs the Slack tokens, not this. |
+| `NEXUS_BUS_PORT` (alias `SLACK_BRIDGE_PORT`) | `8788` | Port `agent-send.sh` POSTs `/send` + `/relay` to (shared with `/notify`). |
 | `SLACK_A2A_ENTER_DELAY` | `0.4` | Agent env. Seconds `agent-send.sh` waits after a literal `send-keys` paste before the submit `Enter`, so the TUI doesn't coalesce them into a newline (message lands but never sends). |
 | `SLACK_A2A_SAMEHOST` | `local` | **Agent env.** `local` = same-host A2A via instant `send-keys`; `channel` = route same-host targets (name, or slot/%pane resolved to name) through the bus so they're buffered + idle-gated. |
 | `SLACK_A2A_NUDGE` | `1` | Agent env. `1` = print the launch-caveat stderr note when a message to a real agent goes local only because routing is off. The bridge sets `0` on its own deliveries. |
@@ -511,9 +517,17 @@ Mode fan-out as the bus:
   Between two people this is the *normal* state (you both have a `general`), not an
   error — namespaced addressing is how you disambiguate, and `GET /agents` is the
   directory that tells you which hosts claim a name.
-- **Reachability:** `curl :8788/agents` → `{ self, hosts, agents:[{name,workspace,pane,host,owner,collided}], collisions }`
-  — one row **per instance** (with FQDN presence on, two same-named agents on one host are two rows).
-  `/health` also reports `presence` + `host`.
+- **Reachability:** `curl :8788/agents` → `{ self, hosts, agents:[{name,workspace,pane,host,fqdn,kv,owner,collided}], collisions }`
+  — one row **per instance** (two same-named agents on one host are two rows). Under NATS this is a
+  **live read of the `nexus_presence` KV** on every request, not a cached view.
+  - `fqdn` is the address you type (`host/workspace/name`); `kv` is the dot-encoded key the same
+    identity has in the bucket. Both are emitted so a reader never has to guess which separator
+    goes where — guessing wrong is exactly the mistake this endpoint exists to prevent.
+  - `/health` also reports `presence`, `host`, `transport`, `a2a_mode`, and the build stamp
+    (`commit`, `version`, `started_at`) — so you can tell "this build predates the field" from
+    "the feature is off" instead of misdiagnosing the second as the first.
+  - Second opinion, bridge out of the loop: `~/.tmux/nx-kv.sh keys` reads the bucket straight
+    from the broker (and still works when the local bridge is down).
 
 Enable it as the **cross-host** rollout step (mirrors the bus's own enablement) by injecting
 `SLACK_PRESENCE_ENABLED=1` (+ `SLACK_PRESENCE_HOST=<label>`) as **process env** on each host's
@@ -712,11 +726,16 @@ are unset the bridge exits 0 cleanly and is left alone (no thrash).
 ## Verify
 
 ```bash
-# Bridge connected?
-curl -s localhost:8788/health        # {"ok":true,"connected":true,"threads":N,"bus":bool,"presence":bool,"host":"…"}
+# Bridge connected? (transport/a2a_mode say which bus; commit/version say WHICH BUILD is answering)
+curl -s localhost:8788/health        # {"ok":true,"connected":true,"threads":N,"bus":bool,"presence":bool,
+                                     #  "host":"…","transport":"nats","a2a_mode":"multi-host",
+                                     #  "nats":true,"commit":"abc1234","version":"…","started_at":"…"}
 
-# Fleet reachability (when presence is enabled)
-curl -s localhost:8788/agents        # {"self","hosts",agents:[{name,host,owner,collided}],collisions:[…]}
+# Fleet reachability — under NATS this is a live read of the nexus_presence KV
+curl -s localhost:8788/agents        # {"self","hosts",agents:[{name,workspace,pane,host,fqdn,kv,owner,collided}],collisions:[…]}
+
+# Same bucket, straight from the broker (cross-check, or when the bridge is down)
+~/.tmux/nx-kv.sh keys
 
 # Inbound — in #nexus, post:  example-service: say hi
 #   → the agent's prompt receives "say hi"; the bot reacts ✅
