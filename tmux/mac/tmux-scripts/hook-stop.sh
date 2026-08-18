@@ -9,6 +9,10 @@ INPUT=$(cat 2>/dev/null)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "$INPUT" | "$SCRIPT_DIR/hook-memory.sh" session_idle 2>/dev/null
 
+# Pin this pane's transcript path for automode-watchdog.py (cheap refresh; the
+# authoritative writes are SessionStart and PreToolUse).
+echo "$INPUT" | "$SCRIPT_DIR/record-transcript.sh" 2>/dev/null
+
 # Chain auto-cache (snapshot conversation tail to ~/.tmux/cache/)
 "$SCRIPT_DIR/hook-autocache.sh" "$PWD" 2>/dev/null &
 
@@ -20,6 +24,14 @@ TMUX_PANE="${TMUX_PANE:-${HERDR_PANE_ID:-}}"
 NOW=$(date +%s)
 "$HOME/.tmux/substrate.sh" report-state "$TMUX_PANE" idle 2>/dev/null
 echo "$NOW stop $TMUX_PANE" >> "$HOME/.tmux/apm.log" 2>/dev/null
+
+# If automode-watchdog.py escalated this pane to Manual mode, this is the
+# revert trigger: the pane just went idle, which is exactly when it should
+# revert. Event-driven now, not poll-discovered — see automode-watchdog.py's
+# own "Detection is now dual" section. Backgrounded: reverting a mode is not
+# worth delaying the rest of this hook for.
+(TMUX_PANE="$TMUX_PANE" python3 "$SCRIPT_DIR/automode-watchdog.py" --revert-check --idle \
+  >>"$HOME/.tmux/automode-hook.log" 2>&1) &
 
 # --- Surface to Slack when this turn needs the HUMAN (not another agent) ---
 # The "middle" between full-naive (flood) and permission-only surfacing: a

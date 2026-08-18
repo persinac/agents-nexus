@@ -14,7 +14,14 @@
 # their normal Stop hook. Fail-safe: if idle is never detected, do nothing (no
 # regression vs. today).
 
-cat >/dev/null 2>&1   # consume stdin (SessionStart JSON); we emit no added context
+INPUT=$(cat 2>/dev/null)   # consume stdin (SessionStart JSON); we emit no added context
+
+# Pin this pane's transcript path for automode-watchdog.py, which otherwise has to
+# guess a pane's session from its cwd and gets it wrong whenever two panes share
+# one (see record-transcript.sh). This is the authoritative write: it lands before
+# the session's first tool call, and re-pins on a --resume/clear into a new
+# session id. Emits nothing on stdout — SessionStart stdout becomes added context.
+printf '%s' "$INPUT" | "$HOME/.tmux/record-transcript.sh" >/dev/null 2>&1
 
 TMUX_PANE="${TMUX_PANE:-${HERDR_PANE_ID:-}}"
 PANE="$TMUX_PANE"

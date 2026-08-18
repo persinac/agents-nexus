@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.automode-watchdog</string>
+
+    <!-- Long-running poll daemon (own internal sleep loop, see the script's own
+         config env vars) — same shape as slack-bridge, not a StartCalendarInterval
+         one-shot. Detects Claude Code's fail-closed auto-mode classifier denials
+         (toolDenialKind: automode-unavailable/automode-parsing-error) by tailing
+         each live pane's own transcript file, and self-heals by cycling the
+         stuck pane to Manual mode (never bypassPermissions — confirmed
+         unreachable from a live session, see the script's own docstring). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <!-- -u: unbuffered stdout/stderr. Without it, Python fully-buffers when
+             stdout isn't a TTY (true here — launchd redirects to a file), so the
+             startup banner and any [automode-watchdog] lines sit in an internal
+             buffer and never reach the log file during normal quiet operation. -->
+        <string>-u</string>
+        <string>__AGENTS_NEXUS_DIR__/tmux/mac/tmux-scripts/automode-watchdog.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__AGENTS_NEXUS_DIR__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>AGENTS_NEXUS_DIR</key>
+        <string>__AGENTS_NEXUS_DIR__</string>
+        <key>NEXUS_TMUX_DIR</key>
+        <string>__HOME__/.tmux</string>
+        <!-- herdr must be on PATH for substrate.sh's herdr backend calls. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:__HOME__/.local/bin</string>
+    </dict>
+
+    <!-- Restart on crash only, same convention as slack-bridge (not on a clean
+         exit, e.g. AUTOMODE_WATCHDOG_ENABLED=0). -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-nexus-automode-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-nexus-automode-watchdog.log</string>
+</dict>
+</plist>
