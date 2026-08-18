@@ -32,6 +32,19 @@ hook does NOT cover any of the below; each of these is its own risk call:
   - `mv` auto-approves unless the segment touches a credential-ish path or uses -f.
   - `chmod -R`/`chown -R` removed from the hard denylist (falls to the LLM now).
 
+Control flow added 2026-08-18. A loop or conditional whose every command is read-only
+now auto-approves deterministically, without an LLM call: `for`/`while`/`until`/
+`select`/`case`/`if`, function definitions, and multi-line bodies. Previously any of
+these failed on an unrecognized command head (`for`, `do`, `then`, ...) and fell
+through to the LLM — which, with the permission classifier fail-closed as often as it
+is here, meant interrupting the human for a `for` loop over grep. Two soundness holes
+found and closed while doing it, both of which had made the gate too permissive:
+  - Newlines were not command separators, so in a multi-line command only line 1's
+    leading token was ever classified.
+  - `$(...)`/backtick bodies were never inspected, so `echo "$(git commit -am x)"`
+    read as a plain `echo`. Bodies are now checked too, recursively; `$((arith))` is
+    correctly exempt since it cannot execute a command.
+
 Env: AN=agent name, PANE=tmux pane id, KIND=notification_type, FB=fallback text.
 Anthropic key loaded from the repo .env; default api base (the .env base is container-only).
 """
@@ -75,7 +88,40 @@ _READ_CMDS = frozenset({
     "dirname", "basename", "grep", "egrep", "fgrep", "rg", "ag", "ack", "sort", "uniq",
     "cut", "tr", "column", "jq", "yq", "xxd", "od", "cmp", "tac", "nl", "cd", "true",
     "sleep", "test", "readlink", "type", "id", "ps", "top", "free", "uptime", "comm",
+    # Shell builtins and test forms that execute nothing and persist nothing. Added
+    # 2026-08-18 with control-flow support below, which started routing loop and
+    # conditional HEADERS through here: `if [ -f x ]` and `while read -r line` are
+    # the two idiomatic shapes and both used to fail on an unrecognized command head.
+    "read", "printf", "seq", "expr", "[", "[[", ":",
 })
+
+# --- Shell control flow (added 2026-08-18) ----------------------------------
+# Tokens that are shell SYNTAX rather than commands. A compound command arrives at
+# _segment_is_read already split on `;`/newline, so `for f in *.log; do grep x "$f";
+# done` shows up as three segments whose first and third begin with a keyword, not a
+# command. Every such segment used to fail on an unrecognized command head, so ANY
+# loop or conditional — however read-only its body — fell through to the LLM.
+#
+# Why that mattered enough to fix: with the permission classifier fail-closed as
+# often as it is on this box (410 recorded automode-unavailable denials), "falls
+# through to the LLM" reliably means "asks the human". A `for` loop over grep/cat is
+# precisely the shape that should never have interrupted anyone, and it was the
+# single most common one that did.
+_STRUCTURAL = frozenset({
+    "do", "done", "then", "else", "elif", "fi", "esac", "{", "}", "!", "time", ";;",
+})
+# Keyword whose remainder is a COMMAND and must still be checked: drop the keyword
+# and keep walking the same segment.
+_COND_KEYWORDS = frozenset({"if", "while", "until"})
+# Keyword whose remainder is DATA, not a command — `for f in *.log`, `select x in a b`,
+# `case "$x" in`. The shell expands that word list, it never executes it. Any command
+# substitution hiding inside is caught separately, by _deterministic_read.
+_DATA_KEYWORDS = frozenset({"for", "select", "case"})
+# A `case` branch label: `x)`, `*.log)`, `[0-9]*)`. Requires no parens inside, so it
+# cannot swallow a subshell group (handled on its own path in _segment_is_read).
+_CASE_LABEL = re.compile(r"^[^()\s]+\)$")
+# A function-definition header: `name()`.
+_FUNC_DEF = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\(\)$")
 _READ_SUB = {
     # push added 2026-08-14: a force-less push is content-inert on the local side and
     # any force variant is already hard-denied above, unconditionally, before this
@@ -206,7 +252,14 @@ def _split_top_level(cmd):
             if cmd[i:i + 2] in ("&&", "||"):
                 segs.append("".join(buf)); buf = []; i += 2
                 continue
-            if c in (";", "|"):
+            # Newline is a command separator too (added 2026-08-18): a multi-line
+            # script body would otherwise arrive as ONE segment, whose first token is
+            # the only thing _segment_is_read ever inspects — so every command after
+            # line 1 went unchecked. Permissive, not merely imprecise: `cat a` on line
+            # one made `git commit -am x` on line two look like a plain read. (The
+            # outright destructive cases were already covered, since _DENY matches
+            # against the whole command string rather than per segment.)
+            if c in (";", "|", "\n"):
                 segs.append("".join(buf)); buf = []; i += 1
                 continue
         buf.append(c)
@@ -224,9 +277,28 @@ def _segment_is_read(seg):
     if seg.startswith("(") and seg.endswith(")"):
         return all(_segment_is_read(s) for s in _split_top_level(seg[1:-1]))
     toks = seg.split()
-    while toks:  # strip VAR=val prefixes and benign command wrappers
+    while toks:  # strip VAR=val prefixes, shell syntax, and benign command wrappers
         b = os.path.basename(toks[0])
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
+        if toks[0] in _STRUCTURAL:
+            toks = toks[1:]
+        elif _SAFE_REDIRECT.fullmatch(toks[0]):
+            # A discard/fd-dup redirect that ends up LEADING its segment, which is
+            # what `... ; done 2>/dev/null` produces once `done` is stripped. Only a
+            # full match is dropped, so a real `> file` is never silently discarded —
+            # and _deterministic_read has already refused any command containing one
+            # before a segment gets here.
+            toks = toks[1:]
+        elif toks[0] in _DATA_KEYWORDS:
+            # `for f in <words>` / `case "$x" in` — the remainder is a word list the
+            # shell expands, never a command. Nothing here can execute, so the header
+            # is read by construction; the loop BODY is a separate segment and is
+            # checked on its own.
+            return True
+        elif toks[0] in _COND_KEYWORDS:
+            toks = toks[1:]      # `if`/`while`/`until <cmd>` — the condition runs
+        elif _FUNC_DEF.match(toks[0]) or _CASE_LABEL.match(toks[0]):
+            toks = toks[1:]
+        elif re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
             toks = toks[1:]
         elif b == "timeout":
             toks = toks[2:] if len(toks) > 1 and re.match(r"^[\d.]+[smhd]?$", toks[1]) else toks[1:]
@@ -275,12 +347,71 @@ def _segment_is_read(seg):
 _SAFE_REDIRECT = re.compile(r"[12&]?>&?(/dev/null|[0-2]\b)")
 
 
+def _command_subs(cmd):
+    """Every `$(...)` / backtick substitution body in `cmd`, nested ones included.
+
+    _segment_is_read only ever inspects a segment's leading token, so before
+    2026-08-18 `echo "$(git commit -am x)"` classified as a read `echo` — the
+    substitution body was never looked at. That hole predates control-flow support
+    but matters far more alongside it, because `for f in $(...)` is the idiomatic
+    loop shape and would otherwise have become a blanket bypass.
+
+    `$((arith))` is skipped rather than returned: arithmetic expansion evaluates
+    numbers, it cannot run a command, and treating its body as one made every
+    `$((i+1))` fail on an unrecognized command head.
+    """
+    out, i, n = [], 0, len(cmd)
+    while i < n:
+        if cmd.startswith("$((", i):                  # arithmetic — executes nothing
+            depth, j = 0, i + 1
+            while j < n:
+                if cmd[j] == "(":
+                    depth += 1
+                elif cmd[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                j += 1
+            i = j
+            continue
+        if cmd.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if cmd[j] == "(":
+                    depth += 1
+                elif cmd[j] == ")":
+                    depth -= 1
+                j += 1
+            out.append(cmd[i + 2:j - 1] if depth == 0 else cmd[i + 2:])
+            i = j
+            continue
+        if cmd[i] == "`":
+            j = cmd.find("`", i + 1)
+            if j == -1:
+                break
+            out.append(cmd[i + 1:j])
+            i = j + 1
+            continue
+        i += 1
+    # Recurse: the scan above jumps over a whole `$(...)` span, so a substitution
+    # nested inside another is not found by the loop itself. Bodies strictly shrink,
+    # so this terminates.
+    return out + [inner for body in out for inner in _command_subs(body)]
+
+
 def _deterministic_read(cmd):
     """True only if EVERY segment is a known read-only operation. Any output redirect
     (>, >>) that isn't a discard/fd-dup, or an unrecognized command, falls through to
     the LLM."""
     if ">" in _SAFE_REDIRECT.sub("", cmd):
         return False
+    # Substitution bodies first — they run BEFORE the command that embeds them, so a
+    # modifying one makes the whole command modifying no matter how read-only the
+    # embedding command looks.
+    for body in _command_subs(cmd):
+        if not all(_segment_is_read(s) for s in _split_top_level(body)):
+            return False
     return all(_segment_is_read(s) for s in _split_top_level(cmd))
 
 _PROMPT = """You are the middle-man between an autonomous coding agent and its human operator on Slack. The agent paused to ask permission to use a tool. Reply with ONLY a compact JSON object:
@@ -323,6 +454,40 @@ def _load_key():
         pass
 
 
+def _pin_api_base():
+    """Drop an api-base override this process cannot actually reach.
+
+    Root cause of a silent, total outage of this module's LLM tier, found
+    2026-08-18. The fleet environment carries, for the CONTAINERS:
+        ANTHROPIC_API_BASE=http://host.docker.internal:54777/anthropic
+    litellm honours that variable, and `host.docker.internal` does not resolve on the
+    macOS host, so every classification died with "[Errno 8] nodename nor servname
+    provided, or not known". _llm() catches every exception and returns None, so the
+    gate fell back to "modify" and asked a human — for EVERY command the deterministic
+    allowlist could not vouch for, with no error surfaced anywhere. The module header
+    already documented "default api base (the .env base is container-only)" and
+    deliberately loads only ANTHROPIC_API_KEY from .env; what it did not account for is
+    the container-only base ALREADY being present in the inherited environment.
+
+    Checked by resolution rather than a hostname blocklist, so this keeps working for
+    any future container-only name, and leaves a reachable override (e.g. a local
+    nexus-proxy on localhost) alone.
+    """
+    import socket
+    import urllib.parse
+    for var in ("ANTHROPIC_API_BASE", "ANTHROPIC_BASE_URL"):
+        base = os.environ.get(var)
+        if not base:
+            continue
+        host = urllib.parse.urlsplit(base).hostname
+        if not host:
+            continue
+        try:
+            socket.getaddrinfo(host, None)
+        except OSError:
+            os.environ.pop(var, None)
+
+
 def _deterministic_summary(name, inp):
     short = (name or "").split("__")[-1].lower()
     if short in ("bash", "shell"):
@@ -338,6 +503,7 @@ def _deterministic_summary(name, inp):
 def _llm(name, inp):
     """Return (decision, category, summary) from the LLM, or None on any failure."""
     _load_key()
+    _pin_api_base()
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     try:
