@@ -16,7 +16,7 @@ Any error -> exit 10 with a deterministic fallback summary (fail safe to "ask").
 Policy: local reads (Read/Glob/Grep/LS/NotebookRead) -> read (no LLM, fast).
 Bash -> hard denylist (rm/sudo/dd/redirect/pipe-to-shell/--force/...) forces modify,
 otherwise a deterministic read-only allowlist (git/kubectl/helm/terraform/docker/
-gh/aws, curl/wget/sed/find/mv with care), otherwise an Anthropic Haiku call
+gh/glab/aws, curl/wget/sed/find/mv with care), otherwise an Anthropic Haiku call
 (litellm) decides + summarizes. Writes / MCP / web egress / unknown -> modify (LLM
 summarizes, decision forced modify). Compound shell commands are "read" only if
 every part is read-only.
@@ -145,7 +145,26 @@ _READ_SUB = {
     "docker": frozenset({"ps", "images", "logs", "inspect", "version", "info", "top",
                          "stats", "history"}),
     "gh": frozenset({"pr", "issue", "run", "repo", "release", "api", "status"}),  # gh ... view/list mostly read; api below
+    # glab (GitLab CLI) added 2026-08-18. It is the fleet's primary GitLab interface and,
+    # per ~/.claude/CLAUDE.md, the ONLY sanctioned one — scripts shell out to `glab api`
+    # rather than handling a token, so glab owns the credential. Measured 145 of 986
+    # distinct commands over a 4h sample: the second most common head (after python3) that
+    # this allowlist could not vouch for, i.e. the largest remaining source of prompts
+    # that did not need a human. Group membership alone is NOT sufficient — see
+    # _glab_is_read, which requires a read ACTION positionally.
+    "glab": frozenset({"api", "mr", "issue", "ci", "pipeline", "repo", "release",
+                       "variable", "schedule", "label", "auth", "config", "version"}),
 }
+
+# `glab api` defaults to GET. It becomes a write when given an explicit write method, or
+# — the easy one to miss — as soon as ANY field/body flag appears, because glab (like gh)
+# silently switches to POST then, with no -X anywhere in the command.
+_GLAB_WRITE_METHOD = re.compile(r"(-X|--method)[=\s]*(post|put|patch|delete)", re.I)
+_GLAB_API_BODY = re.compile(r"(^|\s)(-F|--field|-f|--raw-field|--input|--data)\b")
+# Read actions, matched POSITIONALLY (the token right after the group), never by searching
+# the segment. Searching would approve `glab mr merge --description "list of changes"` on
+# the word "list" inside a quoted string — the weakness the `gh` branch above still has.
+_GLAB_READ_ACTIONS = frozenset({"list", "view", "diff", "status", "get", "trace"})
 # curl/wget become "modify" if they carry a write method, a request body, an upload,
 # or write the response to a file.
 _HTTP_WRITE = re.compile(
@@ -169,6 +188,12 @@ _VALUE_FLAGS = frozenset({
     "-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "--as",
     "--server", "-s", "-C", "--git-dir", "--work-tree", "--profile", "--region", "-o",
     "--endpoint-url", "--output",
+    # -R/--repo/--host added 2026-08-18 for `glab -R owner/repo mr list` (gh takes -R the
+    # same way, so this improves that branch too). Safe to add globally: this set is only
+    # consulted by _subcommand/_strip_leading_flags, which run for _READ_SUB commands and
+    # aws — none of which takes a valueless -R. It never reaches `grep -R`, since grep
+    # short-circuits as a _READ_CMDS member before any flag parsing happens.
+    "-R", "--repo", "--host",
 })
 
 
@@ -215,6 +240,41 @@ def _aws_is_read(toks):
     if service == "s3":
         return action in ("ls", "presign")
     return action.startswith(("get-", "describe-", "list-", "head-"))
+
+
+def _glab_is_read(toks, seg):
+    """GitLab CLI read heuristic (added 2026-08-18).
+
+    Two shapes, handled separately because they carry their read/write intent in
+    different places:
+
+      `glab api <path>`      GET by default. A write only when an explicit write method
+                             is given, or when ANY field/body flag appears — glab, like
+                             gh, silently switches to POST then, with no -X in sight.
+                             That second case is the one worth being careful about: it
+                             is a write that does not look like one.
+      `glab <group> <action>` needs the action to be a read verb, checked POSITIONALLY.
+
+    Positional matters. Searching the whole segment for a read verb — what the `gh`
+    branch does — approves `glab mr merge --description "list of changes"` on the word
+    "list" sitting inside a quoted string. Taking the token right after the group closes
+    that: the action there is `merge`, and merge is not a read.
+
+    Anything unrecognized returns False and falls through to the LLM, so a new glab
+    subcommand is never silently approved by this.
+    """
+    rest = _strip_leading_flags(toks[1:])            # drop 'glab' + global flags (-R, --host)
+    if not rest:
+        return False
+    group = rest[0].lower()
+    if group == "version":
+        return True                                   # no action token; inert
+    if group == "api":
+        return not _GLAB_WRITE_METHOD.search(seg) and not _GLAB_API_BODY.search(seg)
+    if group not in _READ_SUB["glab"]:
+        return False
+    rest = _strip_leading_flags(rest[1:])
+    return bool(rest) and rest[0].lower() in _GLAB_READ_ACTIONS
 
 
 def _split_top_level(cmd):
@@ -369,6 +429,11 @@ def _segment_is_read(seg):
         return "-f" not in toks and not _MV_SENSITIVE.search(seg)
     if cmd == "aws":
         return _aws_is_read(toks)
+    if cmd == "glab":
+        # Ahead of the generic _READ_SUB membership below on purpose: for glab the group
+        # alone ("mr", "ci", "api") says nothing about read vs write, so it must never be
+        # allowed to pass on membership.
+        return _glab_is_read(toks, seg)
     if cmd in _READ_CMDS:
         return True
     if cmd in _READ_SUB:

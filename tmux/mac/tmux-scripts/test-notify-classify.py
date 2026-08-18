@@ -67,6 +67,27 @@ EXPECT_READ = [
     'mypy src',
     'for d in tests/a tests/b; do pytest "$d" -q; done',
 
+
+    # --- glab, the GitLab CLI (added 2026-08-18) ---
+    # the real shape from the fleet's own tooling and ~/.claude/CLAUDE.md
+    'glab api "projects/77912848/merge_requests/605"',
+    'glab api projects/1/merge_requests?state=opened',
+    'glab api projects/1 | jq .name',
+    'glab api --paginate projects/1/pipelines',
+    'glab mr list',
+    'glab mr view 605',
+    'glab mr diff 605',
+    'glab -R garner-health/svc-chatbot mr list',
+    'glab --repo garner-health/svc-chatbot mr view 605',
+    'glab ci status',
+    'glab ci trace',
+    'glab auth status',
+    'glab release list',
+    'glab variable list',
+    'glab config get editor',
+    'glab version',
+    'for m in 605 606; do glab mr view "$m"; done',
+
     # --- regressions: reads that already worked before all of the above ---
     'cat /etc/hosts',
     'git status && git log --oneline | head -5',
@@ -97,6 +118,32 @@ EXPECT_WITHHELD = [
     'uv run python -c "print(1)"',
     'make test',            # a Makefile target can do anything
     'npm run build',
+
+    # --- glab writes, and the traps ---
+    'glab mr merge 605',
+    'glab mr create --title x --description y',
+    'glab mr approve 605',
+    'glab mr checkout 605',              # mutates local git state
+    'glab mr note 605 --message hi',
+    'glab issue close 12',
+    'glab api -X POST projects/1/merge_requests',
+    'glab api --method DELETE projects/1/labels/x',
+    'glab api -XPOST projects/1/notes',
+    # the silent-POST trap: a field flag flips glab from GET to POST with no -X anywhere
+    'glab api projects/1/notes -F body=hello',
+    'glab api projects/1/notes --field body=hello',
+    'glab api projects/1/merge_requests --input payload.json',
+    'glab auth login',
+    'glab ci retry 123',
+    'glab variable set KEY=value',
+    'glab repo clone garner-health/svc-chatbot',
+    'glab config set editor vim',
+    # the false-approve guard: a read verb inside a quoted string must NOT approve a merge.
+    # This is why the action is matched positionally rather than searched for in the segment.
+    'glab mr merge 605 --description "list of changes"',
+    'glab mr create --title "view the diff and status list"',
+    'glab schedule delete 9',
+
     # formatters rewrite files; ruff/eslint only qualify outside writing modes
     'ruff format .',
     'ruff check --fix .',
