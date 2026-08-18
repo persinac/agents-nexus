@@ -65,6 +65,17 @@
         ]
       }
     ],
+    "PermissionDenied": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.tmux/hook-permissiondenied.sh; true"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "",

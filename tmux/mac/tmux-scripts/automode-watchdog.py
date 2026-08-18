@@ -138,6 +138,34 @@ the fallback (Manual mode) is itself low-cost and self-reverts on idle. WINDOW
 and THRESHOLD are still both real knobs — set AUTOMODE_WATCHDOG_THRESHOLD above
 1 to bring the debounce back.
 
+## Detection is now dual: the PermissionDenied hook (primary) + this poll loop (backstop) (2026-08-18)
+
+Once the "CORRECTION" note above established that `PermissionDenied` fires
+synchronously for exactly our case (`denial_reason: "no_verdict"`), with no
+transcript-path resolution needed at all (Claude Code hands the pane's
+identity via env, same as every other hook), it became strictly better than
+polling for the ESCALATE side: zero poll-interval lag, no cwd-collision
+ambiguity. `hook-permissiondenied.sh` -> `python3 automode-watchdog.py --hook`
+reads the hook's stdin payload once and calls `note_denial_and_maybe_escalate`.
+
+The REVERT side moved the same way, onto hooks that already fire at the right
+moments: `hook-stop.sh` calls `--revert-check --idle` the instant a turn ends
+(replacing poll-discovered idleness), and `hook-pretooluse.sh` calls bare
+`--revert-check` on every tool call, which gives the MAX_ESCALATION_SECONDS
+hard cap a check on every single call an escalated pane makes — no timer
+thread needed for that either.
+
+This poll loop (`main()`/`tick()`) keeps running as the backstop: it still
+does its own transcript scan and its own revert check every POLL_SECONDS, so
+losing a single hook invocation (a hook script error, a Claude Code version
+that changes the payload shape) degrades to "poll-loop speed," not "stuck."
+Both paths write the same `automode-watch-state.json` under the same
+`locked_state()` — whichever notices first (virtually always the hook) sets
+`escalated`/reverts it, and the other sees that and no-ops. This is why
+`locked_state()` exists at all: once more than one process can touch this
+file, an unlocked load-modify-save can silently drop a concurrent writer's
+update to a DIFFERENT pane's entry, not just race on the same one.
+
 ## Config (env, all optional — these are host-side tmux vars, not compose vars;
 ## set them in `~/.tmux/env.sh` or the plist's EnvironmentVariables, not .env.example)
 
@@ -168,6 +196,8 @@ a first sighting of a pane, only denials seen from that point forward).
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl  # POSIX-only (flock) — fine: this daemon and its hooks are macOS/Linux only
 import json
 import os
 import re
@@ -181,7 +211,9 @@ from datetime import datetime
 NEXUS_TMUX_DIR = os.environ.get("NEXUS_TMUX_DIR", os.path.expanduser("~/.tmux"))
 SUBSTRATE = os.path.join(NEXUS_TMUX_DIR, "substrate.sh")
 STATE_PATH = os.path.join(NEXUS_TMUX_DIR, "automode-watch-state.json")
+STATE_LOCK_PATH = STATE_PATH + ".lock"
 TRANSCRIPT_MAP_DIR = os.path.join(NEXUS_TMUX_DIR, "transcript-map")
+REGISTRY_DIR = os.path.join(NEXUS_TMUX_DIR, "registry")
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 
 ENABLED = os.environ.get("AUTOMODE_WATCHDOG_ENABLED", "1") != "0"
@@ -237,6 +269,43 @@ def save_state(state: dict) -> None:
         os.replace(tmp, STATE_PATH)
     except OSError:
         pass
+
+
+@contextlib.contextmanager
+def locked_state():
+    """Serialize load-modify-save against the shared state file.
+
+    Needed since the PermissionDenied hook turned this from "one poll-loop
+    process, exclusive owner of the state file" into "many short-lived hook
+    processes plus one long-lived poll loop, all touching the same file,
+    firing concurrently whenever the fleet has more than one pane." Without a
+    lock, two overlapping load-modify-save cycles silently drop whichever
+    wrote second's view of a THIRD pane's state (last-writer-wins on the whole
+    file, not just the pane each was updating) — e.g. a hook escalating pane A
+    could clobber a stop-hook's revert of pane B if they raced. Advisory
+    flock on a sidecar file, not the state file itself, so a reader is never
+    blocked mid-open on the file being replaced by os.replace() above."""
+    fh = open(STATE_LOCK_PATH, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+def registry_name(pane: str) -> str:
+    """Same NAME= lookup every bash hook does against ~/.tmux/registry/<pane>,
+    reimplemented here so the PermissionDenied/revert-check CLI modes below
+    don't need to shell out just to label a Slack notification."""
+    try:
+        with open(os.path.join(REGISTRY_DIR, pane)) as f:
+            for line in f:
+                if line.startswith("NAME="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
 
 
 def list_panes() -> list[dict]:
@@ -429,6 +498,82 @@ def notify(name: str, pane: str, message: str, summary: str | None = None) -> No
         pass  # best-effort — the bridge being down shouldn't take the watchdog down
 
 
+def _escalate(pane: str, name: str, st: dict) -> None:
+    """Cycle `pane` to Manual mode. Shared by both detection paths (the
+    PermissionDenied hook's single real-time event, and this poll loop's
+    transcript-scan batch) — whichever fires first does the work; the other
+    sees `st["escalated"]` already set by its caller and never reaches here."""
+    count = len(st["denials"])
+    label = name or pane
+    if not AUTOFIX:
+        notify(name, pane, f"{count}x automode-unavailable/parsing-error in {int(WINDOW_SECONDS)}s — watchdog is alert-only (AUTOMODE_WATCHDOG_AUTOFIX=0), not touching the pane.")
+        st["denials"] = []  # avoid re-alerting every poll on the same burst
+        return
+    before = read_mode(pane)
+    if before == TARGET_MODE:
+        st["denials"] = []
+        return
+    if cycle_to(pane, TARGET_MODE, MAX_CYCLES):
+        st["escalated"] = True
+        st["escalated_at"] = _now()
+        st["mode_before"] = before
+        notify(
+            name, pane,
+            f"{count}x automode-unavailable/parsing-error in {int(WINDOW_SECONDS)}s on `{label}` — "
+            f"cycled from `{before or 'unknown'}` to Manual mode so it can keep working "
+            f"(asks-every-time now; notify-classify.py auto-approves the safe majority). "
+            f"Will revert once idle.",
+        )
+    else:
+        notify(
+            name, pane,
+            f"{count}x automode-unavailable/parsing-error on `{label}` but the watchdog couldn't "
+            f"confirm landing on Manual mode after {MAX_CYCLES} shift+tab cycles — needs a manual look.",
+        )
+    st["denials"] = []
+
+
+def _maybe_revert(pane: str, name: str, st: dict, idle: bool) -> None:
+    """Revert `pane` out of an escalation if it's gone idle or blown the hard
+    cap. Shared by: hook-stop.sh (idle=True, fires the instant a turn ends —
+    the common case, now event-driven instead of poll-discovered),
+    hook-pretooluse.sh (idle=False, just the MAX_ESCALATION_SECONDS backstop —
+    every tool call on an escalated pane gets a free cap check), and this poll
+    loop (idle from list_panes(), same as always — the redundant safety net in
+    case a hook invocation is ever lost)."""
+    if not st.get("escalated"):
+        return
+    overdue = _now() - st.get("escalated_at", _now()) > MAX_ESCALATION_SECONDS
+    if not (idle or overdue):
+        return
+    target_back = st.get("mode_before") or "acceptEdits"
+    # mode_before is a normalized token; only revert to one we can target directly.
+    reverted = cycle_to(pane, target_back, MAX_CYCLES) if target_back in dict(MODE_MARKERS).values() else False
+    st["escalated"] = False
+    st.pop("escalated_at", None)
+    reason = "idle" if idle else f"{int(MAX_ESCALATION_SECONDS)}s escalation cap reached"
+    if reverted:
+        notify(name, pane, f"`{name or pane}` went {reason} — reverted from Manual back to `{target_back}`.")
+    else:
+        notify(name, pane, f"`{name or pane}` went {reason} — tried to revert to `{target_back}` but couldn't confirm; left in Manual mode, check it manually.")
+
+
+def note_denial_and_maybe_escalate(pane: str, name: str, state: dict) -> None:
+    """Record one fail-closed denial for `pane` at the moment it's called, and
+    escalate if the rolling count has hit THRESHOLD. This is the
+    PermissionDenied-hook path: one call per real-time denial, timestamped by
+    when the hook actually fired — more precise than the poll path's
+    transcript-scan timestamps, since there's no poll-interval discovery lag
+    to begin with."""
+    st = state.setdefault(pane, {})
+    if st.get("escalated"):
+        return  # a few can still land in flight right after the mode switch
+    cutoff = _now() - WINDOW_SECONDS
+    st["denials"] = [t for t in st.get("denials", []) + [_now()] if t >= cutoff]
+    if len(st["denials"]) >= THRESHOLD:
+        _escalate(pane, name, st)
+
+
 def handle_pane(pane_info: dict, path: str, state: dict) -> None:
     pane, name = pane_info["pane"], pane_info["name"]
 
@@ -449,49 +594,9 @@ def handle_pane(pane_info: dict, path: str, state: dict) -> None:
         st["denials"] = [t for t in st.get("denials", []) + new_denials if t >= cutoff]
 
     if not st.get("escalated") and len(st.get("denials", [])) >= THRESHOLD:
-        count = len(st["denials"])
-        label = name or pane
-        if not AUTOFIX:
-            notify(name, pane, f"{count}x automode-unavailable/parsing-error in {int(WINDOW_SECONDS)}s — watchdog is alert-only (AUTOMODE_WATCHDOG_AUTOFIX=0), not touching the pane.")
-            st["denials"] = []  # avoid re-alerting every poll on the same burst
-            return
-        before = read_mode(pane)
-        if before == TARGET_MODE:
-            st["denials"] = []
-            return
-        if cycle_to(pane, TARGET_MODE, MAX_CYCLES):
-            st["escalated"] = True
-            st["escalated_at"] = _now()
-            st["mode_before"] = before
-            notify(
-                name, pane,
-                f"{count}x automode-unavailable/parsing-error in {int(WINDOW_SECONDS)}s on `{label}` — "
-                f"cycled from `{before or 'unknown'}` to Manual mode so it can keep working "
-                f"(asks-every-time now; notify-classify.py auto-approves the safe majority). "
-                f"Will revert once idle.",
-            )
-        else:
-            notify(
-                name, pane,
-                f"{count}x automode-unavailable/parsing-error on `{label}` but the watchdog couldn't "
-                f"confirm landing on Manual mode after {MAX_CYCLES} shift+tab cycles — needs a manual look.",
-            )
-        st["denials"] = []
+        _escalate(pane, name, st)
 
-    if st.get("escalated"):
-        idle = pane_info.get("waiting") == "2"
-        overdue = _now() - st.get("escalated_at", _now()) > MAX_ESCALATION_SECONDS
-        if idle or overdue:
-            target_back = st.get("mode_before") or "acceptEdits"
-            # mode_before is a normalized token; only revert to one we can target directly.
-            reverted = cycle_to(pane, target_back, MAX_CYCLES) if target_back in dict(MODE_MARKERS).values() else False
-            st["escalated"] = False
-            st.pop("escalated_at", None)
-            reason = "idle" if idle else f"{int(MAX_ESCALATION_SECONDS)}s escalation cap reached"
-            if reverted:
-                notify(name, pane, f"`{name or pane}` went {reason} — reverted from Manual back to `{target_back}`.")
-            else:
-                notify(name, pane, f"`{name or pane}` went {reason} — tried to revert to `{target_back}` but couldn't confirm; left in Manual mode, check it manually.")
+    _maybe_revert(pane, name, st, pane_info.get("waiting") == "2")
 
 
 def gc_transcript_map(live_panes: set[str]) -> None:
@@ -545,13 +650,82 @@ def main() -> None:
         print("[automode-watchdog] AUTOMODE_WATCHDOG_ENABLED=0 — exiting")
         return
     print(f"[automode-watchdog] watching (autofix={'on' if AUTOFIX else 'alert-only'}, "
-          f"threshold={THRESHOLD}/{int(WINDOW_SECONDS)}s, poll={POLL_SECONDS}s)")
-    state = load_state()
+          f"threshold={THRESHOLD}/{int(WINDOW_SECONDS)}s, poll={POLL_SECONDS}s) — "
+          f"transcript-scan + revert backstop; the PermissionDenied hook is the primary detector")
     while True:
-        tick(state)
-        save_state(state)
+        # Reload under lock each tick, rather than holding one in-memory copy for
+        # the daemon's whole lifetime: the PermissionDenied hook and the
+        # Stop/PreToolUse revert-check hooks are now separate short-lived
+        # processes writing this same file between ticks. Without reloading, a
+        # stale in-memory copy would overwrite their escalate/revert with
+        # whatever this loop last saw — silently undoing a hook's work.
+        with locked_state():
+            state = load_state()
+            tick(state)
+            save_state(state)
         time.sleep(POLL_SECONDS)
 
 
+def hook_main() -> None:
+    """One-shot: read a PermissionDenied hook payload from stdin, escalate
+    this pane immediately if it's a fail-closed (no-verdict) denial. Always
+    exits 0 and never raises past this function — a hook must never fail a
+    turn, and per Claude Code's own docs PermissionDenied's exit code is
+    ignored anyway ("the denial already occurred")."""
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return
+    # denial_reason == "no_verdict" is the precise signal, not classifier_verdict
+    # alone: per Anthropic's docs, classifier_verdict is ALSO null for a
+    # custom-allow-rule or built-in-check denial (a real, intentional deny) —
+    # reacting to those would mean cycling a pane's mode over a legitimate
+    # block, exactly what this daemon must never do. Require both, matching the
+    # docs' own description of the no-verdict case.
+    if payload.get("denial_reason") != "no_verdict" or payload.get("classifier_verdict") is not None:
+        return
+    pane = os.environ.get("TMUX_PANE") or os.environ.get("HERDR_PANE_ID")
+    if not pane:
+        return
+    name = registry_name(pane)
+    with locked_state():
+        state = load_state()
+        note_denial_and_maybe_escalate(pane, name, state)
+        save_state(state)
+
+
+def revert_check_main(idle: bool) -> None:
+    """One-shot: check whether this pane should revert out of an escalation.
+    Called from hook-stop.sh (idle=True — the pane just went idle, the normal
+    revert path) and hook-pretooluse.sh (idle=False — just the
+    MAX_ESCALATION_SECONDS hard-cap backstop, piggybacked on the hook that
+    fires on every tool call so the cap needs no poll loop of its own)."""
+    pane = os.environ.get("TMUX_PANE") or os.environ.get("HERDR_PANE_ID")
+    if not pane:
+        return
+    name = registry_name(pane)
+    with locked_state():
+        state = load_state()
+        st = state.get(pane)
+        if st:
+            _maybe_revert(pane, name, st, idle)
+        save_state(state)
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        if len(sys.argv) > 1 and sys.argv[1] == "--hook":
+            hook_main()
+        elif len(sys.argv) > 1 and sys.argv[1] == "--revert-check":
+            revert_check_main(idle="--idle" in sys.argv[2:])
+        else:
+            main()
+    except Exception as e:
+        # The two one-shot modes run as Claude Code hooks — a hook must never
+        # surface an error to the turn in progress. main() has its own
+        # long-running loop and isn't expected to hit this, but the same
+        # backstop costs nothing to keep here too.
+        if len(sys.argv) > 1 and sys.argv[1] in ("--hook", "--revert-check"):
+            print(f"[automode-watchdog] {sys.argv[1]} error: {e}", file=sys.stderr)
+        else:
+            raise

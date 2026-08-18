@@ -22,4 +22,12 @@ NOW=$(date +%s)
 "$HOME/.tmux/substrate.sh" report-state "$TMUX_PANE" working "$NOW" 2>/dev/null
 echo "$NOW agent $TMUX_PANE" >> "$HOME/.tmux/apm.log" 2>/dev/null
 
+# Piggyback automode-watchdog.py's MAX_ESCALATION_SECONDS hard-cap revert check
+# onto every tool call, so an escalated pane that's still active (not idle, so
+# hook-stop.sh's revert-check never fires) still gets checked against the cap
+# without a poll loop timer. No-ops instantly for a pane that isn't escalated.
+# Backgrounded — this must never add latency to the hot path of every tool call.
+(TMUX_PANE="$TMUX_PANE" python3 "$SCRIPT_DIR/automode-watchdog.py" --revert-check \
+  >>"$HOME/.tmux/automode-hook.log" 2>&1) &
+
 exit 0
