@@ -60,16 +60,23 @@ NTYPE=$(echo "$INPUT" | sed -n 's/.*"notification_type" *: *"\([^"]*\)".*/\1/p' 
 # happen. What does NOT happen is auto-approval: notify-classify.py did not clear
 # it, so the prompt still reaches a human.
 #
-# Evidence, from a live capture rather than reasoning: three bare `echo`/`case`
-# probes ran at 14:38, a notification landed for this pane at 14:38:04
-# (prompt e868146b), and auto-approve.log has entries at 14:18:51 and 14:34:44
-# but NOT 14:38:04 — so that prompt went to the human, who confirmed answering
-# it. A bare `echo` cannot classify as "modify" on its merits, which points at
-# the gate rather than an ordinary prompt; most likely notify-classify failed
-# safe because the gate fires at PARSE time, before the tool_use its
-# _last_tool_use() looks for exists in the transcript. That last step is
-# inference, not capture — the notification payload names no tool or reason
-# (see above), so gate-vs-ordinary cannot be read off the log alone.
+# Evidence, from live capture rather than reasoning: the Bash tool_use for
+# `for i in 1 2; do echo "loop-$i"; done` was written to the transcript at
+# 20:37:57Z, a notification landed for this pane 7s later at 20:38:04Z, and the
+# tool_result did not arrive until 20:38:53Z — a 56-second wait on a human
+# keypress. auto-approve.log holds entries at 14:18:51 and 14:34:44 local but
+# NOT 14:38:04, confirming the hook did not answer that one.
+#
+# CORRECTION: an earlier version of this comment guessed notify-classify.py had
+# failed because the gate fires at PARSE time, before the tool_use its
+# _last_tool_use() looks for exists in the transcript. The ordering above
+# disproves that outright — the tool_use was already on disk 7 seconds before
+# the notification. The two real causes were both inside notify-classify.py and
+# are now fixed: it had no concept of shell control flow, so `for`/`do`/`done`
+# segments failed on an unrecognized command head and fell through to the LLM;
+# and that LLM tier was itself dead, from an inherited ANTHROPIC_API_BASE
+# naming a container-only host that cannot resolve here. A read-only loop now
+# auto-approves deterministically, with no model call at all.
 #
 # Also worth knowing, from the same session: a for/case/function_definition/
 # command_substitution command is NOT reliably gated on 2.1.234 — most ran clean
