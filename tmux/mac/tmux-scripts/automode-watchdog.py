@@ -35,16 +35,38 @@ installed 2.1.233 binary's own string table (not guessed, not from docs):
                             human declined / static rule denied / turn
                             aborted. Not ours to react to.
 
-**No hook fires for any of this.** Confirmed against the same binary's hook
-schema dump: the full event list is PreToolUse / PostToolUse / PostToolBatch /
-Notification / UserPromptSubmit / Stop / SubagentStop / PreCompact /
-SessionStart / SessionEnd — and PreToolUse, the only one that runs before a
-tool call, fires BEFORE the classifier does, so it can't see the outcome. (A
-subagent asked to research this claimed a "PermissionDenied" hook exists —
-that's fabricated; the string only appears in the binary as part of an
-unrelated Rust OS-error-kind enum, "PermissionDeniedAddrNotAvailable".) So this
-daemon tails each live pane's transcript file directly instead of hooking
-anything.
+**CORRECTION (2026-08-18): a PermissionDenied hook exists — the claim below
+that it was "fabricated" was wrong.** Confirmed against Anthropic's own current
+docs (code.claude.com/docs/en/hooks#permissiondenied), not a binary string
+scan: `PermissionDenied` fires "when auto mode denies a tool call, INCLUDING
+denials without a classifier verdict" — i.e. it covers exactly the
+automode-unavailable/automode-parsing-error case this daemon exists for, not
+just automode-blocked. Its input payload carries `classifier_verdict: null`
+for a no-verdict denial (our target) vs. a real verdict string otherwise — a
+direct, structured marker, no transcript parsing needed. It also hands
+`session_id`/`cwd`/`tool_name` directly, which would make the whole
+transcript-path resolution problem this file spends two sections on
+(cwd-collision, record-transcript.sh, the transcript-map) moot: no
+cross-referencing needed when the hook fires already scoped to the denying
+pane. The hook can't itself gate the decision (exit code 2 is ignored, "the
+denial already occurred") and its only real lever — `retry: true` — is
+explicitly ignored for a no-verdict denial, so it doesn't replace what this
+daemon does (cycle the pane to Manual); but as a DETECTION mechanism it is
+strictly better than polling a transcript file: synchronous, zero poll lag,
+no pane-to-transcript ambiguity. This daemon still tails the transcript, not
+the hook, because it was built before this was found — not because no
+alternative exists. Rearchitecting onto the hook is a real, not-yet-done
+follow-up; flagging it here rather than leaving the disproven claim in place.
+
+Original (now-wrong) reasoning, kept for the record rather than silently
+deleted: a binary hook-schema string scan turned up PreToolUse / PostToolUse /
+PostToolBatch / Notification / UserPromptSubmit / Stop / SubagentStop /
+PreCompact / SessionStart / SessionEnd and no PermissionDenied, and a subagent's
+claim that PermissionDenied existed was dismissed as fabricated on the theory
+that the string only appeared in an unrelated Rust OS-error enum. That scan was
+either run against a binary/version where the hook didn't yet exist, or missed
+it outright — either way, trust the vendor docs over a binary string grep next
+time this kind of question comes up.
 
 ## Self-heal target is Manual mode, not bypassPermissions
 
