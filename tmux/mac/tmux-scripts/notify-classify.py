@@ -268,6 +268,56 @@ def _split_top_level(cmd):
     return segs
 
 
+# --- Test / check runners (added 2026-08-18) --------------------------------
+# POLICY, not a read-only claim. Running a project's test suite executes that
+# project's own code and can write fixtures, touch a scratch database, or hit a local
+# service — it is genuinely not "read". Alex authorised it explicitly ("I'm fine with
+# running tests, don't ask me") after a `python -m pytest` run sat parked on an
+# approval prompt while he was working elsewhere.
+#
+# Deliberately narrow: the runner has to be RECOGNISED. An arbitrary interpreter
+# invocation (`python -c ...`, `python some_script.py`) still asks, because "it's a
+# python command" says nothing about what it does. Formatters that rewrite files by
+# default (black, isort, prettier) are excluded on purpose; ruff/eslint qualify only
+# in their non-writing modes.
+_TEST_RUNNERS = frozenset({
+    "pytest", "tox", "nox", "unittest", "jest", "vitest", "mocha", "rspec",
+    "mypy", "pyright", "flake8", "pylint", "tsc",
+})
+_PY_INTERPRETERS = frozenset({"python", "python2", "python3", "py"})
+# `uv run pytest`, `poetry run pytest`, ... — resolve to whatever they actually run.
+_RUNNER_WRAPPERS = frozenset({"uv", "poetry", "pipenv", "pdm", "hatch", "rye"})
+
+
+def _is_test_runner(toks, seg):
+    """True for a recognized test/lint/typecheck invocation. See _TEST_RUNNERS."""
+    if not toks:
+        return False
+    head = os.path.basename(toks[0])
+    rest = toks[1:]
+    if head in _RUNNER_WRAPPERS:
+        return _is_test_runner(rest[1:], seg) if rest[:1] == ["run"] else False
+    if head in _PY_INTERPRETERS or re.match(r"^python[0-9.]*$", head):
+        # Any interpreter path qualifies, a venv's included — it's the MODULE that
+        # decides. `-c` never qualifies: that is arbitrary inline code.
+        if "-c" in rest or "-m" not in rest:
+            return False
+        i = rest.index("-m")
+        return len(rest) > i + 1 and rest[i + 1] in _TEST_RUNNERS
+    if head in ("npm", "yarn", "pnpm"):
+        sub = _subcommand(rest)
+        if sub == "test":
+            return True
+        return sub == "run" and bool(re.search(r"\brun\s+(test|lint|typecheck)\b", seg))
+    if head in ("go", "cargo"):
+        return _subcommand(rest) == "test"
+    if head == "ruff":                       # `ruff format` and `--fix` rewrite files
+        return _subcommand(rest) != "format" and not re.search(r"--fix\b", seg)
+    if head == "eslint":
+        return not re.search(r"--fix\b", seg)
+    return head in _TEST_RUNNERS
+
+
 def _segment_is_read(seg):
     seg = seg.strip()
     if not seg:
@@ -334,7 +384,9 @@ def _segment_is_read(seg):
             # mv check below inspects its own segment rather than trusting a caller.
             return "-f" not in toks and not re.search(r"--force", seg, re.I)
         return sub in _READ_SUB[cmd]
-    return False
+    # Last: a recognized test/check runner. Placed here, after every read-only check,
+    # so it only ever widens the gate and never shadows one of them.
+    return _is_test_runner(toks, seg)
 
 
 # Redirects that DISCARD output or duplicate a stream (2>/dev/null, &>/dev/null,
