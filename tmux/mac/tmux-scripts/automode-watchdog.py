@@ -166,6 +166,26 @@ Both paths write the same `automode-watch-state.json` under the same
 file, an unlocked load-modify-save can silently drop a concurrent writer's
 update to a DIFFERENT pane's entry, not just race on the same one.
 
+## A third, untagged failure surface: slash-command bash substitution (2026-08-18)
+
+`/checkpoint` (and any slash-command using inline `!cmd` bash substitution in
+its body) failed twice in the wild with the exact same "auto mode cannot
+determine the safety of Bash" root cause — but as a plain
+`<local-command-stderr>` user message, no `toolDenialKind`, and the
+PermissionDenied hook never fired for it either (confirmed against
+automode-hook.log). Slash-command bash substitution runs during command
+PREPROCESSING, before a turn or tool-call object exists at all, so neither
+detection path this file already had could see it. Added a second branch to
+`scan_new_denials` matching `NO_VERDICT_TEXT_MARKER` directly against the
+message text on any untagged `user` entry. Poll-path only — there is no hook
+event to catch this on the fast path, so this failure class still detects at
+poll speed (up to POLL_SECONDS), not hook speed. It also can't rescue the
+`/checkpoint` invocation that already failed — by the time it's in the
+transcript, control already returned to the human — but it can cycle the
+pane to Manual before the NEXT attempt, which is what actually matters here:
+a human retrying a slash command manually, twice, ~22s apart, is exactly the
+"still stuck, still failing" pattern this whole daemon exists to interrupt.
+
 ## Config (env, all optional — these are host-side tmux vars, not compose vars;
 ## set them in `~/.tmux/env.sh` or the plist's EnvironmentVariables, not .env.example)
 
@@ -226,6 +246,22 @@ MAX_ESCALATION_SECONDS = float(os.environ.get("AUTOMODE_WATCHDOG_MAX_ESCALATION_
 SLACK_BRIDGE_PORT = os.environ.get("SLACK_BRIDGE_PORT", "8788")
 
 FAIL_CLOSED_KINDS = {"automode-unavailable", "automode-parsing-error"}
+
+# Untagged fail-closed signal (2026-08-18): a slash-command's inline `!cmd`
+# bash substitution goes through the same auto-mode classifier during
+# command-PREPROCESSING, before any tool-call/turn object exists — so a
+# failure there surfaces as a plain <local-command-stderr> USER message with
+# NO toolDenialKind at all, invisible to both the branch above and the
+# PermissionDenied hook (confirmed: automode-hook.log stayed empty across two
+# real `/checkpoint` failures that hit this). Scoped to only the exact phrase
+# actually observed twice in the wild for the "classifier model unavailable"
+# case — deliberately NOT the broader "Auto mode could not evaluate this
+# action and is blocking it for safety" prefix the docs also describe for the
+# parsing-error and safety-filter cases, because that prefix is IDENTICAL for
+# a real, intentional safety block (never touch) and distinguished only by an
+# appended clause — matching it correctly needs an exclusion this repo has no
+# confirmed real case to validate against. This phrase alone is unambiguous.
+NO_VERDICT_TEXT_MARKER = "is temporarily unavailable, so auto mode cannot determine the safety of"
 BACKTAB = "\x1b[Z"  # CSI Z — classic terminal "Shift+Tab" / back-tab sequence
 
 # Footer text -> normalized mode token (substring match, longest/most-specific first).
@@ -429,8 +465,30 @@ def _parse_ts(ts: str) -> float:
         return _now()
 
 
+def _message_text(obj: dict) -> str:
+    """Normalize a transcript entry's message content to plain text. The
+    tagged tool-result case (toolDenialKind present) carries content as a
+    list of blocks; the untagged local-command-stderr case below carries it
+    as a plain string directly."""
+    content = (obj.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            str(c.get("text") or c.get("content") or "")
+            for c in content if isinstance(c, dict)
+        )
+    return ""
+
+
 def scan_new_denials(path: str, offset: int) -> tuple[list[float], int]:
-    """Read new lines since `offset`, return (denial timestamps found, new offset)."""
+    """Read new lines since `offset`, return (denial timestamps found, new offset).
+
+    Two shapes count: the normal toolDenialKind-tagged tool-call denial, and
+    the untagged slash-command case (see NO_VERDICT_TEXT_MARKER) — the elif
+    below can't double-count a tagged entry against the marker text, since a
+    tagged automode-unavailable entry's own message ALSO contains that exact
+    phrase but never reaches the elif at all."""
     denials = []
     try:
         size = os.path.getsize(path)
@@ -452,6 +510,8 @@ def scan_new_denials(path: str, offset: int) -> tuple[list[float], int]:
         if obj.get("type") != "user":
             continue
         if obj.get("toolDenialKind") in FAIL_CLOSED_KINDS:
+            denials.append(_parse_ts(obj.get("timestamp", "")))
+        elif NO_VERDICT_TEXT_MARKER in _message_text(obj):
             denials.append(_parse_ts(obj.get("timestamp", "")))
     return denials, new_offset
 
