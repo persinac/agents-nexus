@@ -606,15 +606,14 @@ function paneWaitSince(pane) {
 // agent has >=1 pending request. On resolve we delete the request card (and the
 // anchor when its last request clears), so the channel only shows live asks.
 // ---------------------------------------------------------------------------
-function rootForAgent(name) {
-  for (const v of threadMap.values()) if (v.name === name && v.root) return v.root;
-  return null;
-}
-// Channel-scoped variant: an agent's anchor is per-destination, so a DM anchor and a
-// NEXUS_CHANNEL anchor never cross-thread (thread_ts is only valid within its channel).
-function rootForAgentIn(name, channel) {
-  for (const v of threadMap.values()) if (v.name === name && v.channel === channel && v.root) return v.root;
-  return null;
+// Channel-scoped anchor lookup. Identity is pane-first, name-second — see
+// orch.findAgentRoot for why (two callers spell the same agent differently, which was
+// giving one agent two anchors and two threads).
+//
+// A non-channel-scoped `rootForAgent(name)` used to sit here too. It was dead code and
+// carried the same name-only matching bug, so it is gone rather than left as a trap.
+function rootForAgentIn(name, channel, pane) {
+  return orch.findAgentRoot(threadMap.values(), { name, pane, channel });
 }
 function pendingCount(rootTs) {
   let n = 0; for (const v of threadMap.values()) if (v.root === rootTs) n += 1; return n;
@@ -2066,7 +2065,7 @@ const httpServer = http.createServer((req, res) => {
         const fallback = `${name} needs input: ${(summary || message || '').toString().slice(0, 200)}`;
         // Per-agent thread: post under the agent's anchor (create it if this is the
         // agent's first pending request), so #nexus top-level stays one line per agent.
-        let rootTs = rootForAgentIn(name, target);
+        let rootTs = rootForAgentIn(name, target, pane);
         if (!rootTs) {
           const anchor = await web.chat.postMessage({ channel: target, text: `:thread: *${name}* — waiting on you` });
           rootTs = anchor.ts;

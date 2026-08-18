@@ -3,7 +3,7 @@
 // so durations don't depend on wall-clock.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery, homeView, selectFormView, multilineInput, textInput, confirmCheckbox, radioOnOff, buildSpawnCommand, suggestSpawnName, fleetPanel, fleetPanelBlocks } from './orchestrator.js';
+import { statusLabel, fmtAgo, formatFleetStatus, formatAgentStatus, advanceDone, capWithMarker, formatRelay, parseRelay, parsePresence, formatPresence, toInstance, applyPresence, ownersOf, ownerOf, presenceCollisions, reachability, RELAY_SENTINEL, PRESENCE_SENTINEL, parseAddress, parseAddressedLine, workspaceMatches, encodeSubjectToken, decodeSubjectToken, fqdnToSubject, subjectToFqdn, hostSubjectFilter, fqdnToKvKey, kvKeyToFqdn, ENV_SENTINEL, buildEnvelope, parseEnvelope, formatEnvelope, renderDelivery, homeView, selectFormView, multilineInput, textInput, confirmCheckbox, radioOnOff, buildSpawnCommand, suggestSpawnName, fleetPanel, fleetPanelBlocks, findAgentRoot } from './orchestrator.js';
 import { messageToBlockKit } from './providers/slack.js';
 import { messageToDiscord } from './providers/discord.js';
 
@@ -728,4 +728,80 @@ test('messageToBlockKit(fleetPanel(...)) is byte-identical to the pre-refactor p
     const before = { response_type: 'ephemeral', text: 'Nexus Fleet Control', blocks: fleetPanelBlocks(opts) };
     assert.deepEqual(messageToBlockKit(fleetPanel(opts)), before);
   }
+});
+
+// findAgentRoot — per-agent thread anchors. Regression guard for the duplicate-anchor
+// bug: the same agent reached /notify under two different names (registry NAME= vs the
+// live pane/window name), exact-name matching treated it as two agents, and it got two
+// anchors and two Slack threads. Pane is the caller-independent identity, so it decides.
+const CH = 'C0BB9AB6F38';
+const anchorEntry = (o) => ({ channel: CH, root: 'r1', name: 'n', pane: '', ...o });
+
+test('findAgentRoot: one pane, two name spellings -> ONE anchor', () => {
+  // Exactly the observed case: pane w4K:pA posting as both `svc-chatbot` and
+  // `search/concierge/svc-chatbot`.
+  const entries = [anchorEntry({ name: 'svc-chatbot', pane: 'w4K:pA', root: 'anchor-1' })];
+  assert.equal(findAgentRoot(entries, { name: 'svc-chatbot', pane: 'w4K:pA', channel: CH }), 'anchor-1');
+  assert.equal(
+    findAgentRoot(entries, { name: 'search/concierge/svc-chatbot', pane: 'w4K:pA', channel: CH }),
+    'anchor-1',
+    'the other spelling of the same pane must reuse the anchor, not open a second one');
+});
+
+test('findAgentRoot: worktree `--` vs `/` spellings share an anchor', () => {
+  const entries = [anchorEntry({ name: 'search_concierge_svc-chatbot--demo-latency', pane: 'w4R:p2', root: 'a2' })];
+  assert.equal(
+    findAgentRoot(entries, { name: 'search_concierge_svc-chatbot/demo-latency', pane: 'w4R:p2', channel: CH }),
+    'a2');
+});
+
+test('findAgentRoot: pane outranks a name match found earlier in the map', () => {
+  const entries = [
+    anchorEntry({ name: 'ui-member', pane: 'w9:p9', root: 'name-hit' }),   // same name, other pane
+    anchorEntry({ name: 'other', pane: 'w4R:p4', root: 'pane-hit' }),      // our pane
+  ];
+  assert.equal(findAgentRoot(entries, { name: 'ui-member', pane: 'w4R:p4', channel: CH }), 'pane-hit');
+});
+
+test('findAgentRoot: falls back to name when no pane is supplied', () => {
+  const entries = [anchorEntry({ name: 'general', pane: 'w4J:pB', root: 'a3' })];
+  assert.equal(findAgentRoot(entries, { name: 'general', channel: CH }), 'a3');
+  assert.equal(findAgentRoot(entries, { name: 'general', pane: '', channel: CH }), 'a3');
+});
+
+test('findAgentRoot: two same-named agents on different panes stay separate', () => {
+  // Two `general`s is a real shape (the bus docs call it out) — they must not merge.
+  const entries = [
+    anchorEntry({ name: 'general', pane: 'w1:p1', root: 'a-one' }),
+    anchorEntry({ name: 'general', pane: 'w2:p2', root: 'a-two' }),
+  ];
+  assert.equal(findAgentRoot(entries, { name: 'general', pane: 'w2:p2', channel: CH }), 'a-two');
+  assert.equal(findAgentRoot(entries, { name: 'general', pane: 'w1:p1', channel: CH }), 'a-one');
+});
+
+test('findAgentRoot: never crosses channels, even on a pane match', () => {
+  // thread_ts is only valid inside its own channel — a DM anchor must never be reused
+  // for a #nexus post or the API call fails.
+  const entries = [anchorEntry({ channel: 'D-DM', name: 'general', pane: 'w4J:pB', root: 'dm-anchor' })];
+  assert.equal(findAgentRoot(entries, { name: 'general', pane: 'w4J:pB', channel: CH }), null);
+});
+
+test('findAgentRoot: ignores entries with no root, and empty input', () => {
+  assert.equal(findAgentRoot([anchorEntry({ root: null, pane: 'w1:p1' })], { pane: 'w1:p1', channel: CH }), null);
+  assert.equal(findAgentRoot([], { name: 'x', channel: CH }), null);
+  assert.equal(findAgentRoot(undefined, { name: 'x', channel: CH }), null);
+});
+
+test('findAgentRoot: pane supplied but unknown still reuses a name match (no fragmentation)', () => {
+  // Anchor-count monotonicity. `svc-chatbot` was observed across 8 panes over weeks
+  // (w4B:p2/p4/p6/pA/pG/pM, w4K:p2/pA). Pane-FIRST must not mean pane-ONLY, or moving
+  // panes would open a fresh anchor each time and this change would ADD channel noise
+  // instead of removing it. Matching is a union: pane wins when it hits, name still
+  // catches everything it caught before, so the result is never more anchors than the
+  // old name-only lookup produced.
+  const entries = [anchorEntry({ name: 'svc-chatbot', pane: 'w4B:pA', root: 'existing' })];
+  assert.equal(
+    findAgentRoot(entries, { name: 'svc-chatbot', pane: 'w4X:p9', channel: CH }),
+    'existing',
+    'a known name on a brand-new pane must reuse its anchor, not open a second one');
 });

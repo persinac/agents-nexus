@@ -1087,3 +1087,47 @@ export function renderDelivery(e) {
       return `↩ from ${from}: ${body}`;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Per-agent thread anchors: identify an agent by PANE first, name second.
+//
+// Two independent sources name the same agent differently, and neither form can be
+// derived from the other by any string rule:
+//
+//   pane      registry NAME=                              live pane/window name
+//   w4K:pA    svc-chatbot                                 search/concierge/svc-chatbot
+//   w4R:p2    search_concierge_svc-chatbot--demo-latency  search_concierge_svc-chatbot/demo-latency
+//   w4R:p4    ui-member                                   frontend/ui-member
+//
+// (basename vs repo path in the first case; `--` vs `/` as the final separator in the
+// second.) The anchor lookup used exact name equality, so one agent read as two: it got
+// two anchors, two threads, and every notification buzzed under whichever form the
+// posting caller happened to use. Measured in ~/.tmux/slack-threads.json on 2026-08-18 —
+// `svc-chatbot` (40 requests) and `search/concierge/svc-chatbot` (24) were both w4K:pA;
+// `--demo-latency`/`/demo-latency` and `--temp-oncall`/`/temp-oncall` split the same way.
+//
+// `pane` is the one identity every /notify caller already sends and the only one that is
+// caller-independent, so it decides. Name stays the fallback, which preserves the previous
+// behaviour exactly for any caller that sends no pane.
+//
+// Channel is always required — a thread_ts is only valid inside its own channel, so a DM
+// anchor and a #nexus anchor must never be cross-threaded.
+//
+// Known limit, accepted deliberately: pane ids get recycled. If a pane is reassigned while
+// an UNRESOLVED request from its previous occupant is still tracked, the new agent's card
+// files under the old anchor and carries the old label. That is cosmetic misfiling, not
+// misdelivery — answers are injected via the entry's own `pane`, which is the same pane
+// either way — and it is strictly better than the guaranteed daily double-anchor it
+// replaces. Canonicalising the stored name through the registry would also fix the label;
+// that is a follow-up, not needed to stop the duplication.
+export function findAgentRoot(entries, { name, pane, channel } = {}) {
+  const wantPane = String(pane == null ? '' : pane).trim();
+  let byName = null;
+  for (const v of entries || []) {
+    if (!v || !v.root || v.channel !== channel) continue;
+    if (wantPane && String(v.pane == null ? '' : v.pane).trim() === wantPane) return v.root;
+    // Keep scanning after a name hit: a pane match anywhere in the map outranks it.
+    if (byName === null && v.name === name) byName = v.root;
+  }
+  return byName;
+}
