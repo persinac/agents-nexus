@@ -46,12 +46,15 @@ NTYPE=$(echo "$INPUT" | sed -n 's/.*"notification_type" *: *"\([^"]*\)".*/\1/p' 
 #   - So the payload alone can NEVER distinguish a too-complex gate from an
 #     ordinary permission prompt. Logging more of it does not help; that avenue
 #     is closed, not merely unfinished.
-#   - `prompt_id` identifies the pending prompt and repeats across every
-#     notification for it while it stays unanswered (observed twice: one pane
-#     re-notified the same id 18s apart, another 3.5min apart). It appears
-#     NOWHERE in the session transcript (checked), so it cannot bridge a
-#     notification to the denial it belongs to — but it is the dedupe key any
-#     (pane, timestamp) correlation needs to avoid double-counting one prompt.
+#   - `prompt_id` is the id of the USER TURN, not of the permission prompt, despite
+#     the name. Every notification raised while working on one user message carries
+#     the same value: 43 logged notifications spread over ~13 ids, one id used 13
+#     times, and a single id (10c5ad6f) observed across three DIFFERENT commands at
+#     15:00, 15:05 and 15:11. So it is a turn correlation key and must NOT be used to
+#     dedupe prompts — doing so would collapse every prompt in a turn into one.
+#     (An earlier version of this comment claimed it was per-prompt. It is not.)
+#     It also appears NOWHERE in the session transcript, so it cannot bridge a
+#     notification to the denial it belongs to either.
 #
 # ANSWER (2026-08-18): the gate DOES emit a `permission_prompt` Notification.
 # Therefore this hook runs for a gated pane and the report-state needs-input
