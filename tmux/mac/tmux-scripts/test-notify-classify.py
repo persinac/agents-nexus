@@ -88,6 +88,82 @@ EXPECT_READ = [
     'glab version',
     'for m in 605 606; do glab mr view "$m"; done',
 
+    # --- shell text that is DATA, not commands (added 2026-08-19) ---
+    # Measured: 29.8% of everything this gate withheld over 30 days contained one of
+    # these three shapes. All were MIS-PARSES — heredoc bodies, continued lines and
+    # comments arriving as bogus segments whose "command head" was Python source or prose.
+    "grep -c ERROR <<'EOF'\nline one\nline two\nEOF",
+    "grep -q x <<'DATA'\n# this # is # data\nrm -rf /not-a-command\nDATA",
+    'aws ec2 describe-instances \\\n  --query "Reservations[].Instances[]" \\\n  --output json',
+    'git log --oneline \\\n  --since=yesterday',
+    '# just a comment\nls -la',
+    'ls -la  # trailing comment is part of the segment\n# whole-line comment\npwd',
+
+    # --- gh, positional (added 2026-08-19) ---
+    'gh pr view 42',
+    'gh pr diff 42',
+    'gh pr checks 42',
+    'gh pr list --state open',
+    'gh api repos/owner/repo/pulls',
+    'gh api --paginate repos/owner/repo/issues',
+    'gh run watch 12345',
+    'gh run list --limit 5',
+    'gh -R owner/repo pr view 42',
+    'gh release list',
+
+    # --- git read subcommands (added 2026-08-19) ---
+    'git branch',
+    'git branch -a',
+    'git branch --list "feat/*"',
+    'git tag',
+    'git tag -l "v1.*"',
+    'git stash list',
+    'git stash show',
+    'git worktree list',
+    'git worktree',
+    'git remote',
+    'git remote -v',
+    'git remote show origin',
+    'git submodule status',
+    'git config --get user.name',
+    'git config --list',
+    'git check-ignore -v build/',
+    'git ls-remote --heads origin',
+
+    # --- npx-wrapped runners (added 2026-08-19) ---
+    'npx jest --runInBand',
+    'npx tsc --noEmit',
+    'npx playwright test',
+    'npx -y vitest run',
+    'shellcheck tmux/mac/tmux-scripts/hook-notification.sh',
+
+    # --- awk, guarded (added 2026-08-19) ---
+    'ps aux | awk \'{print $2}\'',
+    'awk -F: \'{print $1}\' /etc/passwd',
+    'git log --oneline | awk \'{print $1}\' | head -5',
+
+    # --- assignment builtins, docker compose, systemctl, inert inspection ---
+    'export FOO=bar',
+    'set -euo pipefail',
+    'docker compose ps',
+    'docker compose logs api',
+    'docker compose config',
+    'systemctl status nginx',
+    'systemctl is-active docker',
+    'systemctl list-units --type=service',
+    'journalctl -u agents-nexus-stack -n 50',
+    'ss -tlnp',
+    'lsof -i :8788',
+    'dig +short example.com',
+    'sha256sum /etc/hosts',
+    'diff a.txt b.txt',
+    'kubectl kustomize overlays/prod',
+
+    # --- fleet tooling (policy call, per Alex) ---
+    '/home/persinac/.tmux/agent-send.sh alex-nexus/nexus/agents-nexus "hello there"',
+    '~/.tmux/agent-registry.sh peers --exclude w12:p2',
+    'curl -s localhost:8788/agents | jq .',
+
     # --- regressions: reads that already worked before all of the above ---
     'cat /etc/hosts',
     'git status && git log --oneline | head -5',
@@ -143,6 +219,72 @@ EXPECT_WITHHELD = [
     'glab mr merge 605 --description "list of changes"',
     'glab mr create --title "view the diff and status list"',
     'glab schedule delete 9',
+
+    # --- gh: the false-approve this rule was written to close (2026-08-19) ---
+    # THE case. The old rule searched the whole segment for view|list|status|get, so
+    # the word "list" inside a quoted flag value auto-approved a MERGE. Matching the
+    # action positionally sees `merge`. Same defect _glab_is_read already documented.
+    'gh pr merge 42 --body "list of changes"',
+    'gh issue close 7 --comment "see the list above"',
+    'gh pr merge 42',
+    'gh pr create --title x --body y',
+    'gh pr close 42',
+    'gh api -X POST repos/owner/repo/issues',
+    'gh api --method DELETE repos/owner/repo/labels/x',
+    # the silent-POST trap: a field flag flips gh from GET to POST with no -X anywhere
+    'gh api repos/owner/repo/issues -f title=bug',
+    'gh api repos/owner/repo/issues --field title=bug',
+    'gh run download 12345',          # writes artifacts to disk
+    'gh repo clone owner/repo',
+    'gh auth login',
+
+    # --- git: the dual-use subcommands must not pass on membership alone ---
+    # `git remote` USED to be a plain _READ_SUB member, so this auto-approved a write.
+    'git remote add origin https://example.com/r.git',
+    'git remote remove origin',
+    'git branch -D feature/x',
+    'git branch -m old new',
+    'git branch --set-upstream-to=origin/main',
+    'git tag -d v1.0.0',
+    'git tag -a v1.0.0 -m "release"',
+    'git stash',                      # bare stash STASHES; only `stash list/show` reads
+    'git stash pop',
+    'git worktree add ../wt feature',
+    'git worktree remove ../wt',
+    'git submodule update --init',
+    'git config user.email "x@example.com"',
+    'git config --unset user.name',
+
+    # --- heredocs: the body is data, but the HEAD is still classified ---
+    "python3 - <<'PY'\nimport os\nprint(os.getcwd())\nPY",
+    "bash <<'EOF'\nls -la\nEOF",
+    "cat > out.txt <<'EOF'\ncontent\nEOF",
+    # an UNQUOTED tag still expands $(...), so the body must keep being scanned
+    'cat <<EOF\n$(git commit -am sneaky)\nEOF',
+
+    # --- awk: the execution constructs ---
+    'awk \'BEGIN{system("date")}\'',
+    'awk \'{print | "sh"}\' f',
+    'awk \'{while ((getline l < "f") > 0) print l}\'',
+
+    # --- npx must not decay into "any npx package" ---
+    'npx create-react-app myapp',
+    'npx some-unknown-cli --do-things',
+    'npx prettier --write .',
+
+    # --- compose / systemctl / builtins: the writing halves ---
+    'docker compose up -d',
+    'docker compose down',
+    'docker compose restart api',
+    'systemctl restart nginx',
+    'systemctl daemon-reload',
+    'systemctl enable --now foo',
+    # a BARE export/set dumps every shell variable — a credential path on this host
+    'export',
+    'set',
+    'declare',
+    'declare -p',                     # -p prints every variable WITH its value
+    'export -p',
 
     # formatters rewrite files; ruff/eslint only qualify outside writing modes
     'ruff format .',
