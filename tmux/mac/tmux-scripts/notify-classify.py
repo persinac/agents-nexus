@@ -93,6 +93,24 @@ _READ_CMDS = frozenset({
     # conditional HEADERS through here: `if [ -f x ]` and `while read -r line` are
     # the two idiomatic shapes and both used to fail on an unrecognized command head.
     "read", "printf", "seq", "expr", "[", "[[", ":",
+    # --- inert system inspection (added 2026-08-19) ---
+    # Each reports state and changes none. `systemctl` is NOT here — it is gated
+    # positionally below, since it also starts and stops units.
+    "journalctl", "ss", "netstat", "lsof", "dig", "nslookup", "getent",
+    "lscpu", "nproc", "lsblk", "arch", "tty", "locale", "groups", "users", "w",
+    "sha256sum", "sha1sum", "md5sum", "cksum", "diff", "strings", "paste", "join",
+    "fold", "rev", "expand", "unexpand",
+    # Deliberately NOT here: `split`/`csplit` (write xaa/xab files), `awk` (gated
+    # separately — it can system()), `xargs`/`watch` (execute arbitrary commands),
+    # the pagers `less`/`more` (`!cmd` shells out), and `base64` (no reason to spend
+    # permissiveness budget on a decode path near secrets).
+    # --- fleet tooling (added 2026-08-19, per Alex) ---
+    # agent-send.sh was the #2 blocked head at 849 invocations. It publishes a message
+    # to a peer over the NATS bus. Explicitly a POLICY call, not a read-only claim:
+    # it IS outward-facing and reaches other hosts. Alex authorised it directly.
+    # agent-registry.sh/nx-kv.sh/agent-resolve.sh are peer lookups and genuinely read.
+    "agent-send.sh", "agent-registry.sh", "agent-resolve.sh", "nx-kv.sh",
+    "substrate.sh",
 })
 
 # --- Shell control flow (added 2026-08-18) ----------------------------------
@@ -126,25 +144,38 @@ _READ_SUB = {
     # push added 2026-08-14: a force-less push is content-inert on the local side and
     # any force variant is already hard-denied above, unconditionally, before this
     # allowlist is ever consulted -- so "push" reaching here is guaranteed force-less.
+    # check-ignore/ls-remote/diff-tree/symbolic-ref/var/count-objects added 2026-08-19
+    # (pure reads, measured blocked). NOTE: "remote" is no longer decided here — it
+    # moved to _GIT_SUB_ACTION_READ because plain membership auto-approved
+    # `git remote add origin <url>`, which is a write. branch/tag/stash/worktree/
+    # submodule/config are likewise gated in _git_is_read, not by membership.
     "git": frozenset({"status", "log", "diff", "show", "merge-base", "range-diff",
                       "rev-parse", "rev-list", "blame", "ls-files", "ls-tree", "describe",
                       "shortlog", "reflog", "cat-file", "for-each-ref", "show-ref",
-                      "fetch", "whatchanged", "grep", "version", "remote", "push"}),
+                      "fetch", "whatchanged", "grep", "version", "push",
+                      "check-ignore", "ls-remote", "diff-tree", "symbolic-ref", "var",
+                      "count-objects", "verify-commit", "check-attr"}),
     # diff/events/auth/wait added 2026-08-14 (none mutate cluster state). "auth" needs
     # a further check below -- `auth can-i` is read but `auth reconcile -f rbac.yaml`
     # applies RBAC changes, so membership here alone is not enough for it. Deliberately
     # excluded: exec/cp/attach/debug/run (execute code or create a resource),
     # port-forward/proxy (open a network tunnel -- not a "read" of anything), config
     # (can mutate the local kubeconfig, e.g. delete-context/use-context).
+    # kustomize added 2026-08-19: it renders manifests locally and touches no cluster.
+    # The measured breakdown otherwise VALIDATES this set — the blocked kubectl weight
+    # is exec:384, port-forward:89, rollout:54, annotate:40, apply:28, which are all
+    # excluded on purpose and should keep asking.
     "kubectl": frozenset({"get", "describe", "logs", "top", "explain", "api-resources",
                           "api-versions", "version", "cluster-info", "diff", "events",
-                          "auth", "wait"}),
+                          "auth", "wait", "kustomize"}),
     "helm": frozenset({"template", "diff", "get", "list", "status", "show", "history",
                        "version", "lint"}),
     "terraform": frozenset({"plan", "show", "output", "validate", "version", "providers"}),
     "docker": frozenset({"ps", "images", "logs", "inspect", "version", "info", "top",
                          "stats", "history"}),
-    "gh": frozenset({"pr", "issue", "run", "repo", "release", "api", "status"}),  # gh ... view/list mostly read; api below
+    # Decided POSITIONALLY by _gh_is_read, not by membership — see the note there.
+    "gh": frozenset({"pr", "issue", "run", "repo", "release", "api", "status",
+                     "workflow", "search", "cache", "label", "ruleset"}),
     # glab (GitLab CLI) added 2026-08-18. It is the fleet's primary GitLab interface and,
     # per ~/.claude/CLAUDE.md, the ONLY sanctioned one — scripts shell out to `glab api`
     # rather than handling a token, so glab owns the credential. Measured 145 of 986
@@ -165,6 +196,69 @@ _GLAB_API_BODY = re.compile(r"(^|\s)(-F|--field|-f|--raw-field|--input|--data)\b
 # the segment. Searching would approve `glab mr merge --description "list of changes"` on
 # the word "list" inside a quoted string — the weakness the `gh` branch above still has.
 _GLAB_READ_ACTIONS = frozenset({"list", "view", "diff", "status", "get", "trace"})
+# --- gh, the GitHub CLI (rewritten positionally 2026-08-19) -----------------
+# The previous rule was `sub in _READ_SUB["gh"] and re.search(r"\b(view|list|status|
+# get)\b", seg)` — a SUBSTRING search over the whole segment. That is the exact
+# weakness _glab_is_read was written to avoid, and it was a live false-approve here:
+#   gh pr merge 42 --body "list of changes"
+# contains "list", so the gate auto-approved a MERGE. Matching the action positionally
+# (the token right after the group) fixes it: the action there is `merge`.
+# Measured 632 blocked invocations (api:223, pr:372), so this is also the second
+# largest named recovery — it is both the safer rule AND the wider one.
+# `watch` polls a run to completion and prints progress — a read, and the only
+# regression the 30-day replay found when this rule replaced the substring search.
+# `download` is deliberately absent: `gh run download` writes artifacts to disk.
+_GH_READ_ACTIONS = frozenset({"list", "view", "diff", "status", "checks", "watch"})
+_GH_WRITE_METHOD = re.compile(r"(-X|--method)[=\s]*(post|put|patch|delete)", re.I)
+# Same silent-POST trap as glab: any field/body flag flips `gh api` to POST with no -X.
+_GH_API_BODY = re.compile(r"(^|\s)(-F|--field|-f|--raw-field|--input)\b")
+
+# --- git read subcommands (added 2026-08-19) --------------------------------
+# `branch`/`tag`/`stash`/`worktree`/`submodule`/`config` are all dual-use, so none can
+# be a plain _READ_SUB member — each is gated on its own flags or action. Measured
+# blocked weight: branch 172, check-ignore 36, worktree 30, stash 27, config 13,
+# ls-remote 11. (add 434 / checkout 259 / commit 53 stay withheld, correctly.)
+_GIT_BRANCH_WRITE = re.compile(
+    r"(^|\s)(-d|-D|-m|-M|-c|-C|-u|--delete|--move|--copy|--set-upstream-to"
+    r"|--unset-upstream|--edit-description|--force)\b")
+_GIT_TAG_WRITE = re.compile(
+    r"(^|\s)(-d|-a|-s|-m|-f|--delete|--annotate|--sign|--message|--force)\b")
+# Only the reading forms. Never --edit (opens an editor on .git/config, which
+# ~/.claude/CLAUDE.md classes as credential-bearing) and never a bare `git config k v`.
+_GIT_CONFIG_READ = re.compile(r"(^|\s)(--get|--get-all|--get-regexp|--list|-l)\b")
+_GIT_SUB_ACTION_READ = {
+    "stash": frozenset({"list", "show"}),
+    "worktree": frozenset({"list"}),
+    "submodule": frozenset({"status", "summary"}),
+    # A bare `git remote` / `git remote -v` lists (flags are stripped before the action
+    # is read, so the no-action path below covers -v). `git remote add` is a write —
+    # and note that BEFORE this table, "remote" was a plain _READ_SUB member, so
+    # `git remote add origin <url>` auto-approved. This is a fix, not just a widening.
+    "remote": frozenset({"show", "get-url"}),
+}
+
+# --- awk (added 2026-08-19, guarded) ----------------------------------------
+# awk is read-only in its overwhelmingly common use (`awk '{print $2}'`; 409 blocked
+# invocations in the sample) but it is a full language: system() and a `|` pipe execute
+# commands, getline can read from one, and close()/ENVIRON reach outside the record
+# stream. Same shape as the existing find/sed/curl guards — allow the inert form, ask
+# about anything carrying an execution construct. A `print > "file"` write needs no
+# clause here: _deterministic_read's redirect check already refuses the whole command.
+_AWK_EXEC = re.compile(r"(\bsystem\s*\(|\bclose\s*\(|\bENVIRON\b|\bgetline\b|\|)")
+
+# --- docker compose (added 2026-08-19) --------------------------------------
+# `docker`'s subcommand set had no `compose` entry, so every compose command fell
+# through (67 blocked). Read verbs only; up/down/build/restart all mutate.
+_COMPOSE_READ = frozenset({"ps", "logs", "config", "top", "images", "ls", "version"})
+
+# --- systemctl (added 2026-08-19, positional) -------------------------------
+# Gated to the query verbs. start/stop/restart/enable/disable/daemon-reload all change
+# system state and keep asking.
+_SYSTEMCTL_READ = frozenset({
+    "status", "show", "list-units", "list-unit-files", "list-timers", "list-sockets",
+    "is-active", "is-enabled", "is-failed", "cat", "get-default", "show-environment",
+})
+
 # curl/wget become "modify" if they carry a write method, a request body, an upload,
 # or write the response to a file.
 _HTTP_WRITE = re.compile(
@@ -277,6 +371,113 @@ def _glab_is_read(toks, seg):
     return bool(rest) and rest[0].lower() in _GLAB_READ_ACTIONS
 
 
+# --- Shell text that is DATA, not commands (added 2026-08-19) ---------------
+# Measured over 30 days of real traffic (14,338 Bash calls, 8,601 withheld by this
+# gate): 29.8% of everything withheld contained a heredoc, a backslash-newline
+# continuation, or a `#` comment line. None of those are policy calls — they are
+# MIS-PARSES. _split_top_level treats `\n` as a command separator (correctly, since
+# 2026-08-18), so a heredoc body and a continued line both arrive as bogus "segments"
+# whose leading token is Python source, prose, or a terminator word. The blame
+# histogram was full of `import`, `print(f"`, `EOF`, `PYEOF`, `#`, `The` — every one
+# failing on an "unrecognized command head" that was never a command at all.
+_LINE_CONT = re.compile(r"\\\n")
+# `<<TAG`, `<<'TAG'`, `<<"TAG"`, `<<-TAG`. Quoting matters and is captured: a QUOTED
+# tag makes the body fully literal, while an UNQUOTED one still expands `$(...)`, so
+# an unquoted body has to keep flowing to _command_subs.
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def _strip_heredocs(cmd):
+    """Remove heredoc BODIES for segmentation. Returns (text, [executable_bodies]).
+
+    A heredoc body is stdin DATA handed to a command; the shell never executes it, so
+    it must not be segmented as commands. Safety is unchanged because the COMMAND HEAD
+    is still classified normally: `python3 - <<'PY'` and `bash <<EOF` keep failing on
+    `python3`/`bash` exactly as before, and a `cat > f <<'EOF'` still trips the redirect
+    check. What changes is that a read-only command is no longer blocked by its own
+    payload.
+
+    Unquoted-tag bodies are RETURNED rather than discarded: `<<EOF` still performs
+    command substitution, so those bodies must still be scanned.
+    """
+    out, live, i, n = [], [], 0, len(cmd)
+    while i < n:
+        m = _HEREDOC.search(cmd, i)
+        if not m:
+            out.append(cmd[i:])
+            break
+        nl = cmd.find("\n", m.end())
+        if nl == -1:                       # tag with no body in this command string
+            out.append(cmd[i:])
+            break
+        out.append(cmd[i:nl + 1])
+        quoted, tag = bool(m.group(1)), m.group(2)
+        j, body = nl + 1, []
+        while j < n:
+            eol = cmd.find("\n", j)
+            line = cmd[j:eol if eol != -1 else n]
+            if line.strip() == tag:        # terminator (also covers <<- 's tab indent)
+                j = eol + 1 if eol != -1 else n
+                break
+            body.append(line)
+            if eol == -1:
+                j = n
+                break
+            j = eol + 1
+        if not quoted:
+            live.append("\n".join(body))
+        i = j
+    return "".join(out), live
+
+
+def _gh_is_read(toks, seg):
+    """GitHub CLI read heuristic (added 2026-08-19). Positional, like _glab_is_read.
+
+    Replaces a substring search that approved `gh pr merge --body "list of changes"`
+    on the word "list" sitting inside a quoted flag value. See _GH_READ_ACTIONS.
+    """
+    rest = _strip_leading_flags(toks[1:])              # drop 'gh' + global flags (-R)
+    if not rest:
+        return False
+    group = rest[0].lower()
+    if group in ("version", "status"):                 # no action token; inert
+        return True
+    if group == "api":
+        # GET by default; a write only via an explicit method or ANY body/field flag.
+        return not _GH_WRITE_METHOD.search(seg) and not _GH_API_BODY.search(seg)
+    if group not in _READ_SUB["gh"]:
+        return False
+    rest = _strip_leading_flags(rest[1:])
+    return bool(rest) and rest[0].lower() in _GH_READ_ACTIONS
+
+
+def _git_is_read(toks, seg, sub):
+    """git read heuristic for the dual-use subcommands (added 2026-08-19).
+
+    Only reached for a `sub` this function claims; everything else stays on plain
+    _READ_SUB membership. Each case inspects THIS segment rather than trusting the
+    caller's _DENY pre-check, matching the existing `push` and `mv` precedent.
+    """
+    if sub == "push":
+        # Self-contained, not just relying on _DENY: membership can't see flags.
+        return "-f" not in toks and not re.search(r"--force", seg, re.I)
+    if sub == "branch":
+        return not _GIT_BRANCH_WRITE.search(seg)
+    if sub == "tag":
+        return not _GIT_TAG_WRITE.search(seg)
+    if sub == "config":
+        return bool(_GIT_CONFIG_READ.search(seg))
+    if sub in _GIT_SUB_ACTION_READ:
+        after = _strip_leading_flags(toks[1:])         # drop 'git' + global flags
+        idx = after.index(sub) + 1 if sub in after else len(after)
+        action = _strip_leading_flags(after[idx:])
+        if not action:
+            # A bare `git stash` STASHES; a bare `git remote`/`git worktree` lists.
+            return sub in ("remote", "worktree", "submodule")
+        return action[0].lower() in _GIT_SUB_ACTION_READ[sub]
+    return sub in _READ_SUB["git"]
+
+
 def _split_top_level(cmd):
     """Split on &&, ||, ;, | -- but ONLY at paren-depth 0 and outside quotes, so a
     subshell/group `( a || b )` or a quoted string containing these characters isn't
@@ -343,6 +544,8 @@ def _split_top_level(cmd):
 _TEST_RUNNERS = frozenset({
     "pytest", "tox", "nox", "unittest", "jest", "vitest", "mocha", "rspec",
     "mypy", "pyright", "flake8", "pylint", "tsc",
+    # added 2026-08-19 — same policy, all non-writing by default
+    "shellcheck", "bats", "phpunit", "rubocop", "bandit", "ava", "tap",
 })
 _PY_INTERPRETERS = frozenset({"python", "python2", "python3", "py"})
 # `uv run pytest`, `poetry run pytest`, ... — resolve to whatever they actually run.
@@ -369,6 +572,17 @@ def _is_test_runner(toks, seg):
         if sub == "test":
             return True
         return sub == "run" and bool(re.search(r"\brun\s+(test|lint|typecheck)\b", seg))
+    if head in ("npx", "pnpx", "bunx"):
+        # `npx jest` / `npx tsc` / `npx playwright test` — 207 blocked invocations, of
+        # which jest:84 + playwright:63 + tsc:55 = 202 are recognized runners we
+        # already trust when invoked directly. Drop npx's own flags (-y, --no-install)
+        # and re-dispatch, so an unrecognized package still asks.
+        inner = [t for t in rest if not t.startswith("-")]
+        return bool(inner) and _is_test_runner(inner, seg)
+    if head == "playwright":
+        return _subcommand(rest) == "test"
+    if head == "deno":
+        return _subcommand(rest) in ("test", "lint", "check")   # `deno fmt` rewrites
     if head in ("go", "cargo"):
         return _subcommand(rest) == "test"
     if head == "ruff":                       # `ruff format` and `--fix` rewrite files
@@ -381,6 +595,11 @@ def _is_test_runner(toks, seg):
 def _segment_is_read(seg):
     seg = seg.strip()
     if not seg:
+        return True
+    # A comment executes nothing. Multi-line command bodies are full of these (617 of
+    # the 8,601-call withheld sample carried one) and each arrived as its own segment,
+    # failing on `#` as an "unrecognized command head".
+    if seg.startswith("#"):
         return True
     # A whole parenthesized group `( ... )` -- recurse on its interior with the same
     # depth/quote-aware splitter rather than treating the literal `(cmd` as a command.
@@ -434,20 +653,35 @@ def _segment_is_read(seg):
         # alone ("mr", "ci", "api") says nothing about read vs write, so it must never be
         # allowed to pass on membership.
         return _glab_is_read(toks, seg)
+    if cmd == "gh":
+        # Ahead of generic membership, same reason as glab: for gh the GROUP alone
+        # ("pr", "api") says nothing about read vs write.
+        return _gh_is_read(toks, seg)
+    if cmd in ("awk", "gawk", "mawk", "nawk"):
+        return not _AWK_EXEC.search(seg)
+    if cmd == "systemctl":
+        return _subcommand(toks[1:]).lower() in _SYSTEMCTL_READ
+    if cmd in ("export", "set", "declare", "typeset", "readonly", "local", "unset"):
+        # These never execute anything — but two of their forms DUMP every shell
+        # variable with its value: the bare `export`/`set`/`declare`, and the explicit
+        # `-p` print form. On this host that is a credential-disclosure path (see
+        # ~/.claude/CLAUDE.md), so those two keep asking. Everything else is an
+        # assignment or a shell-option change and is inert — note `set -euo pipefail`
+        # carries `pipefail` as a VALUE for -o, so this cannot require all-flags.
+        return len(toks) > 1 and "-p" not in toks[1:]
     if cmd in _READ_CMDS:
         return True
     if cmd in _READ_SUB:
         sub = _subcommand(toks[1:])                                # skip leading flags (e.g. --context X)
-        if cmd == "gh":  # gh subcommands need a read action (view/list/status)
-            return sub in _READ_SUB[cmd] and bool(re.search(r"\b(view|list|status|get)\b", seg))
+        if cmd == "git":
+            return _git_is_read(toks, seg, sub)
         if cmd == "kubectl" and sub == "auth":  # can-i is read; reconcile applies RBAC
             return bool(re.search(r"\bcan-i\b", seg))
-        if cmd == "git" and sub == "push":
-            # Self-contained, not just relying on the caller's _DENY pre-check: plain
-            # frozenset membership can't see flags, and a segment-level check here is
-            # what actually inspects THIS segment for a force flag, the same way the
-            # mv check below inspects its own segment rather than trusting a caller.
-            return "-f" not in toks and not re.search(r"--force", seg, re.I)
+        if cmd == "docker" and sub == "compose":
+            after = _strip_leading_flags(toks[1:])
+            idx = after.index("compose") + 1 if "compose" in after else len(after)
+            action = _strip_leading_flags(after[idx:])
+            return bool(action) and action[0].lower() in _COMPOSE_READ
         return sub in _READ_SUB[cmd]
     # Last: a recognized test/check runner. Placed here, after every read-only check,
     # so it only ever widens the gate and never shadows one of them.
@@ -521,15 +755,28 @@ def _deterministic_read(cmd):
     """True only if EVERY segment is a known read-only operation. Any output redirect
     (>, >>) that isn't a discard/fd-dup, or an unrecognized command, falls through to
     the LLM."""
-    if ">" in _SAFE_REDIRECT.sub("", cmd):
+    # Normalise away the two shapes that are not command separators before anything
+    # else looks at the text (2026-08-19). A backslash-newline is a LINE continuation:
+    # the shell joins it into one command, but _split_top_level's newline rule tore it
+    # into fragments, so the tail of every wrapped command (`  --query '...'`) was
+    # classified as its own command head. Heredoc bodies are stdin data, not commands.
+    cmd = _LINE_CONT.sub(" ", cmd)
+    shell, live_bodies = _strip_heredocs(cmd)
+    # Redirect check runs on the heredoc-stripped text: a `>` inside a heredoc body is
+    # payload, while `cat > f <<'EOF'` keeps its redirect in `shell` and still fails.
+    if ">" in _SAFE_REDIRECT.sub("", shell):
         return False
     # Substitution bodies first — they run BEFORE the command that embeds them, so a
     # modifying one makes the whole command modifying no matter how read-only the
-    # embedding command looks.
-    for body in _command_subs(cmd):
+    # embedding command looks. Unquoted heredoc bodies are scanned here too, since
+    # `<<EOF` (unlike `<<'EOF'`) still expands $(...).
+    subs = _command_subs(shell)
+    for body in live_bodies:
+        subs += _command_subs(body)
+    for body in subs:
         if not all(_segment_is_read(s) for s in _split_top_level(body)):
             return False
-    return all(_segment_is_read(s) for s in _split_top_level(cmd))
+    return all(_segment_is_read(s) for s in _split_top_level(shell))
 
 _PROMPT = """You are the middle-man between an autonomous coding agent and its human operator on Slack. The agent paused to ask permission to use a tool. Reply with ONLY a compact JSON object:
 
@@ -624,17 +871,33 @@ def _llm(name, inp):
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     try:
-        import litellm
-        litellm.suppress_debug_info = True
+        # Direct /v1/messages POST rather than litellm (2026-08-19). This module used
+        # exactly one litellm feature — a single completion() with one user message —
+        # and paid `import litellm` for it on EVERY invocation: measured 1.378 s here,
+        # against 0.026 s for the stdlib equivalent. Nothing amortises that, because
+        # the hook spawns a fresh process per permission prompt. It was the dominant
+        # cost of the whole LLM tier and bought nothing this call site used.
+        import urllib.request
+        base = (os.environ.get("ANTHROPIC_BASE_URL")
+                or os.environ.get("ANTHROPIC_API_BASE")
+                or "https://api.anthropic.com").rstrip("/")
         body = json.dumps(inp)[:1500]
-        resp = litellm.completion(
-            model=MODEL,
-            messages=[{"role": "user", "content": _PROMPT.format(name=name, inp=body)}],
-            max_tokens=200,
-            temperature=0,
-            timeout=12,
-        )
-        text = (resp.choices[0].message.content or "").strip()
+        payload = json.dumps({
+            "model": MODEL.split("/", 1)[-1],          # strip litellm's "anthropic/"
+            "max_tokens": 200,
+            "temperature": 0,
+            "messages": [{"role": "user",
+                          "content": _PROMPT.format(name=name, inp=body)}],
+        }).encode()
+        req = urllib.request.Request(
+            f"{base}/v1/messages", data=payload, method="POST",
+            headers={"content-type": "application/json",
+                     "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+                     "anthropic-version": "2023-06-01"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            obj = json.loads(r.read().decode("utf-8", "replace"))
+        text = "".join(b.get("text", "") for b in obj.get("content", [])
+                       if isinstance(b, dict)).strip()
         m = re.search(r"\{.*\}", text, re.S)
         if not m:
             return None
