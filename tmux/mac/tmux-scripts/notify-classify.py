@@ -79,7 +79,10 @@ _CMDPOS = r"(?:^|[;&|(`]\s*|\s)"
 
 _DENY = re.compile(
     rf"({_CMDPOS}rm\s|{_CMDPOS}rmdir\s|\bsudo\b|{_CMDPOS}dd\s|\bmkfs"
-    r"|\bshutdown\b|\breboot\b|\bkillall\b"
+    # `killall` removed 2026-08-19 per Alex: killing a process deletes no data and is
+    # ordinary dev cleanup (`killall node`), so it is not in either named destructive
+    # category. shutdown/reboot STAY — they would end an unattended overnight run.
+    r"|\bshutdown\b|\breboot\b"
     # /dev/null explicitly excluded (2026-08-17): a raw-device write (dd/cat > /dev/sda)
     # is what this guards against; >/dev/null and 2>/dev/null are the standard
     # discard idiom and were being hard-denied by this alone, unconditionally

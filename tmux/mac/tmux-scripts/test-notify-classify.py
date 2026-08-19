@@ -392,6 +392,8 @@ EXPECT_PERMITTED = [
     # --force outside git is not a force push.
     'npm install --force',
     'pip install --force-reinstall requests',
+    'killall node',                   # kills a process, deletes no data
+    'killall -9 esbuild',
 ]
 
 # The command-position fix must NOT weaken a real delete. Every one of these is still
