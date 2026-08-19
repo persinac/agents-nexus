@@ -11,6 +11,8 @@ Output contract (so the hook needs no JSON parsing in bash):
   exit 0   -> READ: safe to auto-approve. Nothing printed.
   exit 10  -> MODIFY: needs a human. Prints the /notify JSON body on stdout
               ({name,pane,kind,category,summary}) ready to POST.
+  exit 11  -> SURFACE: clear the permission prompt AND still flag the pane as
+              needing input. Prints the same body as exit 10. See SURFACE_TOOLS.
 Any error -> exit 10 with a deterministic fallback summary (fail safe to "ask").
 
 Policy (rewritten 2026-08-19 — the default is now ALLOW, see _PERMISSIVE):
@@ -69,6 +71,23 @@ from collections import deque
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread"}
+
+# Tools whose PERMISSION PROMPT is pure friction, but whose pane still needs the human
+# straight afterwards. AskUserQuestion is the entire set: the prompt asks permission to
+# show a prompt, so clearing it bypasses no decision -- the human still answers the
+# question itself, and the tool has no other effect.
+#
+# It cannot be a plain auto-approve (exit 0). Measured 2026-08-19 on pane w4P:p8: an
+# AskUserQuestion raised ONE permission_prompt at 10:24:51 and the question dialog that
+# followed raised no notification of its own. Since hook-notification.sh marks the pane
+# `working` on exit 0, a plain auto-approve would clear the only signal that the pane is
+# waiting -- trading a redundant click for a pane that sits silently, which is the
+# failure this repo cares most about avoiding. Hence exit 11: answer the prompt, then
+# fall through to the needs-input + desktop + Slack path anyway.
+#
+# Worth 11 of the 22 prompts that still reached a human over 08-14..08-19, i.e. half of
+# all remaining friction, each costing ~59s at the median (vs 4.1s auto-approved).
+SURFACE_TOOLS = {"askuserquestion"}
 
 # Command position: start of string, after a separator, or after whitespace. Used to
 # stop `rm`/`dd`/`truncate` matching as bare words (2026-08-19). `\brm\b` fired on the
@@ -943,10 +962,37 @@ def _pin_api_base():
             os.environ.pop(var, None)
 
 
+def _surface_only(name):
+    """True if this tool's permission prompt can be cleared but the pane must still be
+    reported as needing input. See SURFACE_TOOLS."""
+    return (name or "").split("__")[-1].lower() in SURFACE_TOOLS
+
+
+def _question_summary(inp):
+    """The agent's actual question(s), for the Slack card. Beats an LLM paraphrase here:
+    the text is already written for a human, so summarizing it only loses the options."""
+    qs = inp.get("questions")
+    if not isinstance(qs, list):
+        return "the agent is asking you a question"
+    parts = []
+    for q in qs:
+        if not isinstance(q, dict):
+            continue
+        text = str(q.get("question") or "").strip()
+        if not text:
+            continue
+        opts = [str(o.get("label")) for o in (q.get("options") or [])
+                if isinstance(o, dict) and o.get("label")]
+        parts.append(f"{text} ({' / '.join(opts)})" if opts else text)
+    return _trunc(" | ".join(parts)) if parts else "the agent is asking you a question"
+
+
 def _deterministic_summary(name, inp):
     short = (name or "").split("__")[-1].lower()
     if short in ("bash", "shell"):
         return f"`{_trunc(inp.get('command', ''))}`"
+    if short in SURFACE_TOOLS:
+        return _question_summary(inp)
     if short in ("edit", "multiedit", "write", "notebookedit"):
         return f"`{inp.get('file_path') or inp.get('notebook_path', '?')}`"
     for k in ("command", "url", "query", "path", "file_path", "prompt"):
@@ -1001,7 +1047,7 @@ def _llm(name, inp):
         return None
 
 
-def _emit_modify(category, summary):
+def _emit(category, summary, code):
     print(json.dumps({
         "name": os.environ.get("AN", ""),
         "pane": os.environ.get("PANE", ""),
@@ -1010,7 +1056,11 @@ def _emit_modify(category, summary):
         "category": category,
         "summary": summary,
     }))
-    sys.exit(10)
+    sys.exit(code)
+
+
+def _emit_modify(category, summary):
+    _emit(category, summary, 10)
 
 
 def _last_tool_use(transcript_path):
@@ -1054,6 +1104,15 @@ def classify(name, inp):
     # 1. Clearly read-only local tools -> read, no LLM.
     if short in READ_TOOLS:
         return "read", "read-only", det
+    # 1b. Ask-the-human tools. Deliberately still "modify" so this function's two-value
+    #     contract holds for the Agent SDK runner's can_use_tool gate (runner.py checks
+    #     `decision == "read"`, and there the human is prompted in-process anyway). The
+    #     third outcome is applied by main() via _surface_only, which is the only caller
+    #     that speaks the tmux hook's exit-code protocol. Returning early skips the LLM:
+    #     the question text is already human-readable, so a paraphrase costs ~855ms and
+    #     adds nothing.
+    if short in SURFACE_TOOLS:
+        return "modify", "question", det
     # 2. Bash: hard denylists (modify) -> read allowlist (auto) -> permissive (auto)
     #    -> LLM. The two denylists are checked together and FIRST; nothing below can
     #    override them, which is what makes the permissive tier safe to enable.
@@ -1100,6 +1159,8 @@ def main():
     decision, category, summary = classify(name, inp)
     if decision == "read":
         sys.exit(0)                                       # safe -> auto-approve
+    if _surface_only(name):
+        _emit(category, summary, 11)                       # clear the prompt, still flag
     _emit_modify(category, summary)                        # needs a human
 
 
