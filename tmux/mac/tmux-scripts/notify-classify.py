@@ -151,11 +151,20 @@ _DESTRUCTIVE = re.compile(
     r"|\bshred\b|\bwipefs\b"
     # --- deleting a REMOTE git branch (`git push --delete` / `git push origin :x`) ---
     r"|\bgit\s+push\b[^|;&]{0,200}(--delete\b|\s:\S)"
-    # --- secret DISCLOSURE into a durable transcript ---
-    # NOT one of Alex's two categories, kept on his own standing host rule
-    # (~/.claude/CLAUDE.md, written after a real leak): `doppler secrets` prints values
-    # that cannot be un-printed. `doppler run` and `doppler secrets set` are unaffected.
-    r"|\bdoppler\s+secrets\b(?!\s+set\b)",
+    # --- secret-manager MUTATION ---
+    # Corrected 2026-08-19 after `infrastructure` reported ~6 blocks in one session.
+    # The old clause was `\bdoppler\s+secrets\b(?!\s+set\b)`, which was backwards in
+    # BOTH directions: it blocked the READ form (`doppler secrets get X --plain`) that
+    # block-credential-dump.sh has always exempted by design -- breaking the trello
+    # skills mid-run, since they source credentials that way -- while EXEMPTING
+    # `doppler secrets set`, an actual mutation.
+    #
+    # Separation of concerns, now explicit: DISCLOSURE (a bare `doppler secrets`
+    # printing the whole plaintext table) is block-credential-dump.sh's job and it
+    # already handles it via its own `(?!\s+get\b)` lookahead. This denylist is about
+    # MUTATION, so it names the mutating subcommands positionally instead of negating
+    # one exception off a two-word prefix.
+    r"|\bdoppler\s+secrets\s+(set|delete|upload|download)\b",
     re.I,
 )
 

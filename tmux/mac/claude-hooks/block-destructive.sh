@@ -32,7 +32,7 @@ payload="$(cat 2>/dev/null || true)"
 CLASSIFIER="${NEXUS_CLASSIFIER:-$HOME/.tmux/notify-classify.py}"
 
 read -r -d '' PY <<'PYEOF'
-import importlib.util, json, os, sys
+import importlib.util, json, os, re, sys
 
 try:
     d = json.load(sys.stdin)
@@ -44,6 +44,41 @@ if d.get("tool_name") != "Bash":
 cmd = (d.get("tool_input") or {}).get("command") or ""
 if not cmd.strip():
     sys.exit(0)
+
+# A heredoc body is DATA, not commands. Borrowed verbatim in shape from
+# block-credential-dump.sh, which solved this first (2026-08-12).
+#
+# WHY (2026-08-19): this guard cost ~6 false blocks in one session -- a `gh pr create
+# --body` whose PR description merely MENTIONED a delete command, and a heredoc feeding
+# documentation prose. The commit message for this very hook had to be passed via
+# `git commit -F` for the same reason.
+#
+# An earlier version of this file REJECTED heredoc stripping outright, reasoning that
+# `bash <<'EOF'` executes its body so a stripped body is where a destructive command
+# would hide. That reasoning was right and the conclusion was wrong: the exception
+# below is exactly the missing piece, and it already existed one directory over.
+#
+# EXCEPTION: when the heredoc feeds an interpreter, the body really is executed, so it
+# stays in scope. The (?<!\.) guard stops \bsh\b matching the ".sh" in a FILENAME.
+INTERP = re.compile(r"(?<!\.)\b(?:(?:ba|z|k|da)?sh|python[0-9.]*|perl|ruby|node|eval)\b")
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+def strip_heredoc_bodies(text):
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        out.append(lines[i])
+        m = HEREDOC.search(lines[i])
+        if m and not INTERP.search(lines[i]):
+            delim = m.group(2)
+            i += 1
+            while i < len(lines) and lines[i].strip() != delim:
+                i += 1                       # drop the body
+            if i < len(lines):
+                out.append(lines[i])         # keep the closing delimiter
+        i += 1
+    return "\n".join(out)
+
+cmd = strip_heredoc_bodies(cmd)
 
 src = os.environ.get("CLASSIFIER_PATH", "")
 try:

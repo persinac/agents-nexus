@@ -53,6 +53,22 @@ MUST_BLOCK = [
     'git push origin --delete feature/x',
     # buried in a compound command -- the denylist matches the whole string
     'cd /tmp && echo ok && kubectl delete ns staging',
+    # THE INTERPRETER EXCEPTION. A heredoc feeding an interpreter really is executed,
+    # so its body stays in scope. Without this, stripping bodies would be a one-line
+    # evasion hole -- which is why an earlier version of this hook refused to strip at
+    # all. block-credential-dump.sh had already solved it this way.
+    "bash <<'EOF'\nkubectl delete ns prod\nEOF",
+    "python3 <<'PY'\nimport os; os.system('kubectl delete ns prod')\nPY",
+    'sh <<EOF\nterraform destroy -auto-approve\nEOF',
+]
+
+# Prose that merely MENTIONS a destructive command. These cost ~6 false blocks in one
+# session (2026-08-19) -- a `gh pr create --body` whose PR description named a command,
+# and a heredoc feeding documentation text. Fixed by strip_heredoc_bodies().
+MUST_ALLOW_PROSE = [
+    "git commit -F - <<'EOF'\ndocs: explain why kubectl delete is guarded\n\nThe guard refuses a cluster delete; see the runbook.\nEOF",
+    "cat > notes.md <<'DOC'\nRun a cluster delete only via the console.\nTo drop a table, ask an admin.\nDOC",
+    "gh pr create --title x --body \"$(cat <<'BODY'\nThis PR documents why terraform destroy is blocked.\nBODY\n)\"",
 ]
 
 # Must pass through (exit 0). A failure here is the guard interrupting ordinary work,
@@ -94,6 +110,10 @@ def main():
         rc, err = run(c)
         if rc != 0:
             fails.append((f"expected ALLOW (0), got {rc}", c))
+    for c in MUST_ALLOW_PROSE:
+        rc, err = run(c)
+        if rc != 0:
+            fails.append((f"prose/heredoc mention should ALLOW, got {rc}", c))
 
     # A non-Bash tool must never be touched.
     p = subprocess.run([HOOK], text=True, capture_output=True,
@@ -102,14 +122,15 @@ def main():
     if p.returncode != 0:
         fails.append((f"non-Bash tool should pass through, got {p.returncode}", "Read"))
 
-    total = len(MUST_BLOCK) + len(MUST_ALLOW) + 1
+    total = len(MUST_BLOCK) + len(MUST_ALLOW) + len(MUST_ALLOW_PROSE) + 1
     if fails:
         print(f"FAIL - {len(fails)} of {total}")
         for why, c in fails:
             print(f"  {why}: {c!r}")
         return 1
     print(f"PASS - {total}/{total} "
-          f"({len(MUST_BLOCK)} blocked, {len(MUST_ALLOW)} allowed, 1 pass-through)")
+          f"({len(MUST_BLOCK)} blocked, {len(MUST_ALLOW)} allowed, "
+          f"{len(MUST_ALLOW_PROSE)} prose-mention, 1 pass-through)")
     return 0
 
 
