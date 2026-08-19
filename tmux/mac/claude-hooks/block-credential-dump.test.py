@@ -53,6 +53,18 @@ MUST_BLOCK = [
     # --- heredoc bodies are stripped as data, but an INTERPRETER body still executes ---
     "bash <<'EOF'\ngit remote -v\nEOF",
     "sh <<'EOF'\ncat talos-config/kubeconfig\nEOF",
+    # --- an unrestricted interpreter reads a file as completely as cat (2026-08-19) ---
+    # A live NATS admin credential reached a durable transcript through the FIRST case
+    # below. The CRED half matched (`\.env\b` hits ".env.example"); the BROAD half did
+    # not, because no interpreter was listed there -- so both halves passed and the
+    # command sailed through. `python3 -c` was ITEM 4 on this hook's own "Do this
+    # instead" list at the time, so the guard recommended the tool that defeated it.
+    "python3 -c \"print(open('ui-integration-tests/.env.example').read())\"",
+    "python3 -c \"[print(l) for l in open('.env').read().splitlines()]\"",
+    "python3 -c \"import pathlib; print(pathlib.Path('.env.example').read_text())\"",
+    "node -e \"console.log(require('fs').readFileSync('.env','utf8'))\"",
+    "ruby -e 'puts File.read(\".env\")'",
+    "python3 -c \"print(open('talos-config/controlplane.yaml').read())\"",
 ]
 
 MUST_ALLOW = [
@@ -92,6 +104,17 @@ MUST_ALLOW = [
     "cd ~/projects/scratch-env",
     "python3 -m venv .venv",
     "du -sh /var/lib/my.env",
+    # --- the interpreter rule needs BOTH halves: an interpreter AND a read primitive ---
+    # An interpreter that reads nothing, or reads a non-credential path, is ordinary work.
+    # Over-blocking every `python3 -c` near the word .env would make the guard unusable.
+    "python3 -c \"print(1 + 1)\"",
+    "python3 -c \"import os; print(os.path.exists('.env'))\"",   # asserts, never reads
+    "python3 -c \"print(open('README.md').read())\"",            # read, not a cred path
+    "node -e \"console.log(process.argv)\"",
+    # --- the replacement advice must itself be allowed, or the guard contradicts itself ---
+    "grep -oE '^[A-Z_]+=' .env.example",
+    "grep -c NATS_ADMIN_PASSWORD .env.example",
+    "sha256sum .env.example | cut -c1-16",
 ]
 
 # Verdict alone is not enough: a block attributed to the wrong rule sends the reader to

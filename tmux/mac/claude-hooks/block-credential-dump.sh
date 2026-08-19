@@ -98,6 +98,32 @@ BROAD = [
     (r"\bgrep\b[^|;&]*\s-[A-Za-z]*[ABC]\s*\d", "grep with -A/-B/-C context"),
     (r"\bsed\s+-n[^|;&]*p\b", "sed -n p"),
     (r"\bawk\b[^|;&]*print\s*\$0", "awk print $0"),
+    # An unrestricted interpreter dumps a file as completely as `cat`.
+    #
+    # WHY THIS EXISTS (2026-08-19): a live NATS admin credential was printed into a
+    # durable transcript by `python3 -c` doing open().read().splitlines() over a
+    # `.env.example`. The CRED half matched fine (`\.env\b` hits ".env.example"); this
+    # BROAD half did not, because no interpreter was listed here. Both halves have to
+    # fire, so the command sailed through -- the same two-correct-looking-checks shape
+    # as the `git remote -v` incident below.
+    #
+    # Worse: `python3 -c` was ITEM 4 ON THIS HOOK'S OWN "Do this instead" list. The
+    # guard recommended, as the safe alternative, the exact tool that defeated it. That
+    # wording assumed targeted field extraction but nothing enforced it, and the
+    # operator was following the printed advice. The advice below has been rewritten.
+    #
+    # Requires a READ PRIMITIVE, not merely an interpreter: `python3 -c "print(1)"`
+    # sitting next to an unrelated .env mention is not a dump. Anything that actually
+    # opens the file is, including the "print only the key NAMES" shape -- so that shape
+    # is no longer advertised; use `grep -oE '^[A-Z_]+=' FILE`, which never reads a value.
+    # NOT bounded by [^|;&] like the rules above: inline interpreter code legitimately
+    # contains `;` (`python3 -c "import pathlib; print(...read_text())"`), and that
+    # segment guard made the rule miss exactly that shape on the first cut. The pair
+    # (interpreter, read primitive) anywhere in one command is the signal; this guard
+    # fails closed, so the looser span is the correct trade.
+    (r"\b(?:python[0-9.]*|perl|ruby|node|deno|bun)\b[\s\S]*"
+     r"(?:open\s*\(|read_text\s*\(|readFileSync|read_file|File\.read|IO\.read|slurp|fileinput)",
+     "interpreter reading a file (open/read) -- dumps as completely as cat"),
 ]
 
 # Self-dumping commands: the credential is IMPLICIT. No path is ever typed and no
@@ -165,7 +191,12 @@ sys.stderr.write(
     "  grep -c PATTERN FILE                 # does it exist / how many\n"
     "  grep -oE 'name:\\s*\\w+' FILE          # extract ONE field, no context\n"
     "  sha256sum FILE | cut -c1-16          # compare without disclosing\n"
-    "  python3 -c \"...\"                     # parse one key, print its NAME not its value\n\n"
+    "  grep -oE '^[A-Z_]+=' FILE            # key NAMES only -- never reads a value\n\n"
+    "  NOT `python3 -c` / `node -e` on a credential file. That was advertised here\n"
+    "  until 2026-08-19, when an interpreter reading a .env printed a live credential\n"
+    "  into a transcript. An unrestricted interpreter dumps a file exactly as\n"
+    "  completely as cat; the advice assumed targeted extraction and nothing enforced\n"
+    "  it. Use the greps above -- they cannot return a value by construction.\n\n"
     "If you genuinely must see raw content, do it in a shell the user controls\n"
     "(prefix the command with ! in the prompt) so it never enters the transcript.\n"
 )
