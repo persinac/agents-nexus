@@ -111,6 +111,14 @@ MUST_ALLOW = [
     "python3 -c \"import os; print(os.path.exists('.env'))\"",   # asserts, never reads
     "python3 -c \"print(open('README.md').read())\"",            # read, not a cred path
     "node -e \"console.log(process.argv)\"",
+    # --- PROSE that discusses the guarded constructs (2026-08-19) ---
+    # The first cut of the interpreter rule used an unbounded [\s\S]* span and fired on
+    # a plain status message that merely mentioned python and open()/read_text near a
+    # .env -- it blocked the very message reporting the fix. Requiring the -c/-e
+    # inline-code flag is what separates "a command that reads a file" from "a sentence
+    # about commands that read files".
+    "echo 'the guard now treats python and node readFileSync on .env as broad readers'",
+    "git commit -F - <<'EOF'\ndocs: note that an interpreter open() on .env is guarded now\nEOF",
     # --- the replacement advice must itself be allowed, or the guard contradicts itself ---
     "grep -oE '^[A-Z_]+=' .env.example",
     "grep -c NATS_ADMIN_PASSWORD .env.example",
