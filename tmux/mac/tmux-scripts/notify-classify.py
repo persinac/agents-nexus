@@ -13,13 +13,24 @@ Output contract (so the hook needs no JSON parsing in bash):
               ({name,pane,kind,category,summary}) ready to POST.
 Any error -> exit 10 with a deterministic fallback summary (fail safe to "ask").
 
-Policy: local reads (Read/Glob/Grep/LS/NotebookRead) -> read (no LLM, fast).
-Bash -> hard denylist (rm/sudo/dd/redirect/pipe-to-shell/--force/...) forces modify,
-otherwise a deterministic read-only allowlist (git/kubectl/helm/terraform/docker/
-gh/glab/aws, curl/wget/sed/find/mv with care), otherwise an Anthropic Haiku call
-(litellm) decides + summarizes. Writes / MCP / web egress / unknown -> modify (LLM
-summarizes, decision forced modify). Compound shell commands are "read" only if
-every part is read-only.
+Policy (rewritten 2026-08-19 — the default is now ALLOW, see _PERMISSIVE):
+Local reads (Read/Glob/Grep/LS/NotebookRead) -> read (no LLM, fast).
+Bash -> TWO hard denylists first, and nothing downstream can override either:
+  _DENY        rm/sudo/dd/pipe-to-shell/--force/...  (unchanged)
+  _DESTRUCTIVE deleting production data (DROP/DELETE FROM/TRUNCATE/FLUSHALL/...),
+               deleting k8s or cloud resources (kubectl delete|drain|--prune, helm
+               uninstall, terraform destroy|apply, aws *delete-*/terminate-*), and
+               `doppler secrets` (secret disclosure, per ~/.claude/CLAUDE.md).
+Anything past those is auto-approved: first via the deterministic read allowlist,
+then — because Alex's bar is "as long as we're not deleting production data from a
+db, or deleting something from k8s, most of it is fine" — via the permissive tier,
+with no model call. Local file edits (Edit/Write/MultiEdit/NotebookEdit) are likewise
+permitted unless the path looks credential-ish.
+MCP / web egress / unknown still go to the LLM: their blast radius is not knowable
+from here and _DESTRUCTIVE only understands shell text.
+Compound shell commands are "read" only if every part is read-only; the denylists
+match against the whole command string, so a destructive part anywhere blocks.
+Set CLASSIFY_STRICT=1 to revert to allowlist-only behaviour with no code change.
 
 Loosened 2026-08-14 per Alex — more confident given block-credential-dump.sh as a
 separate, independent layer for the credential-exposure threat specifically. That
@@ -59,8 +70,16 @@ from collections import deque
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread"}
 
+# Command position: start of string, after a separator, or after whitespace. Used to
+# stop `rm`/`dd`/`truncate` matching as bare words (2026-08-19). `\brm\b` fired on the
+# `--rm` in `docker run --rm` — 98 weighted false positives over 30 days, a third of
+# everything the rm clause caught — because `-` is a non-word character, so \b matches
+# right inside the flag. `docker run --rm` deletes a finished container and nothing else.
+_CMDPOS = r"(?:^|[;&|(`]\s*|\s)"
+
 _DENY = re.compile(
-    r"(\brm\b|\brmdir\b|\bsudo\b|\bdd\b|\bmkfs|\bshutdown\b|\breboot\b|\bkillall\b"
+    rf"({_CMDPOS}rm\s|{_CMDPOS}rmdir\s|\bsudo\b|{_CMDPOS}dd\s|\bmkfs"
+    r"|\bshutdown\b|\breboot\b|\bkillall\b"
     # /dev/null explicitly excluded (2026-08-17): a raw-device write (dd/cat > /dev/sda)
     # is what this guards against; >/dev/null and 2>/dev/null are the standard
     # discard idiom and were being hard-denied by this alone, unconditionally
@@ -68,12 +87,72 @@ _DENY = re.compile(
     # before the LLM result is ever consulted).
     r"|:\(\)\s*\{|>\s*/dev/(?!null\b)"
     # Force pushes always hard-deny, checked before the git-push allowlisting below
-    # ever runs. --force/--force-with-lease/--hard catch the long forms anywhere in
-    # the command; the git-push-scoped clause closes the short-form `-f` gap without
-    # blocking every unrelated `-f` flag (grep -f, curl -f, ...) fleet-wide.
-    r"|\bgit\s+push\b[^|;&]*-f\b|--force\b|--hard\b"
+    # ever runs. SCOPED TO GIT as of 2026-08-19: the previous bare `--force\b|--hard\b`
+    # matched anywhere in any command, so `npm install --force` (8 weighted hits in a
+    # 30-day sample) was hard-denied as if it were a force push. Every other
+    # destructive --force use is covered by _DESTRUCTIVE (docker rm, kubectl delete,
+    # terraform destroy), so nothing is lost by narrowing this to git.
+    r"|\bgit\s+push\b[^|;&]{0,200}-f\b|\bgit\b[^|;&]{0,200}(--force|--hard)\b"
     r"|\|\s*(sh|bash|zsh)\b|\b(curl|wget)\b[^|]*\|\s*(sh|bash)"
-    r"|\bnpm\s+publish\b|\btruncate\b)",
+    rf"|\bnpm\s+publish\b|{_CMDPOS}truncate\s)",
+    re.I,
+)
+
+# --- Permissive mode (added 2026-08-19, DEFAULT ON per Alex) ----------------
+# Alex's stated bar, verbatim: "As long as we're not deleting production data from a
+# db, or deleting something from k8s... most of it is fine."
+#
+# That INVERTS this module's model. It was built as "allowlist reads, ask about
+# everything else", which capped auto-approval at 49.3% of real traffic even after the
+# allowlist work — the residue is dominated by python3 (2083), write redirects (1805),
+# git add/commit (1675) and kubectl (1038), none of which an allowlist can ever vouch
+# for. Under the new bar those should simply run.
+#
+# The load-bearing consequence, and the reason _DESTRUCTIVE below exists: today
+# `kubectl delete` and `DELETE FROM` are blocked only INCIDENTALLY, because everything
+# unrecognized falls through to a human. Flip the default to allow and that incidental
+# protection disappears silently. So the two categories Alex named have to become
+# EXPLICIT hard denials — the permissive tier is only as safe as this regex.
+#
+# CLASSIFY_STRICT=1 reverts to the old allowlist-only behaviour with no code change.
+_PERMISSIVE = os.environ.get("CLASSIFY_STRICT", "").lower() not in ("1", "true", "yes")
+
+_DESTRUCTIVE = re.compile(
+    # --- production data: the first thing Alex named ---
+    r"\bdrop\s+(table|database|schema|index|view|column|constraint|owned)\b"
+    r"|\bdelete\s+from\b"
+    r"|\btruncate\s+table\b"
+    r"|\balter\s+table\b[^;]{0,200}\bdrop\b"
+    r"|\bdropdb\b"
+    r"|\.drop\s*\(|\bdeleteMany\s*\(|\bdeleteOne\s*\(|\bremove\s*\(\s*\{\s*\}\s*\)"
+    r"|\bflushall\b|\bflushdb\b"
+    r"|\balembic\s+downgrade\b|\bdb:drop\b|\bdb:reset\b|\bmigrate\s+(down|reset|fresh)\b"
+    # Django's `migrate <app> zero` reverses every migration for that app, dropping
+    # its tables. It reads like an ordinary migrate and is the easiest one to miss.
+    r"|\bmigrate\b[^|;&]{0,80}\bzero\b"
+    # --- kubernetes: the second thing Alex named ---
+    # [^|;&]* keeps each clause inside its own segment, so `kubectl get x | grep delete`
+    # is not caught by the word `delete` appearing downstream of a pipe.
+    r"|\bkubectl\b[^|;&]{0,200}\bdelete\b"
+    r"|\bkubectl\b[^|;&]{0,200}\bdrain\b"
+    r"|\bkubectl\b[^|;&]{0,200}--prune\b"
+    r"|\bkubectl\b[^|;&]{0,200}\bscale\b[^|;&]{0,200}--replicas[=\s]*0\b"
+    r"|\bhelm\s+(uninstall|delete|rollback)\b"
+    # --- infrastructure that deletes cloud resources ---
+    r"|\bterraform\s+(destroy|apply)\b|\bpulumi\s+(destroy|up)\b"
+    r"|\baws\b[^|;&]{0,200}\s(delete|terminate|remove)-[a-z-]+"
+    r"|\bgcloud\b[^|;&]{0,200}\bdelete\b|\baz\b[^|;&]{0,200}\bdelete\b"
+    r"|\bdocker\s+(rm|rmi)\b|\bdocker\s+\w+\s+(rm|prune)\b|\bsystem\s+prune\b"
+    # --- filesystem destruction that is NOT spelled `rm`, so _DENY misses it ---
+    r"|\brmtree\b|\bos\.remove\b|\bos\.unlink\b|\bfs\.rmSync\b|\bunlinkSync\b"
+    r"|\bshred\b|\bwipefs\b"
+    # --- deleting a REMOTE git branch (`git push --delete` / `git push origin :x`) ---
+    r"|\bgit\s+push\b[^|;&]{0,200}(--delete\b|\s:\S)"
+    # --- secret DISCLOSURE into a durable transcript ---
+    # NOT one of Alex's two categories, kept on his own standing host rule
+    # (~/.claude/CLAUDE.md, written after a real leak): `doppler secrets` prints values
+    # that cannot be un-printed. `doppler run` and `doppler secrets set` are unaffected.
+    r"|\bdoppler\s+secrets\b(?!\s+set\b)",
     re.I,
 )
 
@@ -963,17 +1042,34 @@ def classify(name, inp):
     # 1. Clearly read-only local tools -> read, no LLM.
     if short in READ_TOOLS:
         return "read", "read-only", det
-    # 2. Bash: hard denylist (modify) -> deterministic read allowlist (auto) -> LLM.
+    # 2. Bash: hard denylists (modify) -> read allowlist (auto) -> permissive (auto)
+    #    -> LLM. The two denylists are checked together and FIRST; nothing below can
+    #    override them, which is what makes the permissive tier safe to enable.
     if short in ("bash", "shell"):
         cmd = (inp.get("command") or "").strip()
-        safe = bool(cmd) and not _DENY.search(cmd)
+        safe = bool(cmd) and not _DENY.search(cmd) and not _DESTRUCTIVE.search(cmd)
         if safe and _deterministic_read(cmd):
             return "read", "read-only inspection", det
+        if safe and _PERMISSIVE:
+            # Not provably read-only, but not destructive either. Under Alex's bar this
+            # is the large middle — python3, file writes, git add/commit, kubectl get
+            # variants the allowlist can't parse — and it runs without a model call, so
+            # it is also the fastest path in the module.
+            return "read", "permitted change", det
         llm = _llm(name, inp)
         if safe and llm and llm[0] == "read":
             return "read", llm[1], (llm[2] or det)
         return "modify", (llm[1] if llm else "shell command"), (llm[2] if llm and llm[2] else det)
-    # 3. Writes / web egress / MCP / unknown -> modify (LLM summarizes).
+    # 3. Local file edits: permitted under the same bar, EXCEPT on a credential-ish
+    #    path (same list `mv` is gated on). Editing files is the substance of the work;
+    #    every such prompt was reaching a human for no decision anyone wanted to make.
+    if _PERMISSIVE and short in ("edit", "multiedit", "write", "notebookedit"):
+        path = str(inp.get("file_path") or inp.get("notebook_path") or "")
+        if path and not _MV_SENSITIVE.search(path):
+            return "read", "file edit", det
+    # 4. Web egress / MCP / unknown -> modify (LLM summarizes). Deliberately NOT
+    #    covered by permissive mode: an MCP tool's blast radius is unknowable from
+    #    here, and _DESTRUCTIVE only understands shell text.
     llm = _llm(name, inp)
     return "modify", (llm[1] if llm else "needs review"), (llm[2] if llm and llm[2] else det)
 
