@@ -52,6 +52,15 @@
             "command": "$HOME/.claude/hooks/block-credential-dump.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/block-destructive.sh"
+          }
+        ]
       }
     ],
     "Notification": [
