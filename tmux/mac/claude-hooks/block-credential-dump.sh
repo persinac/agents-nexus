@@ -84,16 +84,24 @@ CRED = [
 ]
 
 # Readers that emit unbounded / unpreviewed output.
+# Command position: start of string, after a separator, or after whitespace -- but NOT
+# immediately after a `-`. Added 2026-08-19: `\bhead\s` matched the `--head` FLAG of
+# `gh pr create --head <branch>`, and with any `.env` in the PR body supplying the CRED
+# half the guard refused an ordinary PR. `-` is a non-word character, so \b matches
+# right inside a flag. Same defect class as `\brm\b` firing on `docker run --rm`, which
+# was fixed in notify-classify.py's _DENY the same day.
+_CP = r"(?:^|[;&|(`]\s*|(?<![-\w]))"
+
 BROAD = [
-    (r"\bcat\s", "cat"),
-    (r"\bbat\s", "bat"),
-    (r"\bhead\s", "head"),
-    (r"\btail\s", "tail"),
-    (r"\bless\s", "less"),
-    (r"\bmore\s", "more"),
-    (r"\bstrings\s", "strings"),
-    (r"\bxxd\s", "xxd"),
-    (r"\bod\s", "od"),
+    (_CP + r"cat\s", "cat"),
+    (_CP + r"bat\s", "bat"),
+    (_CP + r"head\s", "head"),
+    (_CP + r"tail\s", "tail"),
+    (_CP + r"less\s", "less"),
+    (_CP + r"more\s", "more"),
+    (_CP + r"strings\s", "strings"),
+    (_CP + r"xxd\s", "xxd"),
+    (_CP + r"od\s", "od"),
     (r"\bbase64\s+-d", "base64 -d"),
     (r"\bgrep\b[^|;&]*\s-[A-Za-z]*[ABC]\s*\d", "grep with -A/-B/-C context"),
     (r"\bsed\s+-n[^|;&]*p\b", "sed -n p"),
