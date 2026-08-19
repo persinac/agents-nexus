@@ -43,6 +43,49 @@ fi
 _FNM_BIN="$HOME/.local/share/fnm/aliases/default/bin"
 [ -d "$_FNM_BIN" ] && case ":$PATH:" in *":$_FNM_BIN:"*) ;; *) export PATH="$_FNM_BIN:$PATH" ;; esac
 
+# Claude Code self-updates in TWO stages: npm unpacks package.json + install.cjs, then
+# install.cjs downloads the ~330MB platform binary into bin/claude.exe. Between those two
+# steps the `claude` symlink sitting on PATH DANGLES — `command -v claude` prints nothing
+# and exits 1 (indistinguishable from "not installed"), so the `exec claude` at the bottom
+# of this script dies instantly and takes the pane with it BEFORE it can render anything.
+# The user sees a keybind that "does nothing"; the error goes nowhere. Measured window:
+# ~3m20s on 2026-08-19 (v2.1.235). An already-running agent survives it by holding the old
+# inode open, which makes the fleet look half-broken rather than mid-update.
+#
+# The install self-heals, so wait it out rather than failing. Structural check only (no
+# `claude --version` probe) — this runs on EVERY spawn and the happy path must stay free.
+_claude_ready() {
+  _cr_path="$(command -v claude 2>/dev/null)" || return 1
+  [ -n "$_cr_path" ] && [ -x "$_cr_path" ]
+}
+if ! _claude_ready; then
+  _cw_waited=0
+  _cw_limit="${CLAUDE_WAIT_SECS:-300}"
+  echo "open-claude: 'claude' not resolvable yet — likely a Claude Code self-update in flight; waiting up to ${_cw_limit}s" >&2
+  while ! _claude_ready && [ "$_cw_waited" -lt "$_cw_limit" ]; do
+    sleep 2
+    _cw_waited=$((_cw_waited + 2))
+    [ $((_cw_waited % 30)) -eq 0 ] && echo "open-claude: still waiting for 'claude' (${_cw_waited}s/${_cw_limit}s)" >&2
+  done
+  if _claude_ready; then
+    echo "open-claude: 'claude' resolved after ${_cw_waited}s — continuing" >&2
+  else
+    # Hold the pane open. Exiting here would reproduce the exact silent-vanish this guards.
+    echo "open-claude: FATAL — 'claude' still not executable after ${_cw_limit}s; not launching." >&2
+    echo "  PATH=$PATH" >&2
+    echo "  Check:  ls -la \"$_FNM_BIN/claude\"" >&2
+    echo "  A dangling symlink there means an update died midway. Repair with:" >&2
+    echo "    npm i -g @anthropic-ai/claude-code" >&2
+    if [ -t 0 ]; then
+      echo "  Press Enter to close this pane." >&2
+      read -r _cw_ack || true
+    else
+      sleep 60
+    fi
+    exit 127
+  fi
+fi
+
 # ANTHROPIC_BASE_URL is decided by the env layer (env.defaults.sh probes the local
 # LiteLLM gateway and sets it only when reachable; env.sh may override). Do NOT force
 # a localhost fallback here — on a box with no gateway that pointed every agent at a
