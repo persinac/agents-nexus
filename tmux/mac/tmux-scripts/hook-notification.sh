@@ -136,6 +136,18 @@ if [ "$NTYPE" = "permission_prompt" ] && [ -x "$CLASSIFY_PY" ]; then
     echo "$NOW auto-approve $TMUX_PANE" >> "$HOME/.tmux/auto-approve.log" 2>/dev/null
     exit 0
   fi
+  if [ "$RC" -eq 12 ]; then
+    # Repeat notification for the SAME still-pending call. Claude Code re-emits the
+    # notification every ~2 min while a prompt waits, so one unanswered prompt was
+    # producing a bubble and a Slack card every two minutes (18 of them for a single
+    # Confluence read on 2026-08-19). Keep the pane flagged — that signal is what a
+    # supervisor reads, and it is idempotent — and drop the duplicate alerting.
+    # notify-classify re-alerts anyway after NOTIFY_REALERT_SECS, so nothing is silenced
+    # permanently.
+    "$HOME/.tmux/substrate.sh" report-state needs-input "$TMUX_PANE" "$NTYPE" "$NOW" 2>/dev/null
+    echo "$NOW repeat-suppressed $TMUX_PANE" >> "$HOME/.tmux/notify-repeat.log" 2>/dev/null
+    exit 0
+  fi
   if [ "$RC" -eq 11 ]; then
     # Clear the prompt so the question renders without a click, then fall through to
     # report-state needs-input + desktop + Slack. NO report-state working here and no
@@ -148,6 +160,23 @@ fi
 
 # --- needs a human: flag + desktop notify + surface to Slack ---
 "$HOME/.tmux/substrate.sh" report-state needs-input "$TMUX_PANE" "$NTYPE" "$NOW" 2>/dev/null
+
+# Ground truth for scripts/classify-audit.py: one line per prompt that actually reached a
+# human, carrying the tool and the classifier's verdict. Added 2026-08-19 because the only
+# previous way to measure this was joining notification-debug.log against auto-approve.log
+# on (pane, time) and then re-deriving the pending tool from the transcript — which
+# mislabelled ~8% of rows (a slow classifier pushes its approval outside any sane join
+# window, and a time-anchored transcript scan picks the wrong call when a prompt waits).
+# Bounded like the debug log; this one is ~200 bytes a line and only written when a human
+# is owed, so it grows far slower.
+ASKED_LOG="$HOME/.tmux/notify-asked.log"
+if [ "$(wc -c < "$ASKED_LOG" 2>/dev/null || echo 0)" -gt 2097152 ]; then
+  mv -f "$ASKED_LOG" "$ASKED_LOG.1" 2>/dev/null
+fi
+ASKED_BODY="$BODY"
+# Empty for an elicitation_dialog, or when the classifier venv is missing.
+[ -n "$ASKED_BODY" ] || ASKED_BODY='{"category":"unclassified","summary":"no classifier"}'
+printf '%s %s %s %s\n' "$NOW" "$TMUX_PANE" "$NTYPE" "$ASKED_BODY" >> "$ASKED_LOG" 2>/dev/null
 
 # Desktop notification — OS-guarded so this hook is the ONE shared copy (no per-OS override):
 #   macOS  → osascript bubble + sound

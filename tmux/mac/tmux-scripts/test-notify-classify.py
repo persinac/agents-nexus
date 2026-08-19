@@ -21,7 +21,9 @@ to it showing what it deliberately does NOT cover.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import subprocess
 import sys
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notify-classify.py")
@@ -427,6 +429,100 @@ EXPECT_BLOCKED += [
     'truncate -s 0 important.log',
 ]
 
+# --- the git force clause, narrowed 2026-08-19 from `git` to the destructive
+# subcommands. `git worktree remove --force` deletes a scratch worktree directory; it is
+# routine fleet cleanup (rebase sweeps, conductor missions) and was hard-denied as if it
+# were a force push. Both directions asserted, since the narrowing is the risky edit.
+EXPECT_PERMITTED += [
+    'git worktree remove --force /tmp/wt-x',
+    'for w in a b c; do git worktree remove --force "/tmp/$w"; done',
+    'git worktree prune',
+]
+EXPECT_BLOCKED += [
+    'git push --force-with-lease origin feature/x',
+    'git push -f origin main',
+    'git reset --hard origin/main',
+    'git clean -fd',
+    'git checkout --force main',
+    'git checkout -f .',
+]
+
+
+# ---------------------------------------------------------------------------
+# Tool-level: MCP, decided from the tool NAME (2026-08-19). See _mcp_is_read.
+#
+# Asserted deterministically, never through the model. The bug this replaces was that
+# every MCP call went to the LLM and the LLM answered "modify" for all of them — reads
+# included — because _PROMPT only ever described shell commands. So the read direction
+# here is not a convenience: it is the whole fix.
+#
+# Each read case is paired with the write case from the same server, because the two are
+# usually one word apart (getConfluencePage / updateConfluencePage) and a rule loose
+# enough to catch the read must still refuse the write.
+# ---------------------------------------------------------------------------
+EXPECT_MCP_READ = [
+    # measured reaching a human over 24h on 2026-08-19
+    ("mcp__atlassian__getConfluencePage", {"pageId": "1"}),
+    ("mcp__atlassian__searchConfluenceUsingCql", {"cql": "type=page"}),
+    ("mcp__atlassian__getJiraProjectIssueTypesMetadata", {"projectIdOrKey": "FC"}),
+    ("mcp__plugin_slack_slack__slack_search_users", {"query": "ezra"}),
+    ("mcp__plugin_slack_slack__slack_search_public", {"query": "in:#releases"}),
+    ("mcp__plugin_slack_slack__slack_read_thread", {"channel": "C1", "ts": "1"}),
+    ("mcp__plugin_slack_slack__slack_read_user_profile", {"user": "U1"}),
+    ("mcp__plugin_slack_slack__slack_get_reactions", {"channel": "C1"}),
+    ("mcp__datadog__aggregate_rum_events", {"query": "x"}),
+    ("mcp__datadog__search_datadog_monitors", {"query": "x"}),
+    ("mcp__datadog__list_datadog_skills", {}),
+    ("mcp__bifrost__grafana-list_oncall_schedules", {}),
+    # a name with NO verb is decided by the declared HTTP method
+    ("mcp__bifrost__grafana-grafana_api_request", {"method": "GET", "path": "/api/x"}),
+    ("mcp__atlassian__fetch", {"id": "1"}),
+    # "link" is a write-ish word sitting in the middle of a read name. First-verb-wins
+    # keeps these clear; a bare word search over the name would have vetoed both.
+    ("mcp__atlassian__getIssueLinkTypes", {}),
+    ("mcp__atlassian__getJiraIssueRemoteIssueLinks", {"issueIdOrKey": "FC-1"}),
+    ("mcp__agent-memory__search_similar", {"query": "x", "project": "p"}),
+    ("mcp__agent-memory__query_entity", {"name": "x", "project": "p"}),
+    ("mcp__agent-memory__recent_events", {"project": "p"}),
+    ("mcp__excalidraw__read_checkpoint", {}),
+]
+
+# Must keep asking. A miss here posts, edits, or deletes in an external system with no
+# human in the loop — the one direction of this change that is not recoverable.
+EXPECT_MCP_ASK = [
+    ("mcp__atlassian__updateConfluencePage", {"pageId": "1", "body": "x"}),
+    ("mcp__atlassian__createConfluencePage", {"title": "x"}),
+    ("mcp__atlassian__transitionJiraIssue", {"issueIdOrKey": "FC-1"}),
+    ("mcp__atlassian__addCommentToJiraIssue", {"issueIdOrKey": "FC-1"}),
+    ("mcp__atlassian__editJiraIssue", {"issueIdOrKey": "FC-1"}),
+    ("mcp__atlassian__createIssueLink", {}),
+    ("mcp__plugin_slack_slack__slack_send_message", {"channel": "C1", "text": "hi"}),
+    ("mcp__plugin_slack_slack__slack_send_message_draft", {"channel": "C1"}),
+    ("mcp__plugin_slack_slack__slack_add_reaction", {"channel": "C1"}),
+    ("mcp__plugin_slack_slack__slack_update_canvas", {"canvas_id": "1"}),
+    ("mcp__agent-memory__create_note", {"content": "x", "project": "p"}),
+    # log_event WRITES an event. "log" must not read as a read verb the way `kubectl
+    # logs` does on the shell side.
+    ("mcp__agent-memory__log_event", {"project": "p"}),
+    ("mcp__excalidraw__save_checkpoint", {}),
+    ("mcp__bifrost__grafana-update_dashboard", {}),
+    ("mcp__bifrost__grafana-create_annotation", {}),
+    # an explicit write method overrides a read-looking name, in both shapes
+    ("mcp__bifrost__grafana-grafana_api_request", {"method": "DELETE", "path": "/api/x"}),
+    ("mcp__atlassian__fetch", {"id": "1", "method": "POST"}),
+    # get_or_create is why a hard-veto set exists at all: first-verb-wins alone reads
+    # this as a plain `get`.
+    ("mcp__example__get_or_create_page", {}),
+    # no verb and no declared method — unknown, so it must NOT be auto-approved
+    ("mcp__atlassian__atlassianUserInfo", {}),
+]
+
+# Context-loading tools that change nothing anywhere. See INERT_TOOLS.
+EXPECT_INERT = [
+    ("ToolSearch", {"query": "select:Read", "max_results": 5}),
+    ("Skill", {"skill": "mr-brief"}),
+]
+
 
 # ---------------------------------------------------------------------------
 # Tool-level: the SURFACE outcome (exit 11) — clear the prompt, still flag the pane.
@@ -473,6 +569,141 @@ def _blocked(cmd):
     return bool(nc._DENY.search(cmd) or nc._DESTRUCTIVE.search(cmd))
 
 
+# ---------------------------------------------------------------------------
+# Repeat-notification suppression (exit 12, added 2026-08-19).
+#
+# The failure it prevents: one unanswered prompt re-notifies every ~2 min, so a single
+# Confluence read produced 18 desktop bubbles and 18 Slack cards on 2026-08-19.
+#
+# The failure it must NOT introduce: swallowing a genuine alert. Hence the last two
+# checks — a different pending call always alerts, and the same call alerts again once
+# the re-alert window passes. `_is_repeat` also fails open on any error, which the
+# unwritable-state-dir check covers.
+# ---------------------------------------------------------------------------
+REPEAT_CHECKS = ["first-alerts", "second-suppressed", "other-call-alerts",
+                 "realerts-after-window", "fails-open", "same-input-new-id-alerts"]
+
+
+def _check_repeat_suppression():
+    import tempfile
+    fails = []
+    call = ("mcp__atlassian__getConfluencePage", {"pageId": "1"}, "toolu_aaa")
+    other = ("mcp__atlassian__updateConfluencePage", {"pageId": "1"}, "toolu_bbb")
+    saved_dir, saved_env = nc._DEDUPE_DIR, dict(os.environ)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            nc._DEDUPE_DIR = os.path.join(tmp, "notify-dedupe")
+            os.environ["PANE"] = "w52:p6"
+            os.environ["WAIT_SINCE"] = "1000"
+            if nc._is_repeat(*call):
+                fails.append(("first notification must alert", "first-alerts"))
+            os.environ["WAIT_SINCE"] = "1120"          # +2 min, same pending call
+            if not nc._is_repeat(*call):
+                fails.append(("re-notification of the same call must be suppressed",
+                              "second-suppressed"))
+            os.environ["WAIT_SINCE"] = "1240"
+            if nc._is_repeat(*other):
+                fails.append(("a DIFFERENT pending call must always alert",
+                              "other-call-alerts"))
+            os.environ["WAIT_SINCE"] = str(1240 + nc._REALERT_SECS + 1)
+            if nc._is_repeat(*other):
+                fails.append(("must re-alert once the re-alert window passes",
+                              "realerts-after-window"))
+            # A retried write with IDENTICAL arguments is a new decision, not a repeat.
+            # Content-hashing would have silenced this one; the tool_use id is what
+            # distinguishes them.
+            os.environ["WAIT_SINCE"] = str(1240 + nc._REALERT_SECS + 60)
+            nc._is_repeat("mcp__plugin_slack_slack__slack_send_message",
+                          {"channel": "C1", "text": "hi"}, "toolu_ccc")
+            if nc._is_repeat("mcp__plugin_slack_slack__slack_send_message",
+                             {"channel": "C1", "text": "hi"}, "toolu_ddd"):
+                fails.append(("same arguments under a NEW tool_use id must alert",
+                              "same-input-new-id-alerts"))
+            # An unusable state dir must never swallow an alert.
+            nc._DEDUPE_DIR = "/dev/null/nope"
+            if nc._is_repeat(*call):
+                fails.append(("must fail OPEN when state is unwritable", "fails-open"))
+    finally:
+        nc._DEDUPE_DIR = saved_dir
+        os.environ.clear()
+        os.environ.update(saved_env)
+    return fails
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the exit-code contract hook-notification.sh depends on.
+#
+# Everything above tests classify(); this tests main(), which is what the hook actually
+# runs. The two can disagree — exits 11 and 12 exist ONLY in main() (classify() keeps a
+# two-value contract for the Agent SDK's can_use_tool gate), so an off-by-one here means
+# the hook answers a prompt it should have escalated, or bubbles one it should have
+# suppressed, with nothing in the unit tests noticing.
+#   0  auto-approve      10 needs a human      11 clear-then-surface      12 repeat
+# ---------------------------------------------------------------------------
+E2E_CASES = [
+    ("Read", {"file_path": "/tmp/x"}, 0, "local read auto-approves"),
+    ("Bash", {"command": "git status"}, 0, "read-only shell auto-approves"),
+    ("Bash", {"command": "rm -rf /data"}, 10, "denylisted shell escalates"),
+    ("mcp__atlassian__getConfluencePage", {"pageId": "1"}, 0, "MCP read auto-approves"),
+    ("mcp__atlassian__updateConfluencePage", {"pageId": "1"}, 10, "MCP write escalates"),
+    ("AskUserQuestion", ASKQ_INPUT, 11, "question clears then surfaces"),
+]
+
+
+def _write_transcript(path, name, inp, tool_id):
+    """A minimal transcript whose tail holds one pending tool_use, which is all
+    _last_tool_use reads."""
+    with open(path, "w") as fh:
+        fh.write(json.dumps({"timestamp": "2026-08-19T20:00:00.000Z",
+                             "message": {"role": "user", "content": "go"}}) + "\n")
+        fh.write(json.dumps({
+            "timestamp": "2026-08-19T20:00:01.000Z",
+            "message": {"role": "assistant",
+                        "content": [{"type": "tool_use", "id": tool_id,
+                                     "name": name, "input": inp}]},
+        }) + "\n")
+
+
+def _run_main(tmp, name, inp, pane="%e2e", tool_id="toolu_e2e", transcript="t.jsonl"):
+    """Invoke notify-classify.py the way hook-notification.sh does. Returns its exit code."""
+    tpath = os.path.join(tmp, transcript)
+    _write_transcript(tpath, name, inp, tool_id)
+    env = dict(os.environ)
+    env.update({"KIND": "permission_prompt", "PANE": pane, "AN": "test",
+                "WAIT_SINCE": "1000", "FB": "needs input",
+                "NOTIFY_DEDUPE_DIR": os.path.join(tmp, "dedupe"),
+                # No key -> _llm() returns None without a network call, so an unrecognized
+                # tool deterministically takes the fail-safe "modify" path.
+                "ANTHROPIC_API_KEY": ""})
+    payload = json.dumps({"transcript_path": tpath, "notification_type": "permission_prompt"})
+    proc = subprocess.run([sys.executable, SRC], input=payload, env=env,
+                          capture_output=True, text=True)
+    return proc.returncode
+
+
+def _check_e2e():
+    import tempfile
+    fails = []
+    for name, inp, want, why in E2E_CASES:
+        with tempfile.TemporaryDirectory() as tmp:
+            got = _run_main(tmp, name, inp)
+            if got != want:
+                fails.append((f"{why}: expected exit {want}, got {got}", name))
+    # The repeat path is stateful, so it needs runs that share one dedupe dir.
+    with tempfile.TemporaryDirectory() as tmp:
+        page = ("mcp__atlassian__updateConfluencePage", {"pageId": "1"})
+        first = _run_main(tmp, *page, tool_id="toolu_1")
+        second = _run_main(tmp, *page, tool_id="toolu_1")
+        third = _run_main(tmp, *page, tool_id="toolu_2")
+        if first != 10:
+            fails.append((f"first alert must be exit 10, got {first}", "repeat/first"))
+        if second != 12:
+            fails.append((f"re-notification must be exit 12, got {second}", "repeat/second"))
+        if third != 10:
+            fails.append((f"a new tool_use id must alert, got {third}", "repeat/new-id"))
+    return fails
+
+
 def main() -> int:
     fails = []
     for cmd in EXPECT_READ:
@@ -507,9 +738,32 @@ def main() -> int:
         if not nc._question_summary(bad):
             fails.append(("empty summary on malformed AskUserQuestion input", repr(bad)))
 
+    # --- MCP + inert tools. classify() falls through to the LLM for anything the name
+    # rule cannot vouch for, so stub the model out: this file asserts deterministic
+    # behaviour only, and a real call would make the ASK direction depend on the network.
+    nc._llm = lambda name, inp: None
+    for name, inp in EXPECT_MCP_READ:
+        if not nc._mcp_is_read(name, inp):
+            fails.append(("expected MCP read, name rule withheld", name))
+        elif nc.classify(name, inp)[0] != "read":
+            fails.append(("_mcp_is_read said read but classify() did not", name))
+    for name, inp in EXPECT_MCP_ASK:
+        if nc._mcp_is_read(name, inp):
+            fails.append(("MCP MUTATION — expected ask, name rule AUTO-APPROVED", name))
+        elif nc.classify(name, inp)[0] != "modify":
+            fails.append(("expected classify() 'modify' for MCP write", name))
+    for name, inp in EXPECT_INERT:
+        if nc.classify(name, inp)[0] != "read":
+            fails.append(("expected inert context-load to auto-approve", name))
+
+    fails += _check_repeat_suppression()
+    fails += _check_e2e()
+
     total = (len(EXPECT_READ) + len(EXPECT_WITHHELD)
              + len(EXPECT_BLOCKED) + len(EXPECT_PERMITTED)
-             + len(EXPECT_SURFACE) + len(EXPECT_NOT_SURFACE))
+             + len(EXPECT_SURFACE) + len(EXPECT_NOT_SURFACE)
+             + len(EXPECT_MCP_READ) + len(EXPECT_MCP_ASK) + len(EXPECT_INERT)
+             + len(REPEAT_CHECKS) + len(E2E_CASES) + 3)
     if fails:
         print(f"FAIL — {len(fails)} of {total}")
         for why, cmd in fails:
@@ -518,7 +772,9 @@ def main() -> int:
     print(f"PASS — {total}/{total} "
           f"({len(EXPECT_READ)} auto-approve, {len(EXPECT_WITHHELD)} withheld, "
           f"{len(EXPECT_BLOCKED)} hard-blocked, {len(EXPECT_PERMITTED)} permitted, "
-          f"{len(EXPECT_SURFACE)} surface, {len(EXPECT_NOT_SURFACE)} not-surface)")
+          f"{len(EXPECT_SURFACE)} surface, {len(EXPECT_NOT_SURFACE)} not-surface, "
+          f"{len(EXPECT_MCP_READ)} mcp-read, {len(EXPECT_MCP_ASK)} mcp-ask, "
+          f"{len(EXPECT_INERT)} inert, {len(REPEAT_CHECKS)} repeat)")
     return 0
 
 
