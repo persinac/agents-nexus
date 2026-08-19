@@ -184,9 +184,22 @@ export function buildSpawnCommand({ slug, seed, restoreCheckpoint, openClaude, p
   if (seed) parts.push(`SEED_PROMPT=${shQuote(seed)}`);
   if (restoreCheckpoint) parts.push(`RESTORE_CHECKPOINT=${shQuote(restoreCheckpoint)}`);
   // Permission posture for the spawned agent — open-claude.sh turns this into
-  // `claude --permission-mode <mode>` (acceptEdits = auto-approve file edits,
-  // bypassPermissions = auto-approve everything). Empty = leave unset (prompts).
-  if (permissionMode) parts.push(`CLAUDE_PERMISSION_MODE=${shQuote(permissionMode)}`);
+  // `claude --permission-mode <mode>` (acceptEdits = auto-approve file edits).
+  // Empty = leave unset (prompts).
+  //
+  // 'bypassPermissions' is translated to the FLAG rather than passed as a mode, because
+  // as a mode it cannot reach a hands-off state at all: its "you accept all
+  // responsibility" consent dialog is persisted nowhere in ~/.claude.json, so a spawned
+  // pane meets it every session with nobody to answer and stalls at STARTUP. Three
+  // callers (rebase-my-mrs, swarm-bg, ship-bg) each hit that and silently lost the
+  // unattended behaviour they were asking for; this seam translates so a fourth cannot.
+  // `--dangerously-skip-permissions` comes up already running — verified end-to-end
+  // through a real spawned pane on 2026-08-18. See open-claude.sh's claude_args comment.
+  if (permissionMode === 'bypassPermissions') {
+    parts.push('CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions');
+  } else if (permissionMode) {
+    parts.push(`CLAUDE_PERMISSION_MODE=${shQuote(permissionMode)}`);
+  }
   parts.push(shQuote(openClaude));
   return parts.join(' ');
 }

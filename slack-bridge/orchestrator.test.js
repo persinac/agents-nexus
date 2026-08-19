@@ -805,3 +805,22 @@ test('findAgentRoot: pane supplied but unknown still reuses a name match (no fra
     'existing',
     'a known name on a brand-new pane must reuse its anchor, not open a second one');
 });
+
+test('buildSpawnCommand: bypassPermissions becomes the FLAG, never a mode', () => {
+  // A mode cannot reach hands-off: bypassPermissions' consent dialog is persisted
+  // nowhere, so a spawned pane stalls on it at startup with nobody to answer. Three
+  // skills each lost their unattended behaviour to exactly this; the seam translates so
+  // a fourth caller cannot make the same mistake.
+  const cmd = buildSpawnCommand({
+    slug: 'bg-mr-rebase', openClaude: '/o/c.sh', permissionMode: 'bypassPermissions',
+  });
+  assert.match(cmd, /CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions/);
+  assert.ok(!cmd.includes('CLAUDE_PERMISSION_MODE'),
+    'must NOT also pass it as a mode — that is the shape that stalls');
+  assert.ok(cmd.indexOf('CLAUDE_EXTRA_ARGS') < cmd.indexOf('/o/c.sh'),
+    'env assignments still precede the launcher path');
+  // every other posture is untouched and still travels as a mode
+  const edits = buildSpawnCommand({ slug: 's', openClaude: '/o/c.sh', permissionMode: 'acceptEdits' });
+  assert.match(edits, /CLAUDE_PERMISSION_MODE='acceptEdits'/);
+  assert.ok(!edits.includes('CLAUDE_EXTRA_ARGS'));
+});
