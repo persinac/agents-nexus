@@ -387,8 +387,8 @@ def newest_transcript_in(cwd: str) -> str | None:
     (verified against the installed binary's own slugging function —
     `e.replace(/[^a-zA-Z0-9]/g,"-")`, no run-collapsing), not just `/`. A naive
     `.replace('/', '-')` matches the repo-path segments but silently
-    mis-resolves any cwd whose username/path has `.`/`@`/etc. — this box's
-    actual home dir (`alex.persinger@getgarner.com`) is exactly that case.
+    mis-resolves any cwd whose username/path has `.`/`@`/etc. — and this box's
+    home dir is an email-shaped username, so it is exactly that case.
 
     Fallback only — a cwd identifies a PROJECT, not a session, so this cannot
     tell two panes in one cwd apart. See resolve_transcripts.
