@@ -1,107 +1,141 @@
 # agents-nexus
 
-RTS-inspired multi-agent orchestration with a built-in knowledge stack. Run multiple Claude Code agents across repos simultaneously, persist memory across sessions, and semantically search your codebase — all from one terminal multiplexer (**herdr** by default, tmux supported as a fallback).
+Batteries-included toolkit for running **fleets of AI coding agents** on the
+[herdr](https://herdr.dev) multiplexer. Spawn Claude Code agents across many repos at once,
+give them memory that survives the session, drive them from Slack, and dispatch autonomous
+multi-repo missions — from one terminal.
 
-Multi-platform: macOS and Linux. (A historical Windows/MSYS2 path exists but is no longer actively maintained.)
+Everything past the multiplexer is **opt-in and degrades gracefully**: no Postgres, no
+Docker, no Slack workspace? The fleet notices and skips those paths.
+
+Linux and macOS. (tmux is supported as a fallback substrate; a historical Windows/MSYS2 path
+exists but is no longer maintained.)
 
 ## Quick start
 
-**Just trying it?** → [`QUICKSTART.md`](QUICKSTART.md) — the fleet in ~5 min (herdr + the picker, knowledge stack left off, everything degrades gracefully). Start there.
+**Just trying it?** → [`QUICKSTART.md`](QUICKSTART.md) — a driveable fleet in ~5 minutes, knowledge
+stack left off. Start there.
 
 **Full setup:**
 
 ```bash
 git clone <this-repo> && cd agents-nexus
-./install.sh                  # deps (incl. herdr, the default backend), profile, .env, optional stack
+./install.sh                  # deps (incl. herdr), profile, .env, plugin picker, optional stack
 ./install.sh --profile work   # or jump straight to a named profile
 ```
 
-See [`INSTALL.md`](INSTALL.md) for the full installer reference (every flag, every prompt, every file it writes). Use-case-specific gotchas live in [`README_SETUP_PERSONAL.md`](README_SETUP_PERSONAL.md) and [`README_SETUP_WORK.md`](README_SETUP_WORK.md).
+[`INSTALL.md`](INSTALL.md) is the complete installer reference — every flag, every prompt, every
+file it writes. Use-case gotchas live in [`README_SETUP_PERSONAL.md`](README_SETUP_PERSONAL.md)
+and [`README_SETUP_WORK.md`](README_SETUP_WORK.md).
 
-## What's Inside
+If you install outside the default `~/repos/agents-nexus`, set `AGENTS_NEXUS_DIR` in
+`~/.tmux/env.sh`:
+
+```bash
+AGENTS_NEXUS_DIR="/your/custom/path/agents-nexus"
+```
+
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) must be installed and on `PATH`.
+
+## What's inside
 
 | Component | What it does |
-|-----------|-------------|
-| **multiplexer layer** | Orchestration shell (herdr by default, tmux supported) — spawn agents, monitor status, relay commands without context switches |
-| **mnemon** | Agent memory — persist notes and events to Postgres, query via MCP in any session |
-| **Langfuse** | Optional observability stack — traces every memory operation (start with `task langfuse:up`) |
-
-> Live fleet visualization (command-center) and notes-search now live in the [herdr `nexus-observe`](plugins/nexus-observe/) plugin.
+|---|---|
+| **herdr** | The substrate. Spawns agents into panes, tracks `working`/`blocked`/`idle`, pushes status transitions over a local socket. Default backend; tmux still supported via `NEXUS_SUBSTRATE=tmux`. |
+| **`substrated`** | Read-path daemon (`:8422`). Holds a cached fleet view and serves it over a tiny HTTP API so hot readers don't spawn a subprocess per read. Subscribes to herdr status **pushes**, so the idle-gate fires the instant an agent goes idle. |
+| **plugins** | Four herdr plugins — Fleet, Presence, Observe, Mission — offered as a multi-select after base install. See [Plugins](#plugins). |
+| **mnemon** | Agent memory. Layered store (L2 tuplespace → L3 knowledge graph), weighted retrieval, entity extraction, salience decay. Exposed to every agent over MCP. See [mnemon](#mnemon). |
+| **slack-bridge** | Agent-to-agent bus and human control plane. Orchestrator + presence + delivery over **NATS/JetStream**; spawn, message, and approve agents from Slack. |
+| **Conductor** (`agent-runner/`) | Mission orchestrator — turns a task into a *verified* result. Deterministic spine, scoped LLM judgment nodes, verification loop. See [Conductor missions](#conductor-missions). |
+| **`proxy`** | Transparent Anthropic pass-through (`:4000`) with per-session upstream routing (work vs. personal) and Langfuse tracing on every `/v1/messages` call. |
+| **Langfuse** | Optional observability stack. Traces memory ops (L2/L3 reads, retrieval scoring, archive jobs, entity extraction) and proxy generations. |
+| **overlays** | Layer org- or machine-specific config over a generic checkout at install time, without committing it. |
 
 ## Architecture
 
 ```mermaid
 graph TB
-      subgraph host["Host Machine"]
-          subgraph tmux["herdr / tmux (orchestration)"]
-              agents["Claude Code agents\n(1..N panes)"]
-              hooks["hooks\nPreToolUse / Stop / Notification"]
-          end
+  subgraph host["Host"]
+    subgraph herdr["herdr (substrate)"]
+      agents["Claude Code agents<br/>1..N panes"]
+      plugins["nexus plugins<br/>fleet · presence · observe · mission"]
+    end
+    substrated["substrated :8422<br/>cached fleet view"]
+    proxy_svc["nexus-proxy :4000<br/>routing + tracing"]
+    agents -->|"MCP stdio"| mnemon_mcp["mnemon MCP"]
+    agents -->|"Anthropic traffic"| proxy_svc
+    herdr -->|"agent_status push"| substrated
+  end
 
-          subgraph claude["Claude Code (each agent)"]
-              mcp_mnemon["MCP: mnemon\n(stdio)"]
-          end
-      end
+  subgraph bus["Bus"]
+    nats["NATS + JetStream"]
+    bridge["slack-bridge<br/>orchestrator"]
+    slack["Slack<br/>(human notify leg only)"]
+    substrated --> bridge
+    bridge <--> nats
+    bridge <--> slack
+  end
 
-      subgraph docker["Docker Compose"]
-          ollama["Ollama\n:11434"]
-          postgres[("Postgres + pgvector\n:5432")]
-          mnemon_flush["mnemon-flush\n(cron daemon)"]
-      end
+  subgraph conductor["Conductor"]
+    mission["classify → plan → provision<br/>→ dispatch → verify → synthesize"]
+    mission -->|"dispatch"| nats
+  end
 
-      jsonl["~/.tmux/\nmemory-events.jsonl"]
+  subgraph docker["Docker Compose"]
+    pg[("Postgres + pgvector")]
+    ollama["Ollama :11434"]
+    lf["Langfuse (optional)"]
+  end
 
-      %% hook → jsonl → flush → postgres
-      hooks -->|"append event"| jsonl
-      jsonl -->|"mount + drain every 120s"| mnemon_flush
-      mnemon_flush -->|"INSERT"| postgres
-
-      %% MCP mnemon (stdio) → postgres
-      mcp_mnemon -->|"create_note\nquery_notes\nsearch_similar"| postgres
-      mcp_mnemon -->|"embeddings"| ollama
-
-      style docker fill:#dbe4ff,stroke:#4a9eed
-      style host fill:#d3f9d8,stroke:#22c55e
-      style tmux fill:#e5dbff,stroke:#8b5cf6
+  mnemon_mcp --> pg
+  mnemon_mcp -->|"embeddings"| ollama
+  proxy_svc --> lf
+  mnemon_mcp --> lf
 ```
 
-## Knowledge Stack (Docker)
+## Plugins
 
-Ollama, Postgres, and the mnemon flush daemon all run as Docker services. **Postgres runs locally in Docker by default** (the `work` compose flavor bundles a `pgvector` container and generates its secret); to use a cloud/managed instance instead, point `DATABASE_URL` at it and skip the local `postgres` profile. The mnemon MCP server runs natively (it is stdio-based).
+herdr plugins are the fleet's UX layer. The base install deploys a **plugin-free** config;
+the installer then offers a multi-select from [`plugins/catalog.toml`](plugins/catalog.toml).
 
-### Prerequisites
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — enable **Start at login** in settings
-- [`task`](https://taskfile.dev) — `brew install go-task`
-- Postgres with pgvector — **bundled locally by default** (Docker); or bring your own (cloud/managed) via `DATABASE_URL`
-
-### First-time setup
+| Plugin | Default | What it gives you |
+|---|:---:|---|
+| **`nexus.fleet`** | on | `prefix+shift+n` fuzzy repo/worktree picker → spawns a context-injected agent. `prefix+shift+b` creates a workspace bucket. |
+| **`nexus.presence`** | on | Desktop toast the instant an agent goes `blocked`. Pure event hook — no keybinding, no daemon, no polling. Deliberately a *different* channel from Slack so it doesn't double-notify. |
+| **`nexus.observe`** | on | Split-alongside dashboards: memory health (`shift+m`), fleet APM (`shift+a`), note search (`shift+f`), command center (`shift+o`). Degrades to a status view when the memory DB is unreachable. |
+| **`nexus.mission`** | off | Launch Conductor missions from a chord (`ctrl+a shift+p`). Heavier deps — opt-in. |
 
 ```bash
-cd ~/repos/agents-nexus
-
-# 1. Interactive installer — system deps, profile, .env, optional stack start.
-#    Generates a named profile (.env.<name>) and symlinks .env to it.
-./install.sh --profile personal
-
-# 2. Database migrations
-task mnemon:migrate
-
-# 3. Pull the embedding model into Ollama (once; ~270 MB)
-task docker:init
-
-# 4. Start native services (mnemon MCP) in the background
-task up
-
-# 5. Wire autostart so the stack comes up after every reboot
-task launchd:install
+bash scripts/plugin-install-flow.sh              # re-run the picker
+scripts/herdr-plugin-install.sh nexus-observe    # add one directly
+herdr plugin list                                # what's enabled
 ```
 
-If you skipped the "start the stack now?" prompt in step 1, run `task docker:up` before step 2. To switch between profiles later use `./install.sh --switch <name>`. To paste in Langfuse API keys after the UI is up: `./install.sh --finish-langfuse`.
+## mnemon
 
-### Point Claude Code at the local services
+Durable memory for agents, in Postgres, reachable from any session over MCP. Named after the
+memory implants in Iain M. Banks' *Culture* novels.
 
-Add mnemon to `~/.claude.json`:
+It is **layered, not a flat vector pile**:
+
+- **L2 — tuplespace.** A shared working cache using Linda coordination primitives. Agents on the
+  same mission read and write facts here without talking to each other directly.
+- **L3 — knowledge graph.** On job completion the archiver promotes L2 facts into durable nodes,
+  extracting entities (file paths, `[[wikilinks]]`, `@mentions`) and wiring backlinks.
+- **Retrieval** is MAGMA-style weighted scoring — semantic similarity, tag overlap, recency, and
+  access frequency — not similarity alone.
+- **Decay** reduces salience of stale, unaccessed nodes. High-access nodes resist it: a node
+  survives unless `access_count < log2(age_days)`.
+- **Context building** renders L3 knowledge as Obsidian-style markdown, token-budgeted, for
+  injection at spawn.
+
+MCP tools: `log_event`, `create_note`, `query_notes`, `search_similar`, `query_entity`,
+`recent_events`, `query_session`.
+
+Embeddings are local — Ollama `nomic-embed-text`, 768-dim. No external embedding API.
+
+Full detail in [`mnemon/README.md`](mnemon/README.md). Register it with Claude Code
+(`~/.claude.json`):
 
 ```json
 {
@@ -115,213 +149,271 @@ Add mnemon to `~/.claude.json`:
 }
 ```
 
-### Stack lifecycle
+## Conductor missions
+
+The Conductor turns a *task* into a *verified result*: a deterministic spine (routing,
+provisioning, dispatch, state, I/O) with a few scoped judgment nodes that emit typed output
+the spine acts on. The spine never asks an LLM "what next?" open-endedly.
+
+- **`--distribute "<goal>"`** — fan-out mission: classify → plan → provision worktrees →
+  dispatch workers into a tiled `mission/<slug>` bucket → verify → adjudicate → synthesize →
+  report. Runs detached.
+- **`--sdlc "<ticket|goal>"`** — drives a staged pipeline (requirements → domain model →
+  tech design → validation → `plan.md`) and stops at the plan. Code is left to a human.
+
+Verification is non-negotiable — a mission cannot report done until verify passes, and failed
+verification feeds findings back into re-dispatch rather than into a dead end. Small
+single-repo work takes the one-shot escape hatch (worker + verify) and skips the coordination tax.
+
+Design notes: [`docs/conductor-design.md`](docs/conductor-design.md).
+
+## The proxy
+
+`nexus-proxy` (`:4000`) sits between Claude Code and Anthropic, forwards requests verbatim, and
+logs every `/v1/messages` call to Langfuse. It routes per session: sessions tagged `work-<repo>`
+go to the work gateway, everything else goes straight to Anthropic. **Personal traffic never
+touches the work gateway** — no corp-auth injection, no attribution, no dependency on that
+gateway being up — while both still get tracing.
+
+Routing and resilience design: [`docs/model-routing.md`](docs/model-routing.md).
+
+## Overlays
+
+Anything org-, machine-, or person-specific stays out of this repo and layers in at install time:
 
 ```bash
-task up                     # start docker stack + mnemon in background
-task kill                   # stop mnemon
-task restart                # kill + up
-task logs                   # tail mnemon log
-
-task docker:up              # start docker services only
-task docker:down            # stop docker services (volumes preserved)
-task docker:logs            # tail all docker logs
-task docker:logs -- mnemon-mcp   # tail a single service
-task docker:status          # health + uptime
-
-task launchd:install        # enable autostart on login (macOS)
-task launchd:uninstall      # disable autostart
+./install.sh --overlay <your-overlay-repo-url>
 ```
 
-### Langfuse (optional observability)
+Overlays compose — run it once per overlay, each declaring its own `name` in `overlay.toml`.
+`scripts/overlay-apply.sh --status` lists what's applied, `--remove <name>` un-applies one.
+Without `--overlay` you get a generic standalone setup. See
+[`overlay.example/README.md`](overlay.example/README.md) and [`MAINTAINERS.md`](MAINTAINERS.md).
 
-Langfuse is bundled as an optional Docker Compose profile. It traces every mnemon memory operation (L2/L3 reads, retrieval scoring, archive jobs, entity extraction LLM calls).
+## The knowledge stack
+
+Postgres (+pgvector), Ollama, and the mnemon flush daemon run as Docker services; the mnemon MCP
+server runs natively (stdio). Postgres is bundled locally by default — point `DATABASE_URL` at a
+managed instance and skip the `postgres` profile to bring your own.
+
+**Prerequisites:** Docker, [`task`](https://taskfile.dev), Postgres with pgvector (bundled).
 
 ```bash
-task langfuse:up        # start Langfuse stack (postgres, redis, clickhouse, minio, web, worker)
-task langfuse:down      # stop (data volumes preserved)
-task langfuse:update    # pull latest images and restart
-task langfuse:logs      # tail web + worker logs
-task langfuse:status    # container health
+./install.sh --profile personal   # deps, profile, .env, optional stack start
+task mnemon:migrate               # migrations
+task docker:init                  # pull the embedding model (~270 MB, once)
+task up                           # start native services in the background
 ```
 
-After `task langfuse:up`, open `http://localhost:3000`, create an account, then generate an API key and add it to `.env`:
+If you skipped the "start the stack now?" prompt, run `task docker:up` before the migrations.
+Switch profiles later with `./install.sh --switch <name>`; paste Langfuse keys in after the UI
+is up with `./install.sh --finish-langfuse`.
 
-```
-LANGFUSE_HOST=http://localhost:3000
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
+**Autostart on boot** differs by platform, and there is no single task for both:
+
+```bash
+bash tmux/linux/install.sh   # Linux — installs + enables the systemd USER units
+task launchd:install         # macOS — installs the launchd plists
 ```
 
-> **Plain `task up` / `docker compose up -d` will not start Langfuse.** The profile is self-documenting — it's in the compose file so you know it exists, but it stays off unless you explicitly opt in.
+`tmux/linux/install.sh` also enables systemd *lingering*, without which the user slice (and with
+it herdr, Claude, and the background services) is torn down on SSH logout.
+
+### Lifecycle
+
+```bash
+task up / kill / restart / logs      # native services (mnemon)
+task docker:up / down / logs / status
+task docker:logs -- mnemon-mcp       # single service
+task langfuse:up / down / logs / status / update
+```
+
+Langfuse is a self-documenting opt-in Compose profile — it's in the compose file so you know it
+exists, but plain `task up` will not start it. After `task langfuse:up`, open `localhost:3000`,
+create an account, generate keys, and add `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` /
+`LANGFUSE_SECRET_KEY` to `.env` (or run `./install.sh --finish-langfuse`).
 
 ### Ports
 
-| Service | Port | Notes |
-|---------|------|-------|
-| Ollama | 11434 | Embedding model |
-| mnemon MCP | 8330 | Agent-memory MCP (SSE) |
-| Langfuse | 3000 | Observability UI (optional) |
-
----
-
-## Tmux Integration
-
-### Install
-
-One command — detects your OS, installs system deps, runs the interactive profile setup, and links configs:
-
-```bash
-cd ~/repos/agents-nexus
-./install.sh                     # full interactive install
-./install.sh --profile <name>    # name (or pre-select) the profile
-```
-
-Full flag reference, prompt-by-prompt walkthrough, and troubleshooting: **[INSTALL.md](INSTALL.md)**.
-
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) must be installed and on `PATH`.
-
-Set `AGENTS_NEXUS_DIR` in `~/.tmux/env.sh` if you install outside the default `~/repos/agents-nexus`:
-
-```bash
-AGENTS_NEXUS_DIR="/your/custom/path/agents-nexus"
-```
-
-### Start a session
-
-```bash
-work            # attach/create "agents" session
-work query      # attach/create "query" session
-```
-
-### Spawn agents
-
-| Hotkey | Action |
+| Service | Port |
 |---|---|
-| `ctrl+a → N` | Fuzzy repo picker → opens claude in new background window |
-| `ctrl+a → n` | Prompt for path → opens claude there |
+| Ollama | 11434 |
+| nexus-proxy | 4000 |
+| substrated | 8422 |
+| mnemon MCP (SSE) | 8330 |
+| slack-bridge health | 8788 |
+| Langfuse UI | 3000 |
 
-### Monitor agents
+## Driving the fleet
 
-| Command / Hotkey | Action |
+Prefix is `ctrl+a`.
+
+```bash
+work            # attach/create the "agents" session
+work query      # attach/create a named session
+```
+
+| Key / command | Action |
 |---|---|
-| `v 2` | Quick peek at agent 2 (status summary + last output) |
-| `ctrl+a → A` | APM stats popup |
-| `agents` | List all registered agents with slot, name, and directory |
-| Status bar | Grey = idle, Green = running, Yellow = stuck (>10min), Red = needs input |
+| `ctrl+a shift+n` | Fuzzy repo picker → spawn a context-injected agent |
+| `ctrl+a shift+b` | New workspace bucket |
+| `ctrl+a shift+p` | Launch a Conductor mission (nexus.mission) |
+| `ctrl+a b` | Toggle the agent sidebar |
+| `ctrl+a 1..9` | Jump to agent N |
+| `v 2` | Peek at agent 2 — status summary + last output |
+| `agents` | List registered agents with slot, name, directory |
+| `q 2 use JWT` | Queue a message to agent 2 (quote if it contains `? ! *`) |
+| `q 2 1` | Approve — instant select, no Enter |
 
-### Send commands without switching
-
-```bash
-q 2 use JWT                       # queue message to agent 2
-q 2 "can you check the tests?"   # quote if message has ? ! * etc.
-q 2 1                             # approve (no Enter — instant select)
-```
-
-### API key rotation
-
-Multiple named keys can be stored in `~/.tmux/keys/` and swapped per session. New agent windows spawned after a swap inherit the active key automatically.
-
-```bash
-# One-time setup
-mkdir -p ~/.tmux/keys
-echo 'sk-ant-...' > ~/.tmux/keys/alex
-echo 'sk-ant-...' > ~/.tmux/keys/buddy
-chmod 600 ~/.tmux/keys/*
-
-# Swap keys
-usekey buddy     # activate buddy's key for this session
-usekey alex      # swap back
-whichkey         # show active key name + first 12 chars
-keys             # list all profiles (* = active)
-```
-
-The status bar shows `[key:name]` in red when a non-default key is active. Hidden when you're on your own key.
-
-> Keys live in `~/.tmux/keys/` — never committed to the repo.
+Status colors: grey idle, green running, yellow stuck (>10min), red needs input.
 
 ### Agent-to-agent messaging
 
-Agents automatically know about each other. On startup, each agent:
+**The transport is NATS + JetStream.** Slack A2A messaging is deprecated — do not call this
+"the Slack bus". The human notify/reply leg (`#nexus`, `/notify`, `--relay`) is a separate
+thing and *is* still Slack.
 
-1. **Registers** itself in `~/.tmux/registry/` (keyed by pane ID)
-2. **Receives a peer list** in its opening prompt — slot number, project name, and directory for every other active agent
+Address every agent by **FQDN** — `<host>/<workspace>/<name>`:
 
-Agents can use `/msg <slot> <message>` without you telling them which slot to target. The `agents` shell command shows the same registry for humans.
+```bash
+~/.tmux/agent-send.sh alex-nexus/agents-nexus/general "one-line message"
+~/.tmux/agent-send.sh <fqdn> --local "..."     # same-host pane injection, bypasses the bus
+```
 
-### Navigation
+A bare name is a legacy "thin" form that resolves only while it happens to be unique and
+silently collides when it is not — write the full FQDN even for a same-host peer. The script
+flattens newlines to spaces, so write one line and use `;` or `—` as separators.
 
-| Hotkey | Action |
-|---|---|
-| `ctrl+a → 1..9` | Jump to window N |
-| `ctrl+a → w` | Window list with live preview |
-| `ctrl+a → s` | Session tree |
-| `ctrl+a → \|` | Split pane horizontal |
-| `ctrl+a → -` | Split pane vertical |
-| `ctrl+a → d` | Detach (leave running in background) |
-| `ctrl+a → r` | Reload tmux config |
-| `ctrl+a → ,` | Rename current window |
+Discover the live fleet from the presence registry — the `nexus_presence` JetStream KV bucket
+on the cloud broker, **not** a local file tree:
 
----
+```bash
+curl -s localhost:8788/agents            # live KV read; each entry carries a paste-ready fqdn
+~/.tmux/nx-kv.sh keys                    # the bucket directly, bypassing the bridge
+~/.tmux/agent-registry.sh peers          # THIS host only
+```
 
-## APM Tracking
+Inbound agent messages arrive in a pane as a user turn prefixed `↩ from <agent-name>:`.
 
-The status bar shows a rolling 60-second count: `42a/7h` = 42 agent actions, 7 human actions.
+### Permission auto-approval
 
-`ctrl+a → A` opens the full stats popup with today's totals, avg response time, and active agent count.
+Permission prompts are gated by `tmux/mac/tmux-scripts/notify-classify.py`, which auto-answers
+anything that isn't destructive and escalates the rest to Slack with a summary. Measured over
+30 days of real traffic it clears **~95%** of Bash calls with no human and no model call.
 
-### What gets tracked
+Two hard denylists run first and cannot be overridden — `_DENY` (`rm`, `sudo`, pipe-to-shell,
+force push) and `_DESTRUCTIVE` (deleting production data or k8s/cloud resources, plus
+secret-manager reads). `CLASSIFY_STRICT=1` reverts to a read-only allowlist.
+
+Because the classifier only runs when a *prompt* is raised, the same denylist is re-applied at
+`PreToolUse` by [`tmux/mac/claude-hooks/block-destructive.sh`](tmux/mac/claude-hooks/block-destructive.sh),
+so it still holds for unattended agents spawned with `--dangerously-skip-permissions`, which
+raise no prompts at all.
+
+### APM
+
+The status bar shows a rolling 60s count: `42a/7h` = 42 agent actions, 7 human actions.
+`prefix+shift+a` opens today's totals, average response time, and active agent count.
+Log at `~/.tmux/apm.log`, pruned to 24h.
 
 | Event | Logged as |
 |---|---|
 | Agent tool use | `agent` |
 | Agent waiting for input | `wait` |
-| `q` command sent | `human-q` |
-| `v` peek | `human-v` |
-| Window switch | `switch` |
-| Fuzzy picker / new window / splits | `tmux-*` |
+| Agent finished a turn | `stop` |
+| Window/pane switch | `switch` |
+| Fuzzy picker / new window | `tmux-picker`, `tmux-newwin` |
+| Idle agent reaped | `reap` |
 
-Log lives at `~/.tmux/apm.log`, auto-pruned to 24h.
+> `~/.tmux/apm.log` can contain a NUL byte, which makes GNU grep treat it as binary and print
+> **nothing** for `grep -c` — indistinguishable from "no matches". Always read it with `grep -a`.
 
----
+### Session key profiles
 
-## Claude Code Hooks
+Multiple named API keys can live in `~/.tmux/keys/` and be swapped per session; new agent panes
+inherit the active key.
 
-The `claude-settings.json` configures two hooks:
+```bash
+mkdir -p ~/.tmux/keys
+echo 'sk-ant-...' > ~/.tmux/keys/personal
+echo 'sk-ant-...' > ~/.tmux/keys/work
+chmod 600 ~/.tmux/keys/*
 
-- **Stop** — sets `@waiting` flag (turns status bar red), fires bell, logs `wait`
-- **PreToolUse** — clears `@waiting` flag, logs `agent` tool use
+usekey work      # activate
+whichkey         # active key name + first 12 chars
+keys             # list profiles (* = active)
+```
 
----
+These are **your own** keys for separating personal and work usage — not a mechanism for
+sharing credentials. The status bar shows `[key:name]` in red when a non-default key is active.
+Keys are gitignored and never committed.
 
-## Files
+## Claude Code hooks
+
+Hooks are configured in `~/.claude/settings.json` across four events — `SessionStart`,
+`PreToolUse`, `Notification`, and `Stop`. They set the pane's waiting flag, log APM events,
+route `SendMessage` over the bus, and gate permissions.
+
+Two `PreToolUse(Bash)` guards refuse a command outright (exit 2), and both fail **open** on an
+internal error so a guard bug can never wedge a session:
+
+| Guard | Refuses |
+|---|---|
+| [`block-credential-dump.sh`](tmux/mac/claude-hooks/block-credential-dump.sh) | Commands that would print a credential-bearing file into the transcript (`cat`/`head`/`grep -A` on secrets, plus self-dumping shapes like `git remote -v`). |
+| [`block-destructive.sh`](tmux/mac/claude-hooks/block-destructive.sh) | Commands that delete production data or deployed infrastructure. Imports its pattern from `notify-classify.py` so the two can't drift. |
+
+Both refuse a command that merely *contains* a dangerous-looking string, so their own test
+cases live in files rather than being passed as shell arguments.
+
+## Repository layout
 
 ```
 agents-nexus/
-├── install.sh               # unified installer (detects OS)
-├── Taskfile.yml             # task runner (docker, mnemon, launchd)
-├── docker-compose.yml       # knowledge stack (ollama, postgres, mnemon-flush) + optional Langfuse profile
-├── .env.example             # environment variable template
-├── CLAUDE.md.template       # scaffold template for per-repo CLAUDE.md
-├── IDEAS.md                 # roadmap & feature ideas
-├── mnemon/                  # agent memory system (MCP server + Postgres)
-│   └── migrations/          # database schema
-├── docker/                  # Dockerfiles + postgres init SQL
-├── launchd/                 # macOS autostart plists
+├── install.sh              # unified installer (detects OS)
+├── Taskfile.yml            # task runner (docker, mnemon, langfuse, launchd)
+├── docker-compose.yml      # knowledge stack + optional Langfuse profile
+├── substrated/             # cached fleet-state read daemon
+├── plugins/                # herdr plugins + installer catalog
+│   ├── catalog.toml        #   the installer<->plugin seam
+│   └── nexus-{fleet,presence,observe,mission}/
+├── mnemon/                 # agent memory (MCP server + Postgres)
+│   └── migrations/
+├── slack-bridge/           # A2A bus (NATS/JetStream), orchestrator, presence
+├── agent-runner/           # Conductor: missions, workers, verification
+├── proxy/                  # Anthropic pass-through + routing + tracing
+├── skills/                 # agent skills
+├── commands/               # slash commands (opsx, distribute)
+├── overlay.example/        # overlay contract + worked example
+├── openspec/               # change specs
+├── scripts/                # plugin install, overlay apply, recovery, secrets
+├── docker/                 # Dockerfiles + postgres init SQL
+├── launchd/                # macOS autostart plists
+├── docs/                   # design docs
 └── tmux/
-    ├── mac/                 # macOS tmux config, hooks, install script
-    ├── windows/             # Windows (MSYS2) equivalent
-    └── linux/               # Linux (placeholder)
+    ├── mac/                # THE shared scripts, hooks, and configs (see note)
+    ├── linux/              # Linux installer, systemd units, bashrc
+    └── windows/            # historical MSYS2 path, unmaintained
 ```
 
----
+> **`tmux/mac/` is a directory name, not a platform gate.** The scripts under
+> `tmux/mac/tmux-scripts/` and `tmux/mac/claude-hooks/` are the ONE shared copy used on both
+> Linux and macOS — OS-specific bits are guarded inline (`$OSTYPE`, GNU-vs-BSD `date`/`stat`).
+> `tmux/linux/` holds only the Linux installer, systemd units, and shell profile. Do not fork a
+> second copy of a script into it.
 
-## Platform differences
+## Platform notes
 
-| | macOS | Windows (MSYS2) | Linux |
-|---|---|---|---|
-| Shell | zsh | bash | bash |
-| Home | `~/` | `/home/<user>` (MSYS2) | `~/` |
-| `date` | BSD (`-v0H`) | GNU (`-d "today..."`) | GNU |
-| `read` key | `-rk1` (zsh) | `-rsn1` (bash) | `-rsn1` |
-| Notifications | `osascript` | PowerShell toast | `notify-send` |
+Linux is the primary target (systemd user units under `tmux/linux/systemd/`, installed by
+`tmux/linux/install.sh`); macOS is fully supported (launchd plists under `launchd/`, installed
+by `task launchd:install`). Differences are shell (`bash`/`zsh`), notifications
+(`notify-send`/`osascript`), and GNU vs BSD `date`.
+
+## Prefer tmux?
+
+herdr is the default and the smoothest path, but tmux is a supported fallback — set
+`NEXUS_SUBSTRATE=tmux`. `substrated` serves the same contract from either backend, so the rest of
+the stack doesn't care which one you run.
+
+## License
+
+Apache-2.0. See [`LICENSE`](LICENSE).
