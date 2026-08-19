@@ -20,8 +20,9 @@ Any error -> exit 10 with a deterministic fallback summary (fail safe to "ask").
 
 Policy (rewritten 2026-08-19 — the default is now ALLOW, see _PERMISSIVE):
 Local reads (Read/Glob/Grep/LS/NotebookRead) -> read (no LLM, fast).
-Bash -> TWO hard denylists first, and nothing downstream can override either:
-  _DENY        rm/sudo/dd/pipe-to-shell/--force/...  (unchanged)
+Bash -> hard denylists first, and nothing downstream can override them (_bash_is_denied):
+  _DENY        sudo/dd/pipe-to-shell/git --force/...
+  _DENY_RM     rm/rmdir, UNLESS every target is a scratch path (_rm_is_scratch_only)
   _DESTRUCTIVE deleting production data (DROP/DELETE FROM/TRUNCATE/FLUSHALL/...),
                deleting k8s or cloud resources (kubectl delete|drain|--prune, helm
                uninstall, terraform destroy|apply, aws *delete-*/terminate-*), and
@@ -111,7 +112,7 @@ SURFACE_TOOLS = {"askuserquestion"}
 _CMDPOS = r"(?:^|[;&|(`]\s*|\s)"
 
 _DENY = re.compile(
-    rf"({_CMDPOS}rm\s|{_CMDPOS}rmdir\s|\bsudo\b|{_CMDPOS}dd\s|\bmkfs"
+    rf"(\bsudo\b|{_CMDPOS}dd\s|\bmkfs"
     # `killall` removed 2026-08-19 per Alex: killing a process deletes no data and is
     # ordinary dev cleanup (`killall node`), so it is not in either named destructive
     # category. shutdown/reboot STAY — they would end an unattended overnight run.
@@ -144,6 +145,145 @@ _DENY = re.compile(
     rf"|\bnpm\s+publish\b|{_CMDPOS}truncate\s)",
     re.I,
 )
+
+# --- rm / rmdir, carved out of _DENY 2026-08-19 (per Alex) ------------------
+# `rm` was the last hard-denied clause still generating routine prompts. Measured on the
+# first half hour of notify-asked.log: both Bash prompts that reached a human were an rm
+# on a SCRATCH path — `cd /tmp && rm -rf e2e-art && mkdir -p e2e-art` rebuilding a
+# download dir, and a commit script deleting its own `.git/COMMIT_MSG_*` temp file.
+#
+# Alex's call, chosen from three options with the concrete clear/ask lists in front of
+# him: auto-approve rm ONLY when every path it targets is under a scratch root. Anything
+# else — a repo path, $HOME, a bare glob, an unresolvable variable — keeps its hard deny.
+#
+# This is the narrowest of the three and it is deliberately conservative BY CONSTRUCTION:
+# _rm_is_scratch_only answers False for anything it cannot fully resolve, so a shape this
+# parser does not understand keeps asking rather than falling through to permitted. The
+# whole-string `_DENY` regex could not express this, hence the split — `rm` now has its
+# own regex and its own resolver, and everything else in `_DENY` is untouched.
+_DENY_RM = re.compile(rf"({_CMDPOS}rm\s|{_CMDPOS}rmdir\s)", re.I)
+
+# Roots under which a delete is scratch. /private/* variants are listed because macOS
+# resolves /tmp -> /private/tmp and $TMPDIR lives under /var/folders; matching both
+# spellings avoids a realpath() call (and therefore a filesystem touch) on the hot path.
+def _scratch_roots():
+    roots = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders",
+             os.path.join(os.path.expanduser("~"), ".cache")]
+    tmpdir = os.environ.get("TMPDIR")
+    if tmpdir:
+        roots.append(os.path.normpath(tmpdir))
+    return [r.rstrip("/") for r in roots if r]
+
+
+# A token we refuse to reason about: an expansion, a glob, or a parent traversal. Each
+# would make the target set unknowable at classification time.
+_RM_UNRESOLVABLE = re.compile(r"[$`*?\[\]]|(^|/)\.\.(/|$)")
+# git's own scratch message files. `.git/COMMIT_EDITMSG`, `.git/MERGE_MSG`, and the
+# `.git/COMMIT_MSG_*` shape a commit script writes. Scoped hard: the `.git` component must
+# be the target's PARENT, so this can never reach .git/config (credential-bearing per
+# ~/.claude/CLAUDE.md), .git/HEAD, .git/refs/, or .git/objects/ — deleting any of those
+# corrupts a repo, and none of them is a scratch file.
+_GIT_SCRATCH = re.compile(r"(^|/)\.git/((COMMIT|MERGE|SQUASH|TAG)_\w*MSG\w*|[\w.-]+\.tmp)$")
+_RM_FLAG_TERM = "--"
+
+
+def _rm_target_ok(tok, cwd):
+    """True if this single rm/rmdir argument is a scratch path we can vouch for."""
+    if not tok or _RM_UNRESOLVABLE.search(tok):
+        return False
+    if _MV_SENSITIVE.search(tok):                  # never, scratch root or not
+        return False
+    if _GIT_SCRATCH.search(tok):
+        # Shape alone settles this one, so it needs no cwd — a relative
+        # `.git/COMMIT_MSG_X` names a git scratch file whichever repo it is in.
+        return True
+    path = os.path.expanduser(tok) if tok.startswith("~") else tok
+    if not os.path.isabs(path):
+        if not cwd:
+            return False                           # relative path, unknown cwd
+        path = os.path.join(cwd, path)
+    path = os.path.normpath(path)
+    for root in _scratch_roots():
+        # STRICTLY under the root. `rm -rf /tmp` itself is refused: wiping all of /tmp
+        # would take out other agents' scratch state, which is not "cleaning up my dir".
+        if path.startswith(root + os.sep) and path != root:
+            return True
+    return False
+
+
+def _cd_target(toks, cwd):
+    """New cwd after a `cd` segment, or None when it cannot be resolved."""
+    args = [t for t in toks[1:] if not t.startswith("-")]
+    if not args:                                   # bare `cd` -> home
+        return os.path.expanduser("~")
+    tok = args[0]
+    if _RM_UNRESOLVABLE.search(tok):
+        return None
+    path = os.path.expanduser(tok) if tok.startswith("~") else tok
+    if not os.path.isabs(path):
+        if not cwd:
+            return None
+        path = os.path.join(cwd, path)
+    return os.path.normpath(path)
+
+
+def _rm_walk(segments, cwd):
+    """(all_rm_targets_ok, cwd_after, saw_rm) over a segment list, tracking `cd`.
+
+    Order matters and is honoured: `cd /tmp && rm -rf e2e-art` resolves the relative
+    target against the cwd the earlier segment established, which is the exact shape that
+    prompted this whole carve-out.
+    """
+    ok, saw = True, False
+    for seg in segments:
+        seg = seg.strip()
+        if not seg or seg.startswith("#"):
+            continue
+        if seg.startswith("(") and seg.endswith(")"):
+            # A subshell's `cd` does not escape it, so the outer cwd is unchanged.
+            inner_ok, _inner_cwd, inner_saw = _rm_walk(_split_top_level(seg[1:-1]), cwd)
+            ok, saw = ok and inner_ok, saw or inner_saw
+            continue
+        toks = seg.split()
+        while toks and (toks[0] in _STRUCTURAL or toks[0] in _COND_KEYWORDS
+                        or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0])
+                        or _FUNC_DEF.match(toks[0]) or _CASE_LABEL.match(toks[0])):
+            toks = toks[1:]
+        if not toks:
+            continue
+        head = os.path.basename(toks[0])
+        if head == "cd":
+            cwd = _cd_target(toks, cwd)
+        elif head in ("rm", "rmdir"):
+            saw = True
+            args, seen_term = [], False
+            for t in toks[1:]:
+                if not seen_term and t == _RM_FLAG_TERM:
+                    seen_term = True
+                elif seen_term or not t.startswith("-"):
+                    args.append(t.strip("'\""))
+            if not args or not all(_rm_target_ok(a, cwd) for a in args):
+                ok = False
+    return ok, cwd, saw
+
+
+def _rm_is_scratch_only(cmd):
+    """True only if EVERY rm/rmdir in `cmd` targets a scratch path. Conservative: any
+    shape this cannot resolve — including an `rm` reached through another command, e.g.
+    `xargs rm`, which the segment walk never sees as an rm head — returns False and keeps
+    the hard deny."""
+    shell, _live = _strip_heredocs(_LINE_CONT.sub(" ", cmd))
+    ok, _cwd, saw = _rm_walk(_split_top_level(shell), None)
+    return bool(saw and ok)
+
+
+def _bash_is_denied(cmd):
+    """The single source of truth for "permissive mode must NOT approve this". Shared with
+    the regression suite so the test can never drift from what classify() actually does."""
+    if _DENY.search(cmd) or _DESTRUCTIVE.search(cmd):
+        return True
+    return bool(_DENY_RM.search(cmd) and not _rm_is_scratch_only(cmd))
+
 
 # --- Permissive mode (added 2026-08-19, DEFAULT ON per Alex) ----------------
 # Alex's stated bar, verbatim: "As long as we're not deleting production data from a
@@ -1242,6 +1382,27 @@ def _now():
 # this is additive there; its real consumer is ~/.tmux/notify-asked.log, which gives an
 # audit the pending tool directly instead of re-deriving it from a transcript.
 _TOOL_NAME = ""
+_TOOL_DETAIL = ""
+
+# Secret shapes redacted out of the logged detail. The detail exists so a later audit can
+# see the literal command — that is the input every tuning decision needs, and the LLM
+# paraphrase is not a substitute ("downloads artifacts using a private token" does not tell
+# you which denylist clause fired). But notify-asked.log is persistent, and one measured
+# command carried a GitLab PRIVATE-TOKEN, so the value is stripped before it is written.
+# Names are kept, values never are — the same principle block-credential-dump.sh enforces.
+_SECRET_VALUE = re.compile(
+    r"((?:private[-_]token|x-api-key|authorization|api[-_]?key|password|passwd|secret"
+    r"|token|bearer)\s*[:=]\s*)(\S+)"
+    r"|(--(?:password|token|api-key|secret)[= ])(\S+)"
+    r"|\b(gh[pousr]_|glpat-|xox[baprs]-|sk-|AKIA|ASIA)([A-Za-z0-9_\-]{6,})",
+    re.I)
+
+
+def _redact(text):
+    def sub(m):
+        groups = [g for g in m.groups() if g is not None]
+        return (groups[0] + "<redacted>") if groups else "<redacted>"
+    return _SECRET_VALUE.sub(sub, text or "")
 
 
 def _emit(category, summary, code):
@@ -1253,6 +1414,7 @@ def _emit(category, summary, code):
         "tool": _TOOL_NAME,
         "category": category,
         "summary": summary,
+        "detail": _redact(_TOOL_DETAIL),
     }))
     sys.exit(code)
 
@@ -1323,7 +1485,7 @@ def classify(name, inp):
     #    override them, which is what makes the permissive tier safe to enable.
     if short in ("bash", "shell"):
         cmd = (inp.get("command") or "").strip()
-        safe = bool(cmd) and not _DENY.search(cmd) and not _DESTRUCTIVE.search(cmd)
+        safe = bool(cmd) and not _bash_is_denied(cmd)
         if safe and _deterministic_read(cmd):
             return "read", "read-only inspection", det
         if safe and _PERMISSIVE:
@@ -1365,8 +1527,9 @@ def main():
     if not tool:
         _emit_modify("needs review", os.environ.get("FB", "needs input"))
     name, inp, tool_id = tool
-    global _TOOL_NAME
+    global _TOOL_NAME, _TOOL_DETAIL
     _TOOL_NAME = name
+    _TOOL_DETAIL = _deterministic_summary(name, inp)
     decision, category, summary = classify(name, inp)
     if decision == "read":
         sys.exit(0)                                       # safe -> auto-approve

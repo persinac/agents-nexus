@@ -257,10 +257,15 @@ def _report_asked(asked, since, args, classify_path):
         "tool": body.get("tool") or "?",
         "category": body.get("category") or "?",
         "summary": body.get("summary") or "",
+        # The literal command for Bash, secret-redacted by the classifier. Present from
+        # 2026-08-19; older lines have only the paraphrase, hence the fallback.
+        "detail": body.get("detail") or "",
         "agent": body.get("name") or "",
     } for e, pane, kind, body in asked]
     for r in rows:
-        r["head"] = _head(r["summary"].strip("`")) if r["tool"].lower() == "bash" else ""
+        is_bash = r["tool"].lower() == "bash"
+        r["head"] = _head((r["detail"] or r["summary"]).strip("`")) if is_bash else ""
+        r["what"] = (r["detail"] if is_bash and r["detail"] else r["summary"]).strip("`")
 
     total = cleared + len(rows)
     if args.json:
@@ -291,7 +296,7 @@ def _report_asked(asked, since, args, classify_path):
 
     print(f"\nmost recent ({min(args.limit, len(rows))} of {len(rows)}):")
     for r in rows[-args.limit:]:
-        print(f"  {r['ts']}  {r['pane']:<8} {r['tool'][:34]:<34} {r['summary'][:78]}")
+        print(f"  {r['ts']}  {r['pane']:<8} {r['tool'][:34]:<34} {r['what'][:96]}")
     return 0
 
 
