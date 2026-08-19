@@ -84,16 +84,24 @@ CRED = [
 ]
 
 # Readers that emit unbounded / unpreviewed output.
+# Command position: start of string, after a separator, or after whitespace -- but NOT
+# immediately after a `-`. Added 2026-08-19: `\bhead\s` matched the `--head` FLAG of
+# `gh pr create --head <branch>`, and with any `.env` in the PR body supplying the CRED
+# half the guard refused an ordinary PR. `-` is a non-word character, so \b matches
+# right inside a flag. Same defect class as `\brm\b` firing on `docker run --rm`, which
+# was fixed in notify-classify.py's _DENY the same day.
+_CP = r"(?:^|[;&|(`]\s*|(?<![-\w]))"
+
 BROAD = [
-    (r"\bcat\s", "cat"),
-    (r"\bbat\s", "bat"),
-    (r"\bhead\s", "head"),
-    (r"\btail\s", "tail"),
-    (r"\bless\s", "less"),
-    (r"\bmore\s", "more"),
-    (r"\bstrings\s", "strings"),
-    (r"\bxxd\s", "xxd"),
-    (r"\bod\s", "od"),
+    (_CP + r"cat\s", "cat"),
+    (_CP + r"bat\s", "bat"),
+    (_CP + r"head\s", "head"),
+    (_CP + r"tail\s", "tail"),
+    (_CP + r"less\s", "less"),
+    (_CP + r"more\s", "more"),
+    (_CP + r"strings\s", "strings"),
+    (_CP + r"xxd\s", "xxd"),
+    (_CP + r"od\s", "od"),
     (r"\bbase64\s+-d", "base64 -d"),
     (r"\bgrep\b[^|;&]*\s-[A-Za-z]*[ABC]\s*\d", "grep with -A/-B/-C context"),
     (r"\bsed\s+-n[^|;&]*p\b", "sed -n p"),
@@ -116,12 +124,17 @@ BROAD = [
     # sitting next to an unrelated .env mention is not a dump. Anything that actually
     # opens the file is, including the "print only the key NAMES" shape -- so that shape
     # is no longer advertised; use `grep -oE '^[A-Z_]+=' FILE`, which never reads a value.
-    # NOT bounded by [^|;&] like the rules above: inline interpreter code legitimately
-    # contains `;` (`python3 -c "import pathlib; print(...read_text())"`), and that
-    # segment guard made the rule miss exactly that shape on the first cut. The pair
-    # (interpreter, read primitive) anywhere in one command is the signal; this guard
-    # fails closed, so the looser span is the correct trade.
-    (r"\b(?:python[0-9.]*|perl|ruby|node|deno|bun)\b[\s\S]*"
+    # Span tuning, both directions measured rather than guessed:
+    #   [^|;&]* (the neighbouring convention) MISSED `python3 -c "import pathlib;
+    #     print(...read_text())"` -- inline interpreter code legitimately contains `;`.
+    #   [\s\S]*  matched an interpreter and a read primitive anywhere in one command,
+    #     which fired on a PROSE message that merely discussed both. Caught immediately,
+    #     on the very message reporting this fix.
+    # Settled on: require the -c/-e INLINE-CODE flag (prose naming python without it no
+    # longer qualifies) and bound the tail. Deliberately does not cover
+    # `python3 script.py` reading a credential -- the hook cannot see a script's
+    # contents, so that is out of reach here rather than silently assumed safe.
+    (r"\b(?:python[0-9.]*|perl|ruby|node|deno|bun)\b[^|;&]{0,80}\s-(?:c|e)\b[\s\S]{0,300}?"
      r"(?:open\s*\(|read_text\s*\(|readFileSync|read_file|File\.read|IO\.read|slurp|fileinput)",
      "interpreter reading a file (open/read) -- dumps as completely as cat"),
 ]
