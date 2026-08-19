@@ -115,6 +115,10 @@ AGENT_NAME=$(grep '^NAME=' "$HOME/.tmux/registry/$TMUX_PANE" 2>/dev/null | cut -
 # Auto-approve gate + middle-man summary. The brain categorizes the pending tool:
 #   exit 0  -> read-only: answer "1. Yes" locally, no human, no Slack
 #   exit 10 -> needs a human: prints the /notify body ([category] + summary) on stdout
+#   exit 11 -> answer "1. Yes" locally AND still surface it (falls through below).
+#             Only AskUserQuestion, whose prompt asks permission to show a prompt:
+#             clearing it bypasses no decision, but the question dialog raises no
+#             notification of its own, so this stays the pane's only needs-input signal.
 # Fails safe to "modify" (ask) on any error.
 CLASSIFY_PY="$HOME/.tmux/.classify-venv/bin/python"
 BODY=""
@@ -131,6 +135,14 @@ if [ "$NTYPE" = "permission_prompt" ] && [ -x "$CLASSIFY_PY" ]; then
     "$HOME/.tmux/substrate.sh" report-state "$TMUX_PANE" working "$NOW" 2>/dev/null
     echo "$NOW auto-approve $TMUX_PANE" >> "$HOME/.tmux/auto-approve.log" 2>/dev/null
     exit 0
+  fi
+  if [ "$RC" -eq 11 ]; then
+    # Clear the prompt so the question renders without a click, then fall through to
+    # report-state needs-input + desktop + Slack. NO report-state working here and no
+    # exit: the pane genuinely needs the human next, and this is its only signal.
+    # Distinct log verb because this is not a silent approval -- a human is still owed.
+    ( sleep 0.4; "$HOME/.tmux/substrate.sh" send "$TMUX_PANE" 1 2>/dev/null ) &
+    echo "$NOW auto-approve-surface $TMUX_PANE" >> "$HOME/.tmux/auto-approve.log" 2>/dev/null
   fi
 fi
 

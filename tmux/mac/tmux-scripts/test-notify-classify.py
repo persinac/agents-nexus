@@ -428,6 +428,46 @@ EXPECT_BLOCKED += [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Tool-level: the SURFACE outcome (exit 11) — clear the prompt, still flag the pane.
+#
+# Asserted on three axes, because getting any one wrong is a distinct real failure:
+#   1. _surface_only picks exactly AskUserQuestion and nothing else. A false positive
+#      here clears a prompt that guards a real action.
+#   2. classify() still answers "modify" for it. main() applies the third outcome, but
+#      the Agent SDK runner's can_use_tool checks `decision == "read"` (runner.py:245);
+#      a "surface" leaking out of classify() would change that gate's behaviour too.
+#   3. The summary carries the question text, since that is what lands on the Slack
+#      card in place of an LLM paraphrase.
+# ---------------------------------------------------------------------------
+ASKQ_INPUT = {
+    "questions": [{
+        "question": "Delete the stray copy?",
+        "header": "Dup",
+        "options": [{"label": "Delete it"}, {"label": "Track it"}],
+    }]
+}
+
+EXPECT_SURFACE = [
+    "AskUserQuestion",
+    "askuserquestion",
+]
+
+# Must NOT be treated as surface-only: each either needs a real decision or is already
+# auto-approved outright, and both would be wrong to merely "clear".
+EXPECT_NOT_SURFACE = [
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "WebFetch",
+    "mcp__plugin_slack_slack__slack_send_message",
+    "mcp__plugin_slack_slack__slack_read_thread",
+    "mcp__atlassian__createJiraIssue",
+    "ExitPlanMode",
+]
+
+
 def _blocked(cmd):
     """True if either hard denylist catches it — i.e. permissive mode will NOT approve."""
     return bool(nc._DENY.search(cmd) or nc._DESTRUCTIVE.search(cmd))
@@ -448,8 +488,28 @@ def main() -> int:
         if _blocked(cmd):
             fails.append(("expected permitted, denylist blocked it", cmd))
 
+    for name in EXPECT_SURFACE:
+        if not nc._surface_only(name):
+            fails.append(("expected surface-only (exit 11), got plain modify", name))
+        decision, _cat, summary = nc.classify(name, ASKQ_INPUT)
+        if decision != "modify":
+            fails.append((f"classify() must stay 'modify' for the SDK gate, got {decision!r}", name))
+        if "Delete the stray copy?" not in summary:
+            fails.append(("summary must carry the question text", f"{name}: {summary!r}"))
+        if "Delete it" not in summary:
+            fails.append(("summary must carry the option labels", f"{name}: {summary!r}"))
+    for name in EXPECT_NOT_SURFACE:
+        if nc._surface_only(name):
+            fails.append(("must NOT be surface-only — would clear a real prompt", name))
+
+    # A malformed payload must still produce a usable card, never a traceback.
+    for bad in ({}, {"questions": None}, {"questions": []}, {"questions": [{}]}):
+        if not nc._question_summary(bad):
+            fails.append(("empty summary on malformed AskUserQuestion input", repr(bad)))
+
     total = (len(EXPECT_READ) + len(EXPECT_WITHHELD)
-             + len(EXPECT_BLOCKED) + len(EXPECT_PERMITTED))
+             + len(EXPECT_BLOCKED) + len(EXPECT_PERMITTED)
+             + len(EXPECT_SURFACE) + len(EXPECT_NOT_SURFACE))
     if fails:
         print(f"FAIL — {len(fails)} of {total}")
         for why, cmd in fails:
@@ -457,7 +517,8 @@ def main() -> int:
         return 1
     print(f"PASS — {total}/{total} "
           f"({len(EXPECT_READ)} auto-approve, {len(EXPECT_WITHHELD)} withheld, "
-          f"{len(EXPECT_BLOCKED)} hard-blocked, {len(EXPECT_PERMITTED)} permitted)")
+          f"{len(EXPECT_BLOCKED)} hard-blocked, {len(EXPECT_PERMITTED)} permitted, "
+          f"{len(EXPECT_SURFACE)} surface, {len(EXPECT_NOT_SURFACE)} not-surface)")
     return 0
 
 
