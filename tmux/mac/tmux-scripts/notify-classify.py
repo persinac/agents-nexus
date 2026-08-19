@@ -13,6 +13,9 @@ Output contract (so the hook needs no JSON parsing in bash):
               ({name,pane,kind,category,summary}) ready to POST.
   exit 11  -> SURFACE: clear the permission prompt AND still flag the pane as
               needing input. Prints the same body as exit 10. See SURFACE_TOOLS.
+  exit 12  -> REPEAT: same pending call already alerted for this pane recently. Flag the
+              pane as needing input, but skip the desktop bubble and the Slack card.
+              Prints the same body as exit 10. See _is_repeat.
 Any error -> exit 10 with a deterministic fallback summary (fail safe to "ask").
 
 Policy (rewritten 2026-08-19 — the default is now ALLOW, see _PERMISSIVE):
@@ -28,8 +31,10 @@ then — because Alex's bar is "as long as we're not deleting production data fr
 db, or deleting something from k8s, most of it is fine" — via the permissive tier,
 with no model call. Local file edits (Edit/Write/MultiEdit/NotebookEdit) are likewise
 permitted unless the path looks credential-ish.
-MCP / web egress / unknown still go to the LLM: their blast radius is not knowable
-from here and _DESTRUCTIVE only understands shell text.
+MCP tools are decided from their name (verb-first convention, see _mcp_is_read): reads
+auto-approve, mutations keep asking. Web egress and anything unrecognized still go to the
+LLM: their blast radius is not knowable from here and _DESTRUCTIVE only understands shell
+text.
 Compound shell commands are "read" only if every part is read-only; the denylists
 match against the whole command string, so a destructive part anywhere blocks.
 Set CLASSIFY_STRICT=1 to revert to allowlist-only behaviour with no code change.
@@ -71,6 +76,15 @@ from collections import deque
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread"}
+
+# Tools that load context and change nothing anywhere (added 2026-08-19). Neither is a
+# "read" of the filesystem, so neither fits READ_TOOLS, but both are pure friction:
+#   ToolSearch fetches tool SCHEMAS out of the local registry. Without it a deferred
+#              tool cannot be called at all, so denying it just stalls the turn.
+#   Skill      loads a skill's instructions into the turn. The actions a skill then
+#              takes are separate tool calls and are each gated by this same classifier,
+#              so clearing the load does not clear anything the skill goes on to do.
+INERT_TOOLS = {"toolsearch", "skill"}
 
 # Tools whose PERMISSION PROMPT is pure friction, but whose pane still needs the human
 # straight afterwards. AskUserQuestion is the entire set: the prompt asks permission to
@@ -114,7 +128,18 @@ _DENY = re.compile(
     # 30-day sample) was hard-denied as if it were a force push. Every other
     # destructive --force use is covered by _DESTRUCTIVE (docker rm, kubectl delete,
     # terraform destroy), so nothing is lost by narrowing this to git.
-    r"|\bgit\s+push\b[^|;&]{0,200}-f\b|\bgit\b[^|;&]{0,200}(--force|--hard)\b"
+    #
+    # Narrowed again the same day, from `git` to the SUBCOMMANDS where a force flag
+    # actually destroys something: `git <any> --force` also matched `git worktree remove
+    # --force`, which deletes a scratch worktree directory and nothing else. That is
+    # routine fleet cleanup (the rebase sweeps and conductor missions do it constantly) —
+    # measured reaching a human as if it were a force push. History-rewriting and
+    # working-tree-destroying forms all keep their hard deny.
+    # The short-flag alternative is `-[a-z]*f[a-z]*` rather than `-f`, because `git clean
+    # -fd` bundles the force flag with others and `-f\b` does not match inside a bundle
+    # (`d` is a word character, so the boundary never lands after the `f`).
+    r"|\bgit\s+(push|reset|clean|checkout|restore|rebase|filter-branch|gc)\b"
+    r"[^|;&]{0,200}(--force\b|--hard\b|\s-[a-zA-Z]*f[a-zA-Z]*\b)"
     r"|\|\s*(sh|bash|zsh)\b|\b(curl|wget)\b[^|]*\|\s*(sh|bash)"
     rf"|\bnpm\s+publish\b|{_CMDPOS}truncate\s)",
     re.I,
@@ -888,6 +913,89 @@ def _deterministic_read(cmd):
             return False
     return all(_segment_is_read(s) for s in _split_top_level(shell))
 
+# --- MCP tools, by naming convention (added 2026-08-19) ---------------------
+# Measured: over the 24h after permissive mode shipped, MCP calls were 33 of the 153
+# prompts that still reached a human — the single largest remaining bucket — and 20 of
+# those 33 were plain reads (getConfluencePage, slack_search_users, slack_read_thread,
+# aggregate_rum_events, search_datadog_monitors, grafana-list_oncall_schedules, ...).
+#
+# They were not reaching a human on policy grounds. They were reaching a human because
+# _PROMPT is written entirely about SHELL commands — it enumerates git/kubectl/aws/helm/
+# terraform/docker and says nothing about MCP — so the model had no rule to apply and
+# defaulted to "modify" for every one. Probed directly, it answered "modify" while its own
+# category text read "Confluence page inspection", "Slack user profile lookup", "log
+# search": the decision contradicted the summary the same prompt demands agree with it.
+# Each of those also cost ~1s of latency on the hook's hot path to produce.
+#
+# MCP tool names are verb-first by convention, which makes this decidable without a model:
+#   1. A HARD write verb anywhere in the name vetoes, whatever else the name says. This
+#      exists for `get_or_create_*`: first-verb-wins alone would read that as a get.
+#   2. Otherwise the FIRST recognized verb decides. First-verb-wins (not "any read verb
+#      present") is what keeps getIssueLinkTypes and getJiraIssueRemoteIssueLinks — both
+#      reads whose names carry the word "link" — from being vetoed by a bare word search.
+#   3. An unrecognized verb falls through to the LLM, so a new server is never silently
+#      approved by this.
+# An explicit HTTP method in the input overrides the name in both directions, which is
+# what settles the generic passthrough tools (grafana_api_request, atlassian fetch).
+#
+# POLICY NOTE, stated rather than buried: this clears MCP READS, which do send a query to
+# an external system (Confluence, Slack, Datadog, Grafana). That is a real widening beyond
+# "local reads only". It fits Alex's bar — no production data deleted, nothing removed from
+# k8s — and every MUTATION keeps asking. Nothing here can write, post, transition, or send.
+_MCP_WRITE_HARD = frozenset({
+    "create", "delete", "remove", "update", "write", "send", "post", "publish",
+    "deploy", "drop", "truncate", "purge", "upload", "revoke", "rotate", "destroy",
+    "uninstall", "insert", "overwrite", "kill", "terminate", "reset", "drain",
+})
+_MCP_READ_VERBS = frozenset({
+    "get", "list", "search", "read", "fetch", "query", "describe", "view", "show",
+    "lookup", "count", "check", "analyze", "aggregate", "find", "recent", "peek",
+    "inspect", "explain", "preview", "diff", "compare", "discover", "stats", "summary",
+})
+# Recognized but mutating: named so the FIRST-verb rule can reach a decision instead of
+# falling through to the LLM. "log" is here on purpose — mcp__agent-memory__log_event
+# WRITES an event, so treating "log" as a read verb (as the shell side does for
+# `kubectl logs`) would be wrong for MCP.
+_MCP_WRITE_SOFT = frozenset({
+    "transition", "edit", "add", "set", "merge", "schedule", "reply", "archive",
+    "assign", "comment", "apply", "invite", "restart", "patch", "put", "save",
+    "install", "start", "stop", "move", "rename", "approve", "reject", "close",
+    "submit", "share", "import", "sync", "scale", "draft", "enable", "disable",
+    "cancel", "retry", "trigger", "run", "execute", "annotate", "silence", "pause",
+    "resume", "acknowledge", "activate", "deactivate", "register", "grant", "link",
+    "unlink", "export", "generate", "load", "log", "mutate", "modify", "prune",
+    "rebuild", "resolve",
+})
+_MCP_HTTP_KEYS = ("method", "http_method", "httpMethod", "verb")
+_MCP_READ_METHODS = frozenset({"get", "head", "options"})
+_NAME_TOKENS = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+
+
+def _mcp_is_read(name, inp):
+    """True if an MCP tool's name (and any explicit HTTP method) says it only reads.
+    False means "not provably a read" — the caller then asks the LLM, as before."""
+    method = ""
+    for k in _MCP_HTTP_KEYS:
+        v = inp.get(k)
+        if isinstance(v, str) and v.strip():
+            method = v.strip().lower()
+            break
+    if method and method not in _MCP_READ_METHODS:
+        return False                       # an explicit write method overrides any name
+    leaf = (name or "").split("__")[-1]
+    toks = [t.lower() for t in _NAME_TOKENS.findall(leaf)]
+    if any(t in _MCP_WRITE_HARD for t in toks):
+        return False
+    for t in toks:
+        if t in _MCP_READ_VERBS:
+            return True
+        if t in _MCP_WRITE_SOFT:
+            return False
+    # No verb in the name (grafana_api_request, atlassianUserInfo). A declared read
+    # method is enough on its own; otherwise this stays unknown and goes to the LLM.
+    return bool(method)
+
+
 _PROMPT = """You are the middle-man between an autonomous coding agent and its human operator on Slack. The agent paused to ask permission to use a tool. Reply with ONLY a compact JSON object:
 
 {{"decision":"read|modify","category":"<2-4 word label>","summary":"<one or two sentences>"}}
@@ -896,6 +1004,7 @@ decision rules:
 - "read" = the command only INSPECTS and does not change files, branches, remotes, deployed resources, or download-and-run / install anything. Treat ALL of these as read: git status/log/diff/show/branch -l/rev-parse/merge-base/range-diff/blame/ls-files, `git fetch` (updates only remote-tracking refs — safe), a force-less `git push` (no -f/--force/--force-with-lease), kubectl get/describe/logs/top/diff/events/auth/wait, helm template/diff/get/list, terraform plan, docker ps/images/logs/inspect, AWS CLI actions named get-*/describe-*/list-*/head-* (and plain `aws s3 ls`/`presign`), a plain `mv` that doesn't touch a credential-ish path (.ssh/.aws/.kube/.env/id_rsa/...) and isn't forced with -f, and cat/ls/grep/find(without -delete)/head/tail (incl. -f follow)/wc/echo/which/jq.
 - "modify" = changes state: writes/edits/deletes files, redirects to a file (> or >>), a FORCED git push (-f/--force/--force-with-lease), git add/commit/reset/checkout/merge/rebase/stash, kubectl apply/create/delete/patch/scale/rollout/edit/exec/cp/attach/debug/run/port-forward, AWS CLI actions named create-*/put-*/delete-*/update-*/modify-*/run-*/terminate-*/tag-*/attach-* (or any shape you can't confidently place in the read list above), helm install/upgrade/uninstall, terraform apply/destroy, package installs, sudo, or piping into a shell.
 - Compound command (&&, ||, ;, |): "read" only if EVERY part is read; one modifying part makes the whole "modify".
+- NOT EVERY TOOL IS A SHELL COMMAND. The rules above are about Bash. For an MCP tool (a name like mcp__<server>__<tool>) or any other named tool, judge the same way from what the tool DOES: fetching, listing, searching, querying, viewing or describing something in an external system (Confluence, Jira, Slack, Grafana, Datadog, ...) is "read", even though it talks to a remote service. Creating, updating, deleting, sending, posting, transitioning, assigning, uploading or scheduling anything there is "modify". Judging a lookup as "modify" merely because it leaves the machine is WRONG.
 - BE DECISIVE: if every part is plainly an inspection, answer "read" — do NOT hedge to "modify" just because the domain (git/k8s/deploy) feels operational. Reserve "modify" for an actual state change or genuine ambiguity. Your decision MUST agree with your summary: if the summary concludes nothing is modified, decision is "read".
 
 category: short label, e.g. "read-only inspection", "git fetch", "file edit", "k8s apply", "package install", "delete files".
@@ -1047,12 +1156,101 @@ def _llm(name, inp):
         return None
 
 
+# --- Repeat-notification suppression (added 2026-08-19) ---------------------
+# Claude Code re-emits the SAME permission_prompt Notification every ~2 minutes for as
+# long as the prompt sits unanswered. Measured on 2026-08-19: one unanswered
+# mcp__atlassian__getConfluencePage on pane w52:p6 produced 18 notifications over 53
+# minutes — 18 desktop bubbles and 18 Slack cards for ONE decision. Of the 54 withheld
+# notifications in that window only 36 were distinct calls; the other 18 were that one
+# prompt repeating. Alert volume, not decision volume, is what makes the fleet feel noisy.
+#
+# So: recognise a repeat by fingerprinting (pane, tool, input) and tell the hook to keep
+# the pane flagged as needs-input while skipping the bubble and the Slack post. The
+# needs-input flag is deliberately still set on every repeat — it is the load-bearing
+# signal a supervisor reads, and it is idempotent, so suppressing it would risk the one
+# failure this repo cares most about (a pane waiting silently).
+#
+# After NOTIFY_REALERT_SECS (default 30 min) the same prompt alerts again, so a genuinely
+# forgotten prompt still resurfaces instead of being silenced forever.
+# NOTIFY_DEDUPE_DIR exists so the end-to-end exit-code test can run hermetically instead
+# of writing fake panes into the live state dir.
+_DEDUPE_DIR = (os.environ.get("NOTIFY_DEDUPE_DIR")
+               or os.path.join(os.path.expanduser("~"), ".tmux", "state", "notify-dedupe"))
+_REALERT_SECS = int(os.environ.get("NOTIFY_REALERT_SECS") or 1800)
+
+
+def _fingerprint(name, inp, tool_id=""):
+    """Identity of the PENDING CALL, not of its content.
+
+    Prefers the tool_use id, which is unique per call. Content alone would be wrong in the
+    one direction that matters: an agent that retries the same write with the same
+    arguments (a re-sent Slack message, a re-applied Confluence edit) raises a genuinely
+    NEW decision that happens to hash identically, and suppressing its alert would hide a
+    real prompt. Falls back to name+input only when the transcript has no id.
+    """
+    import hashlib
+    if tool_id:
+        return hashlib.sha1(tool_id.encode("utf-8", "replace")).hexdigest()[:16]
+    try:
+        blob = json.dumps(inp, sort_keys=True, default=str)[:4000]
+    except Exception:
+        blob = repr(inp)[:4000]
+    return hashlib.sha1(f"{name}\n{blob}".encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _is_repeat(name, inp, tool_id=""):
+    """True if this exact pending call already alerted for this pane recently.
+
+    Fails OPEN on any error: an unreadable or unwritable state dir must never swallow an
+    alert, so every failure path here returns False (alert normally)."""
+    pane = os.environ.get("PANE", "")
+    if not pane:
+        return False
+    try:
+        os.makedirs(_DEDUPE_DIR, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.:%-]", "_", pane)
+        path = os.path.join(_DEDUPE_DIR, safe)
+        fp = _fingerprint(name, inp, tool_id)
+        now = int(float(os.environ.get("WAIT_SINCE") or 0)) or int(_now())
+        prev_fp, prev_alert = "", 0
+        try:
+            with open(path) as fh:
+                parts = fh.read().split()
+            if len(parts) >= 2:
+                prev_fp, prev_alert = parts[0], int(parts[1])
+        except (OSError, ValueError):
+            pass
+        # `0 <=`, not `0 <`: two notifications landing in the same second are still one
+        # decision. A NEGATIVE delta (stale state written by a clock ahead of this one)
+        # deliberately falls through and alerts — this must fail open, not silent.
+        if prev_fp == fp and 0 <= now - prev_alert < _REALERT_SECS:
+            return True
+        with open(path, "w") as fh:
+            fh.write(f"{fp} {now}\n")
+        return False
+    except Exception:
+        return False
+
+
+def _now():
+    import time
+    return time.time()
+
+
+# Set by main() before emitting so the body can name the tool. The Slack bridge
+# destructures the keys it knows and ignores the rest (slack-bridge/index.js:2038), so
+# this is additive there; its real consumer is ~/.tmux/notify-asked.log, which gives an
+# audit the pending tool directly instead of re-deriving it from a transcript.
+_TOOL_NAME = ""
+
+
 def _emit(category, summary, code):
     print(json.dumps({
         "name": os.environ.get("AN", ""),
         "pane": os.environ.get("PANE", ""),
         "kind": os.environ.get("KIND", ""),
         "wait_since": os.environ.get("WAIT_SINCE", ""),
+        "tool": _TOOL_NAME,
         "category": category,
         "summary": summary,
     }))
@@ -1064,9 +1262,13 @@ def _emit_modify(category, summary):
 
 
 def _last_tool_use(transcript_path):
-    """Most recent tool_use in the transcript tail. Scans back through the last few
-    assistant messages (not just the latest, which may be text-only) so a pending
-    tool call is still found when the assistant wrote prose around it."""
+    """Most recent tool_use in the transcript tail, as (name, input, id). Scans back
+    through the last few assistant messages (not just the latest, which may be text-only)
+    so a pending tool call is still found when the assistant wrote prose around it.
+
+    The id is carried out for _fingerprint: it is the only per-call identity available
+    here (prompt_id in the hook payload is the USER TURN's id and repeats across every
+    prompt in a turn — see hook-notification.sh)."""
     if not transcript_path or not os.path.exists(transcript_path):
         return None
     try:
@@ -1086,7 +1288,7 @@ def _last_tool_use(transcript_path):
         if isinstance(content, list):
             for b in reversed(content):
                 if isinstance(b, dict) and b.get("type") == "tool_use":
-                    return (b.get("name") or "", b.get("input") or {})
+                    return (b.get("name") or "", b.get("input") or {}, b.get("id") or "")
         seen += 1
         if seen >= 6:                # bound the look-back so we don't grab a stale tool
             break
@@ -1104,6 +1306,9 @@ def classify(name, inp):
     # 1. Clearly read-only local tools -> read, no LLM.
     if short in READ_TOOLS:
         return "read", "read-only", det
+    # 1a. Context-loading tools that change nothing. See INERT_TOOLS.
+    if short in INERT_TOOLS:
+        return "read", "context load", det
     # 1b. Ask-the-human tools. Deliberately still "modify" so this function's two-value
     #     contract holds for the Agent SDK runner's can_use_tool gate (runner.py checks
     #     `decision == "read"`, and there the human is prompted in-process anyway). The
@@ -1138,9 +1343,13 @@ def classify(name, inp):
         path = str(inp.get("file_path") or inp.get("notebook_path") or "")
         if path and not _MV_SENSITIVE.search(path):
             return "read", "file edit", det
-    # 4. Web egress / MCP / unknown -> modify (LLM summarizes). Deliberately NOT
-    #    covered by permissive mode: an MCP tool's blast radius is unknowable from
-    #    here, and _DESTRUCTIVE only understands shell text.
+    # 4. MCP whose NAME proves it only reads -> read, no LLM. See _mcp_is_read. Mutating
+    #    MCP tools fall through to the LLM exactly as before; permissive mode does not
+    #    cover them, because _DESTRUCTIVE only understands shell text and an MCP write's
+    #    blast radius is not knowable from here.
+    if (name or "").startswith("mcp__") and _mcp_is_read(name, inp):
+        return "read", "mcp read", det
+    # 5. Web egress / mutating MCP / unknown -> modify (LLM summarizes).
     llm = _llm(name, inp)
     return "modify", (llm[1] if llm else "needs review"), (llm[2] if llm and llm[2] else det)
 
@@ -1155,12 +1364,18 @@ def main():
     tool = _last_tool_use(data.get("transcript_path", ""))
     if not tool:
         _emit_modify("needs review", os.environ.get("FB", "needs input"))
-    name, inp = tool
+    name, inp, tool_id = tool
+    global _TOOL_NAME
+    _TOOL_NAME = name
     decision, category, summary = classify(name, inp)
     if decision == "read":
         sys.exit(0)                                       # safe -> auto-approve
     if _surface_only(name):
+        # Deliberately NOT deduped: exit 11 owes the pane a keypress to clear the prompt,
+        # and skipping that would leave the question dialog unrendered.
         _emit(category, summary, 11)                       # clear the prompt, still flag
+    if _is_repeat(name, inp, tool_id):
+        _emit(category, summary, 12)                       # flag the pane, skip alerting
     _emit_modify(category, summary)                        # needs a human
 
 
