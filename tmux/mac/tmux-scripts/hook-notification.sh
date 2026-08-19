@@ -32,8 +32,8 @@ NTYPE=$(echo "$INPUT" | sed -n 's/.*"notification_type" *: *"\([^"]*\)".*/\1/p' 
 #
 # The first cut capped the payload at `cut -c1-300` and so could never answer
 # the question: the payload opens with session_id + transcript_path + cwd, and
-# this box's home dir (`/Users/alex.persinger@getgarner.com/...`) appears twice
-# in that prefix, pushing every remaining field past the cut. Four days and 245
+# this box's long home-dir path appears twice in that prefix (once in cwd, once
+# inside transcript_path), pushing every remaining field past the cut. Four days and 245
 # logged notifications yielded no field beyond notification_type.
 #
 # What the widened capture established (2026-08-18), so the next person does not
@@ -139,8 +139,10 @@ fi
 
 # Desktop notification — OS-guarded so this hook is the ONE shared copy (no per-OS override):
 #   macOS  → osascript bubble + sound
-#   Linux  → notify-send bubble if a console session is attached, plus a bell (\a) that iTerm2 /
-#            Windows Terminal turn into a system notification for SSH clients.
+#   Linux  → notify-send bubble whenever that binary is installed (the test below is
+#            `command -v`, NOT whether a console session is attached — an earlier version of
+#            this comment claimed the latter), plus a bell (\a) that iTerm2 / Windows
+#            Terminal turn into a system notification for SSH clients.
 case "$OSTYPE" in
   darwin*)
     osascript -e "display notification \"Agent ${WNAME:-?} needs input ($NTYPE)\" with title \"Claude Code\" sound name \"Glass\"" 2>/dev/null & ;;

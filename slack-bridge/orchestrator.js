@@ -922,7 +922,7 @@ export function capWithMarker(str, max) {
 // broker routes each message to exactly the owning host — no fleet-wide fan-out.
 //
 // Token encoding keeps the safe set `[A-Za-z0-9_-]` verbatim (so a kebab agent name
-// like `svc-chatbot` is human-readable) and escapes every other byte as `<esc>HH`
+// like `example-svc` is human-readable) and escapes every other byte as `<esc>HH`
 // (two lowercase hex of the UTF-8 byte). The escape char has no passthrough, so
 // decoding is unambiguous: an `<esc>` always introduces a 2-hex escape. An empty token
 // maps to `<esc>e`, which encode() can never emit for a non-empty string (a real
@@ -1108,15 +1108,15 @@ export function renderDelivery(e) {
 // derived from the other by any string rule:
 //
 //   pane      registry NAME=                              live pane/window name
-//   w4K:pA    svc-chatbot                                 search/concierge/svc-chatbot
-//   w4R:p2    search_concierge_svc-chatbot--demo-latency  search_concierge_svc-chatbot/demo-latency
-//   w4R:p4    ui-member                                   frontend/ui-member
+//   w4K:pA    example-svc                                 team/area/example-svc
+//   w4R:p2    team_area_example-svc--feature-x  team_area_example-svc/feature-x
+//   w4R:p4    example-ui                                   team/example-ui
 //
 // (basename vs repo path in the first case; `--` vs `/` as the final separator in the
 // second.) The anchor lookup used exact name equality, so one agent read as two: it got
 // two anchors, two threads, and every notification buzzed under whichever form the
 // posting caller happened to use. Measured in ~/.tmux/slack-threads.json on 2026-08-18 —
-// `svc-chatbot` (40 requests) and `search/concierge/svc-chatbot` (24) were both w4K:pA;
+// `example-svc` (40 requests) and `team/area/example-svc` (24) were both w4K:pA;
 // `--demo-latency`/`/demo-latency` and `--temp-oncall`/`/temp-oncall` split the same way.
 //
 // `pane` is the one identity every /notify caller already sends and the only one that is

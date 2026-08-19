@@ -52,9 +52,9 @@ EXPECT_READ = [
 
     # --- test / check runners (policy allowlist, added 2026-08-18) ---
     # the exact command that left a fleet agent parked on an approval prompt
-    ('cd /Users/alex.persinger@getgarner.com/garner/repos/.worktrees/x && '
-     'POSTGRES_URL=postgresql+psycopg://testspostgres:test@localhost:5433/chat '
-     '/Users/alex.persinger@getgarner.com/garner/repos/search/concierge/svc-chatbot/'
+    ('cd /Users/dev/repos/.worktrees/x && '
+     'POSTGRES_URL=postgresql+psycopg://user:pass@localhost:5433/testdb '
+     '/Users/dev/repos/team/area/example-svc/'
      '.venv/bin/python -m pytest tests/lib/ tests/managers/ai/test_litellm_manager.py '
      '-q 2>&1 | tail -35'),
     'pytest tests/ -q',
@@ -70,15 +70,15 @@ EXPECT_READ = [
 
     # --- glab, the GitLab CLI (added 2026-08-18) ---
     # the real shape from the fleet's own tooling and ~/.claude/CLAUDE.md
-    'glab api "projects/77912848/merge_requests/605"',
+    'glab api "projects/12345678/merge_requests/605"',
     'glab api projects/1/merge_requests?state=opened',
     'glab api projects/1 | jq .name',
     'glab api --paginate projects/1/pipelines',
     'glab mr list',
     'glab mr view 605',
     'glab mr diff 605',
-    'glab -R garner-health/svc-chatbot mr list',
-    'glab --repo garner-health/svc-chatbot mr view 605',
+    'glab -R example-org/example-svc mr list',
+    'glab --repo example-org/example-svc mr view 605',
     'glab ci status',
     'glab ci trace',
     'glab auth status',
@@ -136,7 +136,7 @@ EXPECT_WITHHELD = [
     'glab auth login',
     'glab ci retry 123',
     'glab variable set KEY=value',
-    'glab repo clone garner-health/svc-chatbot',
+    'glab repo clone example-org/example-svc',
     'glab config set editor vim',
     # the false-approve guard: a read verb inside a quoted string must NOT approve a merge.
     # This is why the action is matched positionally rather than searched for in the segment.

@@ -426,7 +426,7 @@ test('ownersOf / ownerOf: name-level ownership on records, lexically-smallest ho
 // --------------------------------------------------------------------------
 
 test('encode/decode subject token round-trips (passthrough, escapes, unicode, empty)', () => {
-  for (const s of ['svc-chatbot', 'agents-nexus', 'F4HFKXH56W', 'search/r12n/svc-r12n',
+  for (const s of ['example-svc', 'agents-nexus', 'F4HFKXH56W', 'search/r12n/svc-r12n',
                    'a.b', 'has space', 'star*and>gt', '~tilde~', 'café', '', '_under_', 'MixedCase09']) {
     assert.equal(decodeSubjectToken(encodeSubjectToken(s)), s, `round-trip: ${JSON.stringify(s)}`);
   }
@@ -738,29 +738,29 @@ const CH = 'C0BB9AB6F38';
 const anchorEntry = (o) => ({ channel: CH, root: 'r1', name: 'n', pane: '', ...o });
 
 test('findAgentRoot: one pane, two name spellings -> ONE anchor', () => {
-  // Exactly the observed case: pane w4K:pA posting as both `svc-chatbot` and
-  // `search/concierge/svc-chatbot`.
-  const entries = [anchorEntry({ name: 'svc-chatbot', pane: 'w4K:pA', root: 'anchor-1' })];
-  assert.equal(findAgentRoot(entries, { name: 'svc-chatbot', pane: 'w4K:pA', channel: CH }), 'anchor-1');
+  // Exactly the observed case: pane w4K:pA posting as both `example-svc` and
+  // `team/area/example-svc`.
+  const entries = [anchorEntry({ name: 'example-svc', pane: 'w4K:pA', root: 'anchor-1' })];
+  assert.equal(findAgentRoot(entries, { name: 'example-svc', pane: 'w4K:pA', channel: CH }), 'anchor-1');
   assert.equal(
-    findAgentRoot(entries, { name: 'search/concierge/svc-chatbot', pane: 'w4K:pA', channel: CH }),
+    findAgentRoot(entries, { name: 'team/area/example-svc', pane: 'w4K:pA', channel: CH }),
     'anchor-1',
     'the other spelling of the same pane must reuse the anchor, not open a second one');
 });
 
 test('findAgentRoot: worktree `--` vs `/` spellings share an anchor', () => {
-  const entries = [anchorEntry({ name: 'search_concierge_svc-chatbot--demo-latency', pane: 'w4R:p2', root: 'a2' })];
+  const entries = [anchorEntry({ name: 'team_area_example-svc--feature-x', pane: 'w4R:p2', root: 'a2' })];
   assert.equal(
-    findAgentRoot(entries, { name: 'search_concierge_svc-chatbot/demo-latency', pane: 'w4R:p2', channel: CH }),
+    findAgentRoot(entries, { name: 'team_area_example-svc/feature-x', pane: 'w4R:p2', channel: CH }),
     'a2');
 });
 
 test('findAgentRoot: pane outranks a name match found earlier in the map', () => {
   const entries = [
-    anchorEntry({ name: 'ui-member', pane: 'w9:p9', root: 'name-hit' }),   // same name, other pane
+    anchorEntry({ name: 'example-ui', pane: 'w9:p9', root: 'name-hit' }),   // same name, other pane
     anchorEntry({ name: 'other', pane: 'w4R:p4', root: 'pane-hit' }),      // our pane
   ];
-  assert.equal(findAgentRoot(entries, { name: 'ui-member', pane: 'w4R:p4', channel: CH }), 'pane-hit');
+  assert.equal(findAgentRoot(entries, { name: 'example-ui', pane: 'w4R:p4', channel: CH }), 'pane-hit');
 });
 
 test('findAgentRoot: falls back to name when no pane is supplied', () => {
@@ -793,15 +793,15 @@ test('findAgentRoot: ignores entries with no root, and empty input', () => {
 });
 
 test('findAgentRoot: pane supplied but unknown still reuses a name match (no fragmentation)', () => {
-  // Anchor-count monotonicity. `svc-chatbot` was observed across 8 panes over weeks
+  // Anchor-count monotonicity. `example-svc` was observed across 8 panes over weeks
   // (w4B:p2/p4/p6/pA/pG/pM, w4K:p2/pA). Pane-FIRST must not mean pane-ONLY, or moving
   // panes would open a fresh anchor each time and this change would ADD channel noise
   // instead of removing it. Matching is a union: pane wins when it hits, name still
   // catches everything it caught before, so the result is never more anchors than the
   // old name-only lookup produced.
-  const entries = [anchorEntry({ name: 'svc-chatbot', pane: 'w4B:pA', root: 'existing' })];
+  const entries = [anchorEntry({ name: 'example-svc', pane: 'w4B:pA', root: 'existing' })];
   assert.equal(
-    findAgentRoot(entries, { name: 'svc-chatbot', pane: 'w4X:p9', channel: CH }),
+    findAgentRoot(entries, { name: 'example-svc', pane: 'w4X:p9', channel: CH }),
     'existing',
     'a known name on a brand-new pane must reuse its anchor, not open a second one');
 });
