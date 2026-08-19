@@ -169,7 +169,15 @@ SELF_DUMPING = [
      "bare env/printenv (dumps every exported secret at once)"),
     (r"\bkubectl\s+get\s+secrets?\b[^|;&]*-o\s*(yaml|json)",
      "kubectl get secret -o yaml/json (base64 blobs match no scrubber pattern)"),
-    (r"\bdoppler\s+secrets\b(?!\s+get\b)",
+    # --only-names is exempt (2026-08-19): its own help says "only print the secret
+    # names; omit all values", so it cannot disclose by construction -- the same
+    # reasoning that already allows `grep -oE '^[A-Z_]+='` in the guidance above.
+    # The rule was written against the plaintext table but matched on subcommand
+    # alone, so it also refused the one form that is safe, and "doppler is blocked"
+    # got mis-filed as a credentials problem for days. Scoped with [^|;&]* so the
+    # flag exempts only ITS OWN command segment: `doppler secrets --only-names ;
+    # doppler secrets` still blocks on the second half.
+    (r"\bdoppler\s+secrets\b(?!\s+get\b)(?![^|;&]*--only-names)",
      "doppler secrets (prints the full plaintext table)"),
     (r"\bhelm\s+get\s+values\b", "helm get values"),
     (r"\bnpm\s+config\s+list\b", "npm config list (may print _authToken)"),

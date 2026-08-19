@@ -42,6 +42,9 @@ MUST_BLOCK = [
     "ls /tmp\nenv\necho done",
     "doppler secrets",
     "doppler secrets download --no-file",
+    # --only-names exempts only its OWN segment; a second dump after ; still blocks
+    "doppler secrets --only-names -p mcp-minions; doppler secrets",
+    "doppler secrets --only-names && doppler secrets --plain",
     "kubectl get secret my-secret -o yaml",
     "kubectl get secrets -n kube-system -o json",
     "helm get values my-release",
@@ -88,6 +91,11 @@ MUST_ALLOW = [
     # the trello-read skill captures into a var rather than printing -- must keep working
     "export TRELLO_API_KEY=$(doppler secrets get TRELLO_API_KEY --project infrastructure --config prd --plain)",
     "doppler secrets get PINBALL_DB_HOST --plain",
+    # --only-names prints names and omits every value, per doppler's own help text.
+    # Blocking it made "doppler is blocked" look like an auth failure for days.
+    "doppler secrets --only-names",
+    "doppler secrets --only-names -p mcp-minions -c dev",
+    "doppler secrets --only-names --json | jq keys",
     "doppler run -- uv run fbf device status",
     "kubectl get secret my-secret -o name",
     "kubectl get pods -o yaml",
