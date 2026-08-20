@@ -7,7 +7,14 @@ Nothing here reads a credential -- these are command STRINGS handed to the hook'
 """
 import json, subprocess, os
 
-HOOK = os.path.expanduser("~/.claude/hooks/block-credential-dump.sh")
+# Grade the guard SITTING NEXT TO THIS SUITE, not the deployed one. Until 2026-08-20
+# this was hardcoded to ~/.claude/hooks/block-credential-dump.sh -- a symlink into the
+# shared agents-nexus checkout. So the suite silently graded whatever happened to be
+# deployed rather than the tree under test, and with that checkout on another branch,
+# nine correct new rules reported as failures twice before the path was suspected.
+# Set HOOK_PATH to point at a deployed copy when that is what you actually want to test.
+HOOK = os.environ.get("HOOK_PATH") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "block-credential-dump.sh")
 
 MUST_BLOCK = [
     "cat talos-config/cluster-secrets.yaml",
@@ -45,6 +52,18 @@ MUST_BLOCK = [
     # --only-names exempts only its OWN segment; a second dump after ; still blocks
     "doppler secrets --only-names -p mcp-minions; doppler secrets",
     "doppler secrets --only-names && doppler secrets --plain",
+    # --- credential-store CLIs printing their own stored auth (2026-08-19 leak) ---
+    # The --json form is the one that leaked; measured len=49 vs len=10 for the table.
+    "doppler configure --json",
+    "doppler configure --json | jq -r .token",
+    # flag order must not matter -- the lookaheads are order-independent on purpose
+    "doppler --json configure",
+    "doppler configure get token",
+    "gh auth token",
+    "gh auth token > /tmp/t",
+    "gh auth status --show-token",
+    "aws configure get aws_secret_access_key",
+    "aws configure export-credentials",
     "kubectl get secret my-secret -o yaml",
     "kubectl get secrets -n kube-system -o json",
     "helm get values my-release",
@@ -96,6 +115,13 @@ MUST_ALLOW = [
     "doppler secrets --only-names",
     "doppler secrets --only-names -p mcp-minions -c dev",
     "doppler secrets --only-names --json | jq keys",
+    # the TABLE form elides the token (len=10) -- it is the recommended alternative, so
+    # blocking it would push people straight back to --json
+    "doppler configure",
+    "doppler configure -p mcp-minions -c dev",
+    "gh auth status",
+    "gh auth login --with-token",
+    "gh pr create --title x --body y",
     "doppler run -- uv run fbf device status",
     "kubectl get secret my-secret -o name",
     "kubectl get pods -o yaml",
