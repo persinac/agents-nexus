@@ -13,6 +13,16 @@ import json, subprocess, os, tempfile
 # deployed rather than the tree under test, and with that checkout on another branch,
 # nine correct new rules reported as failures twice before the path was suspected.
 # Set HOOK_PATH to point at a deployed copy when that is what you actually want to test.
+#
+# IMPORTANT, and easy to misread (noted 2026-08-20): on the PRIMARY checkout this default
+# buys you no independence at all. ~/.claude/hooks/block-credential-dump.sh is a symlink
+# to the file sitting right here, so "the sibling" and "the deployed guard" are the SAME
+# INODE and a green run says nothing about deployed-vs-tree. The separation is real only
+# where the two genuinely differ -- a git worktree, a second clone, or an explicit
+# HOOK_PATH. What the default actually fixed was the case where this checkout sits on a
+# different BRANCH than the tree under test, which is how nine correct rules read as
+# failures twice. Do not read a bare green run as "the tree is good, independent of what
+# is deployed" on this host; it is one file wearing two names.
 HOOK = os.environ.get("HOOK_PATH") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "block-credential-dump.sh")
 
