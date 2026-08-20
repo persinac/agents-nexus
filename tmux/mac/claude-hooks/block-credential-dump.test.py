@@ -5,7 +5,7 @@ Run from a file, not inline: the guard (correctly) refuses a Bash command that m
 CONTAINS a dangerous-looking string, so the cases cannot be passed as shell arguments.
 Nothing here reads a credential -- these are command STRINGS handed to the hook's stdin.
 """
-import json, subprocess, os
+import json, subprocess, os, tempfile
 
 # Grade the guard SITTING NEXT TO THIS SUITE, not the deployed one. Until 2026-08-20
 # this was hardcoded to ~/.claude/hooks/block-credential-dump.sh -- a symlink into the
@@ -180,9 +180,18 @@ MUST_BLOCK_BECAUSE = [
     ("git remote -v", "git remote", None),
 ]
 
+# The guard appends every block to $NEXUS_TMUX_DIR/gate-decisions.log. Without this
+# redirect the suite writes ~53 block lines to the REAL log on every run, and that log
+# exists precisely to answer "what has this guard actually stopped?" -- test traffic in
+# it makes the answer wrong. Measured before this fix: 575 of 649 blocks in a 24h
+# window were suite runs rather than real commands.
+_LOGDIR = tempfile.mkdtemp(prefix="gate-test-")
+
+
 def run_full(cmd):
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
-    p = subprocess.run([HOOK], input=payload, capture_output=True, text=True)
+    env = {**os.environ, "NEXUS_TMUX_DIR": _LOGDIR}
+    p = subprocess.run([HOOK], input=payload, capture_output=True, text=True, env=env)
     return p.returncode, p.stderr
 
 

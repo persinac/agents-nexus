@@ -72,7 +72,31 @@ def strip_heredoc_bodies(text):
         i += 1
     return "\n".join(out)
 
-scan = strip_heredoc_bodies(cmd)
+# `agent-send.sh <fqdn> "<message>"` hands its argument to the NATS bus as DATA. The
+# script reads no files, and the receiving agent gets the text as a user turn, never as
+# a command -- so a message that merely NAMES a guarded command must not trip this guard.
+#
+# Not hypothetical: on 2026-08-20 this refused an inter-agent report ABOUT this guard,
+# because the report named a blocked subcommand near a pipe. Same prose false-positive
+# class that strip_heredoc_bodies fixed for commit messages, but heredoc stripping cannot
+# reach it -- an agent-send payload is a quoted argv element, not a heredoc body.
+#
+# Command substitution is deliberately NOT stripped: `agent-send.sh x "$(cat ~/.aws/...)"`
+# really does read the file, because the shell expands it before agent-send ever runs.
+# Same principle as the INTERP carve-out above -- strip what is inert, keep what executes.
+_MSG_SCRIPT = re.compile(r"\bagent-send\.sh\b")
+_QUOTED_SPAN = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def strip_message_payload(text):
+    if not _MSG_SCRIPT.search(text):
+        return text
+    return _QUOTED_SPAN.sub(
+        lambda m: m.group(0) if ("$(" in m.group(0) or "`" in m.group(0)) else " ",
+        text)
+
+
+scan = strip_message_payload(strip_heredoc_bodies(cmd))
 
 # Paths that can hold credentials. Substring match on the command text.
 CRED = [

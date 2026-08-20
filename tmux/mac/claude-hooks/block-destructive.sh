@@ -78,7 +78,27 @@ def strip_heredoc_bodies(text):
         i += 1
     return "\n".join(out)
 
-cmd = strip_heredoc_bodies(cmd)
+# `agent-send.sh <fqdn> "<message>"` hands its argument to the NATS bus as DATA -- the
+# script reads nothing and executes nothing, and the receiving agent gets the text as a
+# user turn. So a report that merely NAMES a destructive command must not be refused.
+# Not hypothetical: on 2026-08-20 this class refused an inter-agent report about the
+# guards themselves. Heredoc stripping cannot reach it (a payload is a quoted argv
+# element, not a heredoc body).
+#
+# Command substitution is deliberately NOT stripped -- `"$(kubectl delete ns prod)"`
+# really runs, because the shell expands it before agent-send is invoked. Same principle
+# as the INTERP exception above: strip what is inert, keep what executes.
+_MSG_SCRIPT = re.compile(r"\bagent-send\.sh\b")
+_QUOTED_SPAN = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+def strip_message_payload(text):
+    if not _MSG_SCRIPT.search(text):
+        return text
+    return _QUOTED_SPAN.sub(
+        lambda m: m.group(0) if ("$(" in m.group(0) or "`" in m.group(0)) else " ",
+        text)
+
+cmd = strip_message_payload(strip_heredoc_bodies(cmd))
 
 src = os.environ.get("CLASSIFIER_PATH", "")
 try:
