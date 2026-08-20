@@ -21,6 +21,7 @@ guard against the two files drifting apart.
 import json
 import os
 import subprocess
+import tempfile
 import sys
 
 HOOK = os.path.expanduser("~/.claude/hooks/block-destructive.sh")
@@ -60,6 +61,11 @@ MUST_BLOCK = [
     "bash <<'EOF'\nkubectl delete ns prod\nEOF",
     "python3 <<'PY'\nimport os; os.system('kubectl delete ns prod')\nPY",
     'sh <<EOF\nterraform destroy -auto-approve\nEOF',
+    # An agent-send payload is inert, but COMMAND SUBSTITUTION inside one is not: the
+    # shell expands it before agent-send ever runs. Stripping that would be an evasion
+    # hole, exactly like stripping an interpreter's heredoc body.
+    '~/.tmux/agent-send.sh a/b/c "$(kubectl delete ns prod)"',
+    '~/.tmux/agent-send.sh a/b/c "result: `terraform destroy -auto-approve`"',
 ]
 
 # Prose that merely MENTIONS a destructive command. These cost ~6 false blocks in one
@@ -69,6 +75,12 @@ MUST_ALLOW_PROSE = [
     "git commit -F - <<'EOF'\ndocs: explain why kubectl delete is guarded\n\nThe guard refuses a cluster delete; see the runbook.\nEOF",
     "cat > notes.md <<'DOC'\nRun a cluster delete only via the console.\nTo drop a table, ask an admin.\nDOC",
     "gh pr create --title x --body \"$(cat <<'BODY'\nThis PR documents why terraform destroy is blocked.\nBODY\n)\"",
+    # --- agent-send payloads are DATA on the bus, not commands (2026-08-20) ---
+    # The guard refused an inter-agent report ABOUT the guard because the report named a
+    # blocked subcommand. Heredoc stripping cannot reach this: the payload is a quoted
+    # argv element. The receiving agent gets text as a user turn, never a command.
+    '~/.tmux/agent-send.sh alex-nexus/minions/minions-suite "heads up: kubectl delete is refused by the guard now"',
+    '/home/persinac/.tmux/agent-send.sh a/b/c "terraform destroy and DROP TABLE are both hard-blocked"',
 ]
 
 # Must pass through (exit 0). A failure here is the guard interrupting ordinary work,
@@ -92,9 +104,18 @@ MUST_ALLOW = [
 ]
 
 
+# The guard appends every block to $NEXUS_TMUX_DIR/gate-decisions.log. Without this
+# redirect the suite writes ~24 block lines to the REAL log on every run, and the
+# decision log exists precisely to answer "what has this guard actually stopped?" --
+# test traffic in it makes the answer wrong. Measured before this fix: 575 of 649
+# blocks in a 24h window were suite runs, not real commands.
+_LOGDIR = tempfile.mkdtemp(prefix="gate-test-")
+
+
 def run(cmd):
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
-    p = subprocess.run([HOOK], input=payload, capture_output=True, text=True)
+    env = {**os.environ, "NEXUS_TMUX_DIR": _LOGDIR}
+    p = subprocess.run([HOOK], input=payload, capture_output=True, text=True, env=env)
     return p.returncode, p.stderr
 
 
