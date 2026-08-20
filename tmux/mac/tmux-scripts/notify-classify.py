@@ -1096,6 +1096,66 @@ def _question_summary(inp):
     return _trunc(" | ".join(parts)) if parts else "the agent is asking you a question"
 
 
+# --- Decision log (added 2026-08-19) ----------------------------------------
+# Until now the gate logged COUNTS but not CONTENT: hook-notification.sh wrote
+# `<epoch> auto-approve <pane>` and `<epoch> wait <pane>`, and nothing anywhere
+# recorded WHAT was approved or WHY. That was defensible while the gate only cleared
+# provably read-only commands. It stopped being defensible when permissive mode began
+# auto-approving git commits, file writes and python3 silently — at that point the
+# denylists are the only thing behind the decision, and there was no way to audit
+# either the approvals or the blocks.
+#
+# NEVER writes the command text. Alex's standing host rule is that a durable file must
+# not receive a credential, and commands routinely carry inline tokens; relocating that
+# hazard from the transcript to a log file would not fix it. So: the command HEAD (which
+# is a binary name, never a value) plus a truncated sha256, which is enough to group,
+# count and diff decisions, and enough to correlate a specific line back to a transcript
+# when someone genuinely needs the full text.
+#
+# Format, space-separated so awk/cut work with no parser:
+#   <epoch> <decision> <tier> <pane> <head> <sha12>
+#   decision: approve | ask
+#   tier:     read-allowlist | permissive | llm | _DENY | _DESTRUCTIVE | empty
+_GATE_LOG = os.path.join(os.environ.get("NEXUS_TMUX_DIR") or
+                         os.path.expanduser("~/.tmux"), "gate-decisions.log")
+
+
+def _cmd_head(cmd):
+    """First real command token, as a bare name. Never a value."""
+    try:
+        for seg in _split_top_level(_LINE_CONT.sub(" ", cmd)):
+            toks = seg.split()
+            while toks:
+                t = toks[0]
+                if (t in _STRUCTURAL or t in _COND_KEYWORDS or t in _DATA_KEYWORDS
+                        or _SAFE_REDIRECT.fullmatch(t)
+                        or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t)):
+                    toks = toks[1:]
+                    continue
+                return re.sub(r"[^\w.:-]", "", os.path.basename(t))[:32] or "-"
+    except Exception:
+        pass
+    return "-"
+
+
+def _log_decision(decision, tier, cmd):
+    """Append one auditable line. Failure here must never affect the gate."""
+    try:
+        import hashlib
+        import time
+        if os.path.exists(_GATE_LOG) and os.path.getsize(_GATE_LOG) > 5 * 1024 * 1024:
+            os.replace(_GATE_LOG, _GATE_LOG + ".1")
+        line = "{} {} {} {} {} {}\n".format(
+            int(time.time()), decision, tier,
+            (os.environ.get("PANE") or "-").replace(" ", "_"),
+            _cmd_head(cmd),
+            hashlib.sha256(cmd.encode("utf-8", "replace")).hexdigest()[:12])
+        with open(_GATE_LOG, "a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception:
+        pass
+
+
 def _deterministic_summary(name, inp):
     short = (name or "").split("__")[-1].lower()
     if short in ("bash", "shell"):
@@ -1323,10 +1383,18 @@ def classify(name, inp):
     #    override them, which is what makes the permissive tier safe to enable.
     if short in ("bash", "shell"):
         cmd = (inp.get("command") or "").strip()
-        safe = bool(cmd) and not _DENY.search(cmd) and not _DESTRUCTIVE.search(cmd)
+        # Which denylist fired is recorded, not just THAT one did — "the gate asked"
+        # and "the destructive guard refused" are different events and were previously
+        # indistinguishable in the logs.
+        denied_by = None if not cmd else (
+            "_DENY" if _DENY.search(cmd) else
+            "_DESTRUCTIVE" if _DESTRUCTIVE.search(cmd) else None)
+        safe = bool(cmd) and denied_by is None
         if safe and _deterministic_read(cmd):
+            _log_decision("approve", "read-allowlist", cmd)
             return "read", "read-only inspection", det
         if safe and _PERMISSIVE:
+            _log_decision("approve", "permissive", cmd)
             # Not provably read-only, but not destructive either. Under Alex's bar this
             # is the large middle — python3, file writes, git add/commit, kubectl get
             # variants the allowlist can't parse — and it runs without a model call, so
@@ -1334,7 +1402,9 @@ def classify(name, inp):
             return "read", "permitted change", det
         llm = _llm(name, inp)
         if safe and llm and llm[0] == "read":
+            _log_decision("approve", "llm", cmd)
             return "read", llm[1], (llm[2] or det)
+        _log_decision("ask", denied_by or ("empty" if not cmd else "llm"), cmd)
         return "modify", (llm[1] if llm else "shell command"), (llm[2] if llm and llm[2] else det)
     # 3. Local file edits: permitted under the same bar, EXCEPT on a credential-ish
     #    path (same list `mv` is gated on). Editing files is the substance of the work;

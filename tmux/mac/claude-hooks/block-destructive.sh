@@ -95,6 +95,28 @@ m = pattern.search(cmd)
 if not m:
     sys.exit(0)
 
+# Record the block. Until 2026-08-19 neither PreToolUse guard logged anything at all,
+# so a refusal existed only as stderr in one transcript and there was no way to answer
+# "what has the destructive denylist actually stopped?".
+#
+# Deliberately does NOT write the command text — same rule as notify-classify.py's
+# _log_decision: a durable file must not receive a credential, and commands carry
+# inline tokens. Head + truncated hash is enough to group and correlate.
+# Format matches the classifier's log exactly so one awk reads both.
+try:
+    import hashlib, time
+    log = os.path.join(os.environ.get("NEXUS_TMUX_DIR") or
+                       os.path.expanduser("~/.tmux"), "gate-decisions.log")
+    if os.path.exists(log) and os.path.getsize(log) > 5 * 1024 * 1024:
+        os.replace(log, log + ".1")
+    head = re.sub(r"[^\w.:-]", "", os.path.basename((cmd.split() or ["-"])[0]))[:32] or "-"
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write("{} block destructive-guard {} {} {}\n".format(
+            int(time.time()), os.environ.get("PANE") or "-", head,
+            hashlib.sha256(cmd.encode("utf-8", "replace")).hexdigest()[:12]))
+except Exception:
+    pass                                          # logging must never wedge the guard
+
 # Report WHICH construct matched, never the whole command: the command can carry
 # inline credentials and stderr goes into the durable transcript.
 sys.stderr.write(f"""BLOCKED by block-destructive.sh
