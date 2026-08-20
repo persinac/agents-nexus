@@ -421,12 +421,68 @@ EXPECT_PERMITTED = [
 # an `rm` in command position and must stay blocked.
 EXPECT_BLOCKED += [
     'rm -rf node_modules',
-    'cd /tmp && rm -rf junk',
+    # `cd /tmp && rm -rf junk` used to be asserted here. It moved to EXPECT_PERMITTED on
+    # 2026-08-19: the rm carve-out below makes a scratch-path delete auto-approve, and
+    # that command is precisely the approved shape. Kept as a note rather than a silent
+    # deletion, because the assertion did not become wrong — the policy changed.
     'find . -name "*.log" ; rm -f out.log',
     '(rm -rf build)',
     'rmdir empty/',
     'dd if=/dev/zero of=/dev/sda',
     'truncate -s 0 important.log',
+]
+
+# --- rm carved out of _DENY 2026-08-19 (per Alex): scratch paths only.
+#
+# The riskiest edit in this file's history, so both directions are covered heavily. The
+# permitted list is the measured traffic; the blocked list is every way the carve-out
+# could leak, including the ones that make it *look* like a scratch delete.
+EXPECT_PERMITTED += [
+    # measured: the two Bash prompts that reached a human on 2026-08-19
+    'cd /tmp && rm -rf e2e-art && mkdir -p e2e-art',
+    'git commit -F .git/COMMIT_MSG_CLASSIFIER && rm -f .git/COMMIT_MSG_CLASSIFIER',
+    'rm -rf /tmp/e2e-art',
+    'rm -f /tmp/out.json /tmp/err.log',
+    'rm -rf ~/.cache/mr-rebase-sweep/svc-chatbot--582',
+    'rm -f .git/COMMIT_EDITMSG',
+    'rm -f .git/build.tmp',
+    'rm -rf -- /tmp/scratch',
+    'cd /tmp/work && rm -rf sub/dir',
+    '( cd /tmp && rm -rf junk )',
+    'rmdir /tmp/emptydir',
+]
+EXPECT_BLOCKED += [
+    # a repo path is not scratch, however harmless it looks
+    'rm -rf build/',
+    'rm -rf node_modules',
+    'rm -f src/generated/schema.py',
+    # $HOME and dotfiles
+    'rm -rf ~/Documents/notes',
+    'rm -f ~/.zshrc',
+    # credential paths, scratch root or not
+    'rm -f /tmp/id_rsa',
+    'rm -rf ~/.cache/../.ssh',
+    'rm -f /tmp/creds/.env',
+    # the scratch ROOT itself — wiping all of /tmp takes out other agents' state
+    'rm -rf /tmp',
+    'rm -rf /private/tmp/',
+    # unresolvable: a relative target with no cd to anchor it
+    'rm -rf e2e-art',
+    'cd "$WORKDIR" && rm -rf out',
+    # expansions, globs and traversals are refused outright
+    'rm -rf /tmp/$SESSION',
+    'rm -rf /tmp/*',
+    'rm -rf /tmp/a/../../etc',
+    'rm -rf "$(cat /tmp/target)"',
+    # ONE bad path in a list poisons the whole command
+    'rm -rf /tmp/ok /etc/hosts',
+    # an rm reached through another command is never seen as an rm head
+    'find /tmp -name "*.log" | xargs rm -f',
+    # a cd inside a subshell must not leak out and anchor a later relative rm
+    '( cd /tmp ) && rm -rf e2e-art',
+    # still absolutely denied
+    'sudo rm -rf /tmp/x',
+    'rm -rf /',
 ]
 
 # --- the git force clause, narrowed 2026-08-19 from `git` to the destructive
@@ -517,6 +573,33 @@ EXPECT_MCP_ASK = [
     ("mcp__atlassian__atlassianUserInfo", {}),
 ]
 
+# ---------------------------------------------------------------------------
+# Redaction of the logged `detail` (2026-08-19). notify-asked.log records the literal
+# command so a later audit can see which clause fired — an LLM paraphrase like "downloads
+# artifacts using a private token" cannot answer that. The log is persistent, and a
+# measured command carried a real GitLab PRIVATE-TOKEN, so values are stripped on the way
+# in. Asserted in both directions: the secret must go, and the surrounding command must
+# survive intact or the log stops being useful.
+# ---------------------------------------------------------------------------
+REDACT_CASES = [
+    ('curl --header "PRIVATE-TOKEN: glpat-abc123def456" https://gitlab.com/api',
+     "glpat-abc123def456"),
+    ('curl -H "Authorization: Bearer sk-ant-api03-XYZ789" https://api.example.com',
+     "sk-ant-api03-XYZ789"),
+    ('psql "postgres://u:hunter2@h/db" -c "select 1"', None),   # no keyword, see below
+    ('export API_KEY=abcdef123456 && ./run.sh', "abcdef123456"),
+    ('gh auth login --token ghp_AAAABBBBCCCCDDDD', "ghp_AAAABBBBCCCCDDDD"),
+    ('aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE', "AKIAIOSFODNN7EXAMPLE"),
+]
+# Must survive redaction unchanged — over-redaction makes the log useless for tuning.
+REDACT_KEEP = [
+    'cd /tmp && rm -rf e2e-art && mkdir -p e2e-art',
+    'git commit -F .git/COMMIT_MSG_CLASSIFIER',
+    'kubectl get pods -n prod',
+    'curl -s --max-time 10 localhost:8788/agents',
+]
+
+
 # Context-loading tools that change nothing anywhere. See INERT_TOOLS.
 EXPECT_INERT = [
     ("ToolSearch", {"query": "select:Read", "max_results": 5}),
@@ -565,8 +648,15 @@ EXPECT_NOT_SURFACE = [
 
 
 def _blocked(cmd):
-    """True if either hard denylist catches it — i.e. permissive mode will NOT approve."""
-    return bool(nc._DENY.search(cmd) or nc._DESTRUCTIVE.search(cmd))
+    """True if permissive mode will NOT approve it.
+
+    Delegates to the classifier's own _bash_is_denied rather than re-implementing the
+    check here. It used to be `_DENY or _DESTRUCTIVE`, which was a duplicate of
+    classify()'s logic — and the moment `rm` moved into its own regex with a scratch-path
+    exception (2026-08-19) that duplicate would have gone silently stale, asserting a
+    rule the classifier no longer applies.
+    """
+    return nc._bash_is_denied(cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -756,6 +846,14 @@ def main() -> int:
         if nc.classify(name, inp)[0] != "read":
             fails.append(("expected inert context-load to auto-approve", name))
 
+    for cmd, secret in REDACT_CASES:
+        got = nc._redact(cmd)
+        if secret and secret in got:
+            fails.append((f"secret survived redaction: {got!r}", cmd))
+    for cmd in REDACT_KEEP:
+        if nc._redact(cmd) != cmd:
+            fails.append((f"over-redacted to {nc._redact(cmd)!r}", cmd))
+
     fails += _check_repeat_suppression()
     fails += _check_e2e()
 
@@ -763,7 +861,8 @@ def main() -> int:
              + len(EXPECT_BLOCKED) + len(EXPECT_PERMITTED)
              + len(EXPECT_SURFACE) + len(EXPECT_NOT_SURFACE)
              + len(EXPECT_MCP_READ) + len(EXPECT_MCP_ASK) + len(EXPECT_INERT)
-             + len(REPEAT_CHECKS) + len(E2E_CASES) + 3)
+             + len(REPEAT_CHECKS) + len(E2E_CASES) + 3
+             + len(REDACT_CASES) + len(REDACT_KEEP))
     if fails:
         print(f"FAIL — {len(fails)} of {total}")
         for why, cmd in fails:
@@ -774,7 +873,8 @@ def main() -> int:
           f"{len(EXPECT_BLOCKED)} hard-blocked, {len(EXPECT_PERMITTED)} permitted, "
           f"{len(EXPECT_SURFACE)} surface, {len(EXPECT_NOT_SURFACE)} not-surface, "
           f"{len(EXPECT_MCP_READ)} mcp-read, {len(EXPECT_MCP_ASK)} mcp-ask, "
-          f"{len(EXPECT_INERT)} inert, {len(REPEAT_CHECKS)} repeat)")
+          f"{len(EXPECT_INERT)} inert, {len(REPEAT_CHECKS)} repeat, "
+          f"{len(REDACT_CASES) + len(REDACT_KEEP)} redaction)")
     return 0
 
 

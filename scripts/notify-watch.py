@@ -40,8 +40,12 @@ def _fmt(line):
     agent = body.get("name") or "?"
     tool = (body.get("tool") or "?").split("__")[-1]
     cat = body.get("category") or kind
-    summary = " ".join(str(body.get("summary") or "").split())[:160]
-    return f"ASK {when} {agent}[{pane}] {tool} · {cat} · {summary}"
+    # For Bash the literal command (secret-redacted upstream) is what a tuning decision
+    # needs — the model's paraphrase names the intent but not the clause that fired. For
+    # every other tool `detail` is just the tool name again, so the paraphrase wins there.
+    detail = " ".join(str(body.get("detail") or "").split())
+    text = detail if tool.lower() == "bash" and detail else str(body.get("summary") or "")
+    return f"ASK {when} {agent}[{pane}] {tool} · {cat} · {' '.join(text.split())[:170]}"
 
 
 def _fmt_repeat(line):
