@@ -179,6 +179,45 @@ SELF_DUMPING = [
     # doppler secrets` still blocks on the second half.
     (r"\bdoppler\s+secrets\b(?!\s+get\b)(?![^|;&]*--only-names)",
      "doppler secrets (prints the full plaintext table)"),
+    # Credential-store CLIs printing their OWN stored auth. Same implicit-path shape as
+    # `git remote -v` below: no path is ever typed, the CLI is not a general-purpose
+    # reader, and the value sits in a config file CRED does not list
+    # (~/.doppler/.doppler.yaml, ~/.config/gh/hosts.yml). All three checks pass and the
+    # command sails through -- the fourth instance of that shape in this file.
+    #
+    # WHY THIS EXISTS (2026-08-19): `doppler configure --json` printed a live Doppler CLI
+    # token into a transcript. SELF_DUMPING already had `doppler secrets`; it was scoped
+    # to the wrong subcommand.
+    #
+    # The generalisable part: REDACTION LIVES IN THE HUMAN-READABLE FORMATTER, and the
+    # machine-readable path bypasses it. Measured on this box, lengths only:
+    #     doppler configure          -> token-shaped string len=10  (elided)
+    #     doppler configure --json   -> token-shaped string len=49  (full)
+    #     gh auth status             -> len=36 (asterisk run)
+    #     gh auth token              -> len=40 (full PAT)
+    # Safe and unsafe forms differ by one flag, which is what a shape-based blocklist is
+    # worst at, so every dangerous form is matched explicitly rather than by subcommand.
+    #
+    # The doppler rule uses two lookaheads from the `doppler` anchor so flag ORDER does
+    # not matter (`doppler --json configure` reaches the same config), while [^|;&]*
+    # keeps both halves inside one command segment. It deliberately does NOT fire on
+    # `doppler secrets --only-names --json`, which carries no values.
+    (r"\bdoppler\b(?=[^|;&]*\bconfigure\b)(?=[^|;&]*--json)",
+     "doppler configure --json (prints the CLI token in full; the table form redacts it)"),
+    (r"\bdoppler\s+configure\s+get\b[^|;&]*\btoken\b",
+     "doppler configure get token (prints the CLI token)"),
+    (r"\bgh\s+auth\s+token\b",
+     "gh auth token (prints the full PAT; gh auth status redacts it)"),
+    (r"\bgh\s+auth\s+status\b[^|;&]*(?:--show-token|\s-t\b)",
+     "gh auth status --show-token (prints the full PAT)"),
+    # aws is not installed on alex-nexus, so these two are written from documented CLI
+    # syntax rather than verified against a binary. A rule matching a flag that does not
+    # exist never fires, so the cost of being wrong here is zero and the cost of omitting
+    # it is a rotation -- deliberately asymmetric.
+    (r"\baws\s+configure\s+get\b[^|;&]*(?:secret|access_key|session_token)",
+     "aws configure get <secret> (prints the raw credential)"),
+    (r"\baws\s+configure\s+export-credentials\b",
+     "aws configure export-credentials (prints key + secret + session token)"),
     (r"\bhelm\s+get\s+values\b", "helm get values"),
     (r"\bnpm\s+config\s+list\b", "npm config list (may print _authToken)"),
 ]
@@ -198,6 +237,29 @@ else:
         sys.exit(0)                  # targeted read against a cred path -> allow
 
     reader, path_note = broad_hit, f"matched /{cred_hit}/"
+
+# Record the block. Until 2026-08-19 neither PreToolUse guard logged anything, so a
+# refusal existed only as stderr in one transcript. Deliberately does NOT write the
+# command text: this guard exists precisely because such text can carry a credential,
+# and moving that hazard from the transcript into a log file would not fix it. Format
+# matches notify-classify.py's _log_decision so one awk reads both files.
+try:
+    # `os` is NOT among this script's top-level imports (json, re, sys only), so it is
+    # imported here. Without it every write raised NameError inside this try/except and
+    # the guard logged nothing at all — silently, which is the failure mode this whole
+    # logging change exists to eliminate.
+    import hashlib, os, time
+    _log = os.path.join(os.environ.get("NEXUS_TMUX_DIR") or
+                        os.path.expanduser("~/.tmux"), "gate-decisions.log")
+    if os.path.exists(_log) and os.path.getsize(_log) > 5 * 1024 * 1024:
+        os.replace(_log, _log + ".1")
+    _head = re.sub(r"[^\w.:-]", "", os.path.basename((cmd.split() or ["-"])[0]))[:32] or "-"
+    with open(_log, "a", encoding="utf-8") as _fh:
+        _fh.write("{} block credential-guard {} {} {}\n".format(
+            int(time.time()), os.environ.get("PANE") or "-", _head,
+            hashlib.sha256(cmd.encode("utf-8", "replace")).hexdigest()[:12]))
+except Exception:
+    pass                                     # logging must never wedge the guard
 
 sys.stderr.write(
     "BLOCKED by block-credential-dump.sh\n\n"
