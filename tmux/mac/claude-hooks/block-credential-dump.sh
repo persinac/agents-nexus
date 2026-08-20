@@ -210,10 +210,16 @@ SELF_DUMPING = [
      "gh auth token (prints the full PAT; gh auth status redacts it)"),
     (r"\bgh\s+auth\s+status\b[^|;&]*(?:--show-token|\s-t\b)",
      "gh auth status --show-token (prints the full PAT)"),
-    # aws is not installed on alex-nexus, so these two are written from documented CLI
-    # syntax rather than verified against a binary. A rule matching a flag that does not
-    # exist never fires, so the cost of being wrong here is zero and the cost of omitting
-    # it is a rotation -- deliberately asymmetric.
+    # Both verified against aws-cli/2.35.21 on alex-nexus: `aws configure help` lists
+    # export-credentials, and bare `aws configure get` exits with a usage error rather
+    # than printing anything.
+    #
+    # An earlier revision of this comment claimed aws was not installed on this box. It
+    # is, at /snap/bin/aws. That false claim came from reading the output of
+    #     command -v aws >/dev/null && aws --version | grep -oE '^aws-cli/[0-9.]+' || echo "NOT on PATH"
+    # where `||` catches failure of the WHOLE left side, so a non-matching grep printed
+    # the not-installed message. Check for a missing binary with `command -v` on its own
+    # line -- never as the head of an && / || chain whose tail can fail independently.
     (r"\baws\s+configure\s+get\b[^|;&]*(?:secret|access_key|session_token)",
      "aws configure get <secret> (prints the raw credential)"),
     (r"\baws\s+configure\s+export-credentials\b",
