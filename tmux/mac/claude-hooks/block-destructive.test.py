@@ -66,6 +66,9 @@ MUST_BLOCK = [
     # hole, exactly like stripping an interpreter's heredoc body.
     '~/.tmux/agent-send.sh a/b/c "$(kubectl delete ns prod)"',
     '~/.tmux/agent-send.sh a/b/c "result: `terraform destroy -auto-approve`"',
+    # Same rule for the widened carriers: literal prose is inert, substitution is not.
+    'git commit -m "$(kubectl delete ns prod)"',
+    'gh pr create --title x --body "$(terraform destroy -auto-approve)"',
 ]
 
 # Prose that merely MENTIONS a destructive command. These cost ~6 false blocks in one
@@ -81,6 +84,12 @@ MUST_ALLOW_PROSE = [
     # argv element. The receiving agent gets text as a user turn, never a command.
     '~/.tmux/agent-send.sh alex-nexus/minions/minions-suite "heads up: kubectl delete is refused by the guard now"',
     '/home/persinac/.tmux/agent-send.sh a/b/c "terraform destroy and DROP TABLE are both hard-blocked"',
+    # --- widened 2026-08-20: PR bodies and commit messages carry literal prose too ---
+    # Both of these shapes really were refused while writing this guard, forcing
+    # --body-file / commit -F. Naming a destructive command does not run it.
+    'git commit -m "docs: explain why kubectl delete is refused by the guard"',
+    'gh pr create --title x --body "documents why terraform destroy stays blocked"',
+    'gh issue comment 5 --body "we now hard-block DROP TABLE and kubectl delete"',
 ]
 
 # Must pass through (exit 0). A failure here is the guard interrupting ordinary work,

@@ -97,6 +97,12 @@ MUST_BLOCK = [
     "node -e \"console.log(require('fs').readFileSync('.env','utf8'))\"",
     "ruby -e 'puts File.read(\".env\")'",
     "python3 -c \"print(open('talos-config/controlplane.yaml').read())\"",
+    # --- the carve-out must NOT extend to command substitution (2026-08-20) ---
+    # The shell expands these before the carrying command runs, so they really do fetch
+    # the secret. This is the line that keeps the widened carve-out honest.
+    'git commit -m "$(cat ~/.aws/credentials)"',
+    'gh pr create --title x --body "$(gh auth token)"',
+    'gh issue comment 5 --body "creds: `cat .env`"',
 ]
 
 MUST_ALLOW = [
@@ -132,6 +138,15 @@ MUST_ALLOW = [
     "gh auth status",
     "gh auth login --with-token",
     "gh pr create --title x --body y",
+    # --- literal prose in a PR body / commit message (widened 2026-08-20) ---
+    # A credential typed inside quotes is ALREADY in the transcript by virtue of being
+    # typed, so refusing the command un-prints nothing; what this guard stops is a
+    # command FETCHING a secret, and that is command substitution, still refused below.
+    # The friction was real: the workaround was --body-file, whose practical effect is
+    # that the reasoning stops going into the PR at all.
+    'git commit -m "fix: gh auth token printed a full PAT into a transcript"',
+    'gh pr create --title x --body "documents why doppler configure --json is blocked"',
+    'gh issue comment 7 --body "aws configure export-credentials now hard-blocks"',
     "doppler run -- uv run fbf device status",
     "kubectl get secret my-secret -o name",
     "kubectl get pods -o yaml",

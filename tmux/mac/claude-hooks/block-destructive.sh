@@ -88,11 +88,24 @@ def strip_heredoc_bodies(text):
 # Command substitution is deliberately NOT stripped -- `"$(kubectl delete ns prod)"`
 # really runs, because the shell expands it before agent-send is invoked. Same principle
 # as the INTERP exception above: strip what is inert, keep what executes.
-_MSG_SCRIPT = re.compile(r"\bagent-send\.sh\b")
+# Widened 2026-08-20 to every command whose quoted argument is LITERAL PROSE: PR/issue
+# bodies and commit messages, not just bus messages. Naming a destructive command in a
+# PR body or commit message does not run it, and the friction was real — the commit
+# message for this very hook, and PR #73, both had to be passed via a file because
+# their own text described what the guard blocks.
+#
+# Command substitution is still never stripped: `--body "$(kubectl delete ns prod)"`
+# really runs, because the shell expands it before the carrying command is invoked.
+# Same principle as the INTERP exception: strip what is inert, keep what executes.
+_TEXT_PAYLOAD = re.compile(
+    r"\bagent-send\.sh\b"
+    r"|\bgit\s+commit\b[^|;&]{0,120}(?:-m\b|--message\b)"
+    r"|\bgh\s+(?:pr|issue|release)\s+\w+\b[^|;&]{0,160}--(?:body|title)\b"
+)
 _QUOTED_SPAN = re.compile(r"'[^']*'|\"[^\"]*\"")
 
 def strip_message_payload(text):
-    if not _MSG_SCRIPT.search(text):
+    if not _TEXT_PAYLOAD.search(text):
         return text
     return _QUOTED_SPAN.sub(
         lambda m: m.group(0) if ("$(" in m.group(0) or "`" in m.group(0)) else " ",
