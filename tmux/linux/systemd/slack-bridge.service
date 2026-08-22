@@ -31,6 +31,11 @@ Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
 Environment=DOPPLER_BIN=__DOPPLER_BIN__
 # tmux must be on PATH so the bridge's child agent-send.sh can deliver keystrokes
 # (node + secret-run are invoked by absolute path in ExecStart, so they need no PATH entry).
+# The bridge is a NATS 4222 client of mqtt.flashbackfleet.com, whose server
+# cert moves from Sectigo to the internal Flashback CA (broker-cert cutover,
+# infrastructure/notes/nats-pulumi-migration.md). NODE_EXTRA_CA_CERTS is a
+# true APPEND to Node's trust; without it the agent bus dies at the 4222 flip.
+Environment=NODE_EXTRA_CA_CERTS=__AGENTS_NEXUS_DIR__/slack-bridge/certs/flashback-root.crt
 Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
