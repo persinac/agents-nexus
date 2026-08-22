@@ -257,6 +257,44 @@ def _git_rm_is_forced(args):
     return False
 
 
+def _rm_is_git_recoverable(path):
+    """True if `path` is a FILE git already holds with no uncommitted changes.
+
+    Added 2026-08-22 per Alex, after `rm -f dependencies.lock && cp <scratch>/… .`
+    inside a repo asked for a delete git could restore instantly. This is the same
+    guarantee unforced `git rm` carries, applied to a bare rm: only content already in
+    the object store can be lost.
+
+    Three deliberate refusals:
+      * DIRECTORIES -- `git ls-files` would list the tracked files in a tree and say
+        nothing about untracked ones sitting beside them, so a tree is never vouched for.
+      * a file with uncommitted changes -- those exist nowhere but the working tree,
+        which is exactly what `git rm` refuses without -f.
+      * anything git cannot answer for (not a repo, git missing, timeout) -- refused, so
+        the failure mode stays "asks a human".
+
+    This is the one place the resolver touches the filesystem, and it is reached ONLY
+    after the scratch test has already failed, i.e. only on a command that was otherwise
+    about to interrupt a human. The cost is two short git calls against the ask path, not
+    the hot path.
+    """
+    import subprocess
+    if not os.path.isfile(path):
+        return False
+    d = os.path.dirname(path) or "."
+    try:
+        for args in (["ls-files", "--error-unmatch", "--", path],
+                     ["status", "--porcelain", "--", path]):
+            r = subprocess.run(["git", "-C", d] + args, capture_output=True, timeout=2)
+            if r.returncode != 0:
+                return False
+            if args[0] == "status" and r.stdout.strip():
+                return False                       # uncommitted changes: not recoverable
+        return True
+    except Exception:
+        return False
+
+
 def _rm_target_ok(tok, cwd):
     """True if this single rm/rmdir argument is a scratch path we can vouch for."""
     if not tok or _RM_UNRESOLVABLE.search(tok):
@@ -278,7 +316,8 @@ def _rm_target_ok(tok, cwd):
         # would take out other agents' scratch state, which is not "cleaning up my dir".
         if path.startswith(root + os.sep) and path != root:
             return True
-    return False
+    # Not scratch. Last chance before interrupting a human: git may already hold it.
+    return _rm_is_git_recoverable(path)
 
 
 def _cd_target(toks, cwd, env=None):
