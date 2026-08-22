@@ -716,6 +716,69 @@ def _blocked(cmd):
 # the re-alert window passes. `_is_repeat` also fails open on any error, which the
 # unwritable-state-dir check covers.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# git-recoverable rm (2026-08-22). Unlike every other case in this file, the rule
+# consults the filesystem, so a string matrix cannot express it -- these run against a
+# REAL throwaway git repo.
+#
+# The invariant under test is the one that justified the carve-out: a bare rm clears only
+# when git could restore the file, which is exactly what unforced `git rm` guarantees.
+# Both failure directions matter, so an untracked file, a dirty tracked file and a
+# directory are all asserted to KEEP asking.
+# ---------------------------------------------------------------------------
+GIT_RM_CHECKS = ["tracked-clean-permitted", "untracked-blocked", "dirty-tracked-blocked",
+                 "directory-blocked", "non-repo-blocked", "one-bad-target-poisons"]
+
+
+def _check_git_recoverable_rm():
+    import subprocess, tempfile
+    fails = []
+
+    def git(repo, *args):
+        subprocess.run(["git", "-C", repo] + list(args),
+                       capture_output=True, check=True)
+
+    # NOT under /tmp: every scratch root is auto-approved by the rule ABOVE this one, so
+    # a repo built there would pass for the wrong reason and assert nothing. $HOME is the
+    # nearest non-scratch place (only ~/.cache is scratch), and the prefix avoids a
+    # leading dot so the credential-path guard does not fire on it either.
+    with tempfile.TemporaryDirectory(dir=os.path.expanduser("~"),
+                                     prefix="classify-gitrm-test-") as tmp:
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, "sub"))
+        git_env = ["-c", "user.email=t@t", "-c", "user.name=t"]
+        subprocess.run(["git", "init", "-q", repo], capture_output=True, check=True)
+        for rel in ("tracked.lock", "dirty.lock", "sub/nested.txt"):
+            with open(os.path.join(repo, rel), "w") as fh:
+                fh.write("committed\n")
+        git(repo, "add", "-A")
+        subprocess.run(["git", "-C", repo] + git_env + ["commit", "-qm", "init"],
+                       capture_output=True, check=True)
+        with open(os.path.join(repo, "dirty.lock"), "w") as fh:
+            fh.write("uncommitted edit\n")          # tracked but modified
+        with open(os.path.join(repo, "untracked.log"), "w") as fh:
+            fh.write("never committed\n")
+        outside = os.path.join(tmp, "loose.txt")     # a real file in no repo at all
+        with open(outside, "w") as fh:
+            fh.write("x\n")
+
+        cases = [
+            (f"cd {repo} && rm -f tracked.lock", False, "tracked-clean-permitted"),
+            (f"cd {repo} && rm -f untracked.log", True, "untracked-blocked"),
+            (f"cd {repo} && rm -f dirty.lock", True, "dirty-tracked-blocked"),
+            (f"cd {repo} && rm -rf sub", True, "directory-blocked"),
+            (f"rm -f {outside}", True, "non-repo-blocked"),
+            # one unvouched target poisons the whole command
+            (f"cd {repo} && rm -f tracked.lock untracked.log", True,
+             "one-bad-target-poisons"),
+        ]
+        for cmd, want_denied, label in cases:
+            if nc._bash_is_denied(cmd) != want_denied:
+                verb = "must keep asking" if want_denied else "must auto-approve"
+                fails.append((f"{verb} ({label})", cmd))
+    return fails
+
+
 REPEAT_CHECKS = ["first-alerts", "second-suppressed", "other-call-alerts",
                  "realerts-after-window", "fails-open", "same-input-new-id-alerts"]
 
@@ -901,13 +964,14 @@ def main() -> int:
             fails.append((f"over-redacted to {nc._redact(cmd)!r}", cmd))
 
     fails += _check_repeat_suppression()
+    fails += _check_git_recoverable_rm()
     fails += _check_e2e()
 
     total = (len(EXPECT_READ) + len(EXPECT_WITHHELD)
              + len(EXPECT_BLOCKED) + len(EXPECT_PERMITTED)
              + len(EXPECT_SURFACE) + len(EXPECT_NOT_SURFACE)
              + len(EXPECT_MCP_READ) + len(EXPECT_MCP_ASK) + len(EXPECT_INERT)
-             + len(REPEAT_CHECKS) + len(E2E_CASES) + 3
+             + len(REPEAT_CHECKS) + len(GIT_RM_CHECKS) + len(E2E_CASES) + 3
              + len(REDACT_CASES) + len(REDACT_KEEP))
     if fails:
         print(f"FAIL — {len(fails)} of {total}")
@@ -920,6 +984,7 @@ def main() -> int:
           f"{len(EXPECT_SURFACE)} surface, {len(EXPECT_NOT_SURFACE)} not-surface, "
           f"{len(EXPECT_MCP_READ)} mcp-read, {len(EXPECT_MCP_ASK)} mcp-ask, "
           f"{len(EXPECT_INERT)} inert, {len(REPEAT_CHECKS)} repeat, "
+          f"{len(GIT_RM_CHECKS)} git-rm, "
           f"{len(REDACT_CASES) + len(REDACT_KEEP)} redaction)")
     return 0
 
