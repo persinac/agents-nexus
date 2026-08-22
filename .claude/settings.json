@@ -18,6 +18,8 @@
       "Bash(kubectl -n flashback-fleet get *)",
       "Bash(kubectl config current-context)",
       "Bash(kubectl config get-contexts *)",
+      "Bash(curl -s 127.0.0.1:8788/agents)",
+      "Bash(curl -s localhost:8788/agents)",
       "mcp__agent-memory__search_similar",
       "mcp__agent-memory__query_notes",
       "mcp__agent-memory__query_entity",
