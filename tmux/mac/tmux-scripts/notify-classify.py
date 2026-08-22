@@ -22,7 +22,8 @@ Policy (rewritten 2026-08-19 — the default is now ALLOW, see _PERMISSIVE):
 Local reads (Read/Glob/Grep/LS/NotebookRead) -> read (no LLM, fast).
 Bash -> hard denylists first, and nothing downstream can override them (_bash_is_denied):
   _DENY        sudo/dd/pipe-to-shell/git --force/...
-  _DENY_RM     rm/rmdir, UNLESS every target is a scratch path (_rm_is_scratch_only)
+  _DENY_RM     rm/rmdir, UNLESS every delete is vouched for (_rm_is_scratch_only):
+               a scratch-path rm, an unforced `git rm`, or an `rmdir`
   _DESTRUCTIVE deleting production data (DROP/DELETE FROM/TRUNCATE/FLUSHALL/...),
                deleting k8s or cloud resources (kubectl delete|drain|--prune, helm
                uninstall, terraform destroy|apply, aws *delete-*/terminate-*), and
@@ -186,6 +187,75 @@ _RM_UNRESOLVABLE = re.compile(r"[$`*?\[\]]|(^|/)\.\.(/|$)")
 _GIT_SCRATCH = re.compile(r"(^|/)\.git/((COMMIT|MERGE|SQUASH|TAG)_\w*MSG\w*|[\w.-]+\.tmp)$")
 _RM_FLAG_TERM = "--"
 
+# --- literal variable resolution, 2026-08-22.
+#
+# Measured on notify-asked.log: 10 of the 16 rm-class prompts that reached a human were
+# deletes of a path we ALREADY consider scratch, written through a variable —
+# `S=/tmp/.../scratchpad rm -f "$S/posttool.json"`. _RM_UNRESOLVABLE refuses any `$`, so
+# the policy never got to run. This resolves the assignment instead of giving up on it.
+#
+# Deliberately narrow: only a value that is itself fully literal is remembered, and an
+# unresolved reference still leaves a `$` in the token, which _RM_UNRESOLVABLE then
+# refuses exactly as before. So this can only ever turn "cannot parse" into "parsed",
+# never "not scratch" into "scratch".
+_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_VAR_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+_ASSIGN_UNSAFE = re.compile(r"[$`*?\[\]'\"]")
+
+
+def _remember_assign(env, tok):
+    """Record `NAME=<literal>`. A value we cannot vouch for UNSETS the name, so a later
+    junk reassignment can never be read through a stale good value."""
+    m = _ASSIGN.match(tok)
+    if not m:
+        return
+    name, val = m.group(1), m.group(2).strip("'\"")
+    if not val or _ASSIGN_UNSAFE.search(val):
+        env.pop(name, None)
+    else:
+        env[name] = val
+
+
+def _expand(tok, env):
+    """Substitute known literal assignments. Unknown names are left verbatim — including
+    their `$` — so the caller's unresolvable check still fires on them."""
+    return _VAR_REF.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), tok)
+
+
+# --- `git rm` and `rmdir`, 2026-08-22 (per Alex).
+#
+# Both are recoverable BY CONSTRUCTION, which is why they clear regardless of path while
+# a bare `rm` outside a scratch root still asks:
+#   * `git rm` refuses a file with uncommitted changes unless forced, so an UNFORCED
+#     git rm can only delete content that is already in the object store. `-f`/`--force`
+#     is precisely the flag that disables that guarantee, so it keeps asking.
+#   * `rmdir` removes EMPTY directories only and refuses anything else. There is no data
+#     to lose, so the path does not matter.
+_GIT_VALUE_FLAGS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path")
+
+
+def _git_subcommand(toks):
+    """(subcommand, its args) for a `git ...` segment, skipping git's global options."""
+    i = 1
+    while i < len(toks):
+        tok = toks[i]
+        if tok in _GIT_VALUE_FLAGS:
+            i += 2
+        elif tok.startswith("-"):
+            i += 1
+        else:
+            return tok, toks[i + 1:]
+    return None, []
+
+
+def _git_rm_is_forced(args):
+    for tok in args:
+        if tok == _RM_FLAG_TERM:
+            break
+        if tok == "--force" or re.match(r"^-[A-Za-z]*f", tok):
+            return True
+    return False
+
 
 def _rm_target_ok(tok, cwd):
     """True if this single rm/rmdir argument is a scratch path we can vouch for."""
@@ -211,12 +281,12 @@ def _rm_target_ok(tok, cwd):
     return False
 
 
-def _cd_target(toks, cwd):
+def _cd_target(toks, cwd, env=None):
     """New cwd after a `cd` segment, or None when it cannot be resolved."""
     args = [t for t in toks[1:] if not t.startswith("-")]
     if not args:                                   # bare `cd` -> home
         return os.path.expanduser("~")
-    tok = args[0]
+    tok = _expand(args[0].strip("'\""), env or {})
     if _RM_UNRESOLVABLE.search(tok):
         return None
     path = os.path.expanduser(tok) if tok.startswith("~") else tok
@@ -227,48 +297,62 @@ def _cd_target(toks, cwd):
     return os.path.normpath(path)
 
 
-def _rm_walk(segments, cwd):
+def _rm_walk(segments, cwd, env=None):
     """(all_rm_targets_ok, cwd_after, saw_rm) over a segment list, tracking `cd`.
 
     Order matters and is honoured: `cd /tmp && rm -rf e2e-art` resolves the relative
     target against the cwd the earlier segment established, which is the exact shape that
-    prompted this whole carve-out.
+    prompted this whole carve-out. Literal `NAME=value` assignments are tracked the same
+    way and for the same reason.
     """
     ok, saw = True, False
+    env = dict(env or {})
     for seg in segments:
         seg = seg.strip()
         if not seg or seg.startswith("#"):
             continue
         if seg.startswith("(") and seg.endswith(")"):
-            # A subshell's `cd` does not escape it, so the outer cwd is unchanged.
-            inner_ok, _inner_cwd, inner_saw = _rm_walk(_split_top_level(seg[1:-1]), cwd)
+            # A subshell's `cd` does not escape it, so the outer cwd is unchanged. Its
+            # assignments do not escape either, hence the copy rather than a share.
+            inner_ok, _inner_cwd, inner_saw = _rm_walk(_split_top_level(seg[1:-1]), cwd, env)
             ok, saw = ok and inner_ok, saw or inner_saw
             continue
         toks = seg.split()
         while toks and (toks[0] in _STRUCTURAL or toks[0] in _COND_KEYWORDS
                         or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0])
                         or _FUNC_DEF.match(toks[0]) or _CASE_LABEL.match(toks[0])):
+            _remember_assign(env, toks[0])
             toks = toks[1:]
         if not toks:
             continue
         head = os.path.basename(toks[0])
         if head == "cd":
-            cwd = _cd_target(toks, cwd)
-        elif head in ("rm", "rmdir"):
+            cwd = _cd_target(toks, cwd, env)
+        elif head == "git":
+            sub, sub_args = _git_subcommand(toks)
+            if sub == "rm":
+                # Unforced `git rm` cannot delete anything git does not already hold.
+                saw = True
+                if _git_rm_is_forced(sub_args):
+                    ok = False
+        elif head == "rmdir":
+            saw = True                             # empty directories only; nothing to lose
+        elif head == "rm":
             saw = True
             args, seen_term = [], False
             for t in toks[1:]:
                 if not seen_term and t == _RM_FLAG_TERM:
                     seen_term = True
                 elif seen_term or not t.startswith("-"):
-                    args.append(t.strip("'\""))
+                    args.append(_expand(t.strip("'\""), env))
             if not args or not all(_rm_target_ok(a, cwd) for a in args):
                 ok = False
     return ok, cwd, saw
 
 
 def _rm_is_scratch_only(cmd):
-    """True only if EVERY rm/rmdir in `cmd` targets a scratch path. Conservative: any
+    """True only if EVERY delete in `cmd` is one we can vouch for: a bare rm whose every
+    target is a scratch path, an unforced `git rm`, or an `rmdir`. Conservative: any
     shape this cannot resolve — including an `rm` reached through another command, e.g.
     `xargs rm`, which the segment walk never sees as an rm head — returns False and keeps
     the hard deny."""

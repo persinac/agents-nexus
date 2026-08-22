@@ -427,7 +427,10 @@ EXPECT_BLOCKED += [
     # deletion, because the assertion did not become wrong — the policy changed.
     'find . -name "*.log" ; rm -f out.log',
     '(rm -rf build)',
-    'rmdir empty/',
+    # `rmdir empty/` used to be asserted here. It moved to EXPECT_PERMITTED on
+    # 2026-08-22: rmdir refuses a non-empty directory, so there is no data behind it to
+    # protect. Kept as a note rather than a silent deletion — the assertion did not
+    # become wrong, the policy changed.
     'dd if=/dev/zero of=/dev/sda',
     'truncate -s 0 important.log',
 ]
@@ -483,6 +486,49 @@ EXPECT_BLOCKED += [
     # still absolutely denied
     'sudo rm -rf /tmp/x',
     'rm -rf /',
+]
+
+# --- literal variable resolution + git rm/rmdir, 2026-08-22 (per Alex).
+#
+# Measured: 10 of 16 rm-class prompts were a scratch delete written through a variable,
+# and the prompt Alex was sitting at was `git rm` + `rmdir` on a repo path. Both
+# directions asserted — the resolver must not become a way to launder a non-scratch path.
+EXPECT_PERMITTED += [
+    # measured: the prefix-assignment shape, both spellings
+    'S=/tmp/claude-1000/sess/scratchpad rm -f "$S/posttool.json"',
+    'SP=/tmp/claude-1000/sess/scratchpad; rm -f "$SP/probe.sh"',
+    'SP=/tmp/agent/scratch; rm -rf "${SP}/out"',
+    'D=/tmp/work && cd "$D" && rm -rf sub',
+    # git rm is recoverable by construction, whatever the path
+    'cd /home/persinac/repos/flashback-fleet/store-front && git rm -q src/app/api/x/route.ts',
+    'git rm -r --cached build/',
+    'git -C /home/persinac/repos/store-front rm src/old.ts',
+    # the exact command that reached a human on 2026-08-22
+    ('cd /home/persinac/repos/flashback-fleet/store-front && '
+     'git rm -q src/app/api/wallet/me/kiosk-pin/route.ts && '
+     'rmdir src/app/api/wallet/me/kiosk-pin 2>/dev/null; ls src/app/api/wallet/me/'),
+    # rmdir refuses a non-empty directory, so the path does not matter
+    'rmdir empty/',
+    'rmdir -p src/app/api/generated',
+]
+EXPECT_BLOCKED += [
+    # -f is exactly the flag that lets git rm discard uncommitted work
+    'git rm -f src/app/page.tsx',
+    'git rm -rf src/generated',
+    'git rm --force src/app/page.tsx',
+    # an unknown name leaves its `$` in the token, which stays unresolvable
+    'rm -rf "$SCRATCH/out"',
+    'cd /tmp && S=/etc rm -rf "$UNSET/x"',
+    # a value we cannot vouch for UNSETS the name rather than leaving a stale one
+    'S=/tmp/ok; S="$(cat /tmp/target)"; rm -rf "$S/x"',
+    # resolution must not launder a non-scratch destination
+    'S=/home/persinac/repos/store-front rm -rf "$S/src"',
+    'S=/tmp/creds rm -f "$S/.env"',
+    'S=/tmp rm -rf "$S"',
+    # a subshell's assignments do not escape it
+    '( S=/tmp/ok ) && rm -rf "$S/out"',
+    # git rm is cleared, but an unvouched bare rm in the same command still poisons it
+    'git rm src/a.ts && rm -rf /etc/hosts',
 ]
 
 # --- the git force clause, narrowed 2026-08-19 from `git` to the destructive
