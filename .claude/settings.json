@@ -26,7 +26,14 @@
       "mcp__spark__spark",
       "mcp__spark__spark_deep",
       "mcp__plugin_slack_slack__slack_search_channels",
-      "mcp__plugin_slack_slack__slack_read_channel"
+      "mcp__plugin_slack_slack__slack_read_channel",
+      "Bash(aws ecs describe-services *)",
+      "Bash(aws ec2 describe-security-groups *)",
+      "mcp__minions__peek_engineer_work",
+      "Bash(aws ecr describe-images *)",
+      "Bash(aws ecs describe-tasks *)",
+      "mcp__minions__herder_status",
+      "Bash(aws amplify list-jobs *)"
     ]
   }
 }

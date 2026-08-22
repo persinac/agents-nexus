@@ -14,6 +14,7 @@ import importlib.util
 import os
 import re
 import sys
+import tempfile
 import time
 
 HOME = os.path.expanduser("~")
@@ -24,6 +25,13 @@ REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 def load(live):
     path = DEFAULT if os.path.exists(DEFAULT) else os.path.abspath(REPO)
+    # Probing must not write to ~/.tmux/gate-decisions.log. That log answers "what has
+    # this gate actually decided about REAL traffic?", and on 2026-08-20 test runs made up
+    # 575 of 649 blocks in a 24h window, which made the answer wrong. The guard suites
+    # were redirected then; this probe was missed and kept polluting (3 rows on
+    # 2026-08-22, one of which was briefly mis-read as evidence about a live prompt).
+    # _GATE_LOG is resolved at import time, so the redirect has to happen before exec.
+    os.environ["NEXUS_TMUX_DIR"] = tempfile.mkdtemp(prefix="classify-probe-")
     spec = importlib.util.spec_from_file_location("nc_probe", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
