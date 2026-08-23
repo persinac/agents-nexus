@@ -1734,12 +1734,34 @@ def main():
     decision, category, summary = classify(name, inp)
     if decision == "read":
         sys.exit(0)                                       # safe -> auto-approve
-    if _surface_only(name):
-        # Deliberately NOT deduped: exit 11 owes the pane a keypress to clear the prompt,
-        # and skipping that would leave the question dialog unrendered.
-        _emit(category, summary, 11)                       # clear the prompt, still flag
     if _is_repeat(name, inp, tool_id):
+        # Checked BEFORE _surface_only as of 2026-08-22. It used to be the other way
+        # round, on the reasoning that "exit 11 owes the pane a keypress to clear the
+        # prompt, and skipping that would leave the question dialog unrendered". That is
+        # true of the FIRST notification and actively harmful on every one after it.
+        #
+        # Claude Code re-emits the notification every ~2 min while a prompt waits. The
+        # first exit 11 sends `1`, which clears the PERMISSION prompt -- and the question
+        # dialog renders in its place. A second exit 11 sends `1` again, and that
+        # keypress lands on the rendered DIALOG, selecting its first option.
+        #
+        # Measured on pane w13:pY: auto-approve-surface at 23:03:22 and again at
+        # 23:03:47 for one AskUserQuestion. The agent then spent the next hour
+        # implementing option 1 of a question the human never answered. The gate was
+        # not spamming the human, it was answering FOR them.
+        #
+        # A repeat therefore takes exit 12: report-state still flags the pane (the
+        # supervisor signal a waiting agent needs), and both the keypress and the alert
+        # are dropped. The first notification is never a repeat -- _is_repeat keys on the
+        # pending call's tool_use_id -- so the dialog still always gets its one keypress.
+        #
+        # Accepted trade-off: if that first keypress fails to land there is now no retry,
+        # so the pane can sit on an uncleared permission prompt. It stays FLAGGED and its
+        # first alert already went out, so it is visible. Silently choosing an answer on
+        # a human's behalf is the worse of the two failures, and it is unrecoverable.
         _emit(category, summary, 12)                       # flag the pane, skip alerting
+    if _surface_only(name):
+        _emit(category, summary, 11)                       # clear the prompt, still flag
     _emit_modify(category, summary)                        # needs a human
 
 

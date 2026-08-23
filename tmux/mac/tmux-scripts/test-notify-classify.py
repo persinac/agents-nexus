@@ -900,6 +900,31 @@ def _check_e2e():
             fails.append((f"re-notification must be exit 12, got {second}", "repeat/second"))
         if third != 10:
             fails.append((f"a new tool_use id must alert, got {third}", "repeat/new-id"))
+
+    # A re-notified AskUserQuestion must NOT press again (2026-08-22).
+    #
+    # This is the regression that matters most in this file. exit 11 sends `1` to the
+    # pane; the FIRST one clears the permission prompt and the question dialog renders in
+    # its place, so a SECOND one lands on the dialog and picks its first option. Measured
+    # live on w13:pY (two auto-approve-surface entries, 25s apart) -- the gate answered a
+    # human's question for them, and the agent implemented that answer.
+    #
+    # First call must still be 11: the dialog is owed exactly one keypress, and deduping
+    # that would leave the question unrendered, which was the original -- correct --
+    # reason this path skipped the repeat check.
+    with tempfile.TemporaryDirectory() as tmp:
+        first = _run_main(tmp, "AskUserQuestion", ASKQ_INPUT, tool_id="toolu_q1")
+        second = _run_main(tmp, "AskUserQuestion", ASKQ_INPUT, tool_id="toolu_q1")
+        third = _run_main(tmp, "AskUserQuestion", ASKQ_INPUT, tool_id="toolu_q2")
+        if first != 11:
+            fails.append((f"first question must clear the prompt (11), got {first}",
+                          "askq/first-presses"))
+        if second != 12:
+            fails.append((f"re-notified question must NOT press again (12), got {second}",
+                          "askq/repeat-must-not-press"))
+        if third != 11:
+            fails.append((f"a different question must clear its own prompt (11), got {third}",
+                          "askq/new-id-presses"))
     return fails
 
 
@@ -971,7 +996,7 @@ def main() -> int:
              + len(EXPECT_BLOCKED) + len(EXPECT_PERMITTED)
              + len(EXPECT_SURFACE) + len(EXPECT_NOT_SURFACE)
              + len(EXPECT_MCP_READ) + len(EXPECT_MCP_ASK) + len(EXPECT_INERT)
-             + len(REPEAT_CHECKS) + len(GIT_RM_CHECKS) + len(E2E_CASES) + 3
+             + len(REPEAT_CHECKS) + len(GIT_RM_CHECKS) + len(E2E_CASES) + 3 + 3
              + len(REDACT_CASES) + len(REDACT_KEEP))
     if fails:
         print(f"FAIL — {len(fails)} of {total}")
