@@ -262,6 +262,9 @@ services:
     profiles: ["langfuse"]
     container_name: langfuse-postgres
     restart: always
+    mem_limit: 512m
+    memswap_limit: 512m
+    mem_reservation: 128m
     environment:
       POSTGRES_USER: langfuse
       POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:-langfuse}
@@ -279,6 +282,9 @@ services:
     profiles: ["langfuse"]
     container_name: langfuse-redis
     restart: always
+    mem_limit: 384m
+    memswap_limit: 384m
+    mem_reservation: 64m
     command: ["redis-server", "--requirepass", "${LANGFUSE_REDIS_AUTH:-langfusepassword}"]
     volumes:
       - langfuse-redis-data:/data
@@ -293,6 +299,9 @@ services:
     profiles: ["langfuse"]
     container_name: langfuse-minio
     restart: always
+    mem_limit: 1g
+    memswap_limit: 1g
+    mem_reservation: 128m
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: miniosecret
@@ -307,6 +316,9 @@ services:
     profiles: ["langfuse"]
     container_name: langfuse-clickhouse
     restart: always
+    mem_limit: 3g
+    memswap_limit: 3g
+    mem_reservation: 512m
     environment:
       CLICKHOUSE_USER: clickhouse
       CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
@@ -323,6 +335,9 @@ services:
     profiles: ["langfuse"]
     container_name: langfuse-web
     restart: always
+    mem_limit: 1g
+    memswap_limit: 1g
+    mem_reservation: 256m
     ports:
       - "${LANGFUSE_PORT:-3000}:3000"
     environment:
@@ -376,6 +391,9 @@ services:
     profiles: ["langfuse"]
     container_name: langfuse-worker
     restart: always
+    mem_limit: 1g
+    memswap_limit: 1g
+    mem_reservation: 256m
     environment:
       DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-postgres:5432/langfuse
       REDIS_HOST: langfuse-redis

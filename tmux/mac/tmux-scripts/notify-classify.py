@@ -33,9 +33,14 @@ db, or deleting something from k8s, most of it is fine" — via the permissive t
 with no model call. Local file edits (Edit/Write/MultiEdit/NotebookEdit) are likewise
 permitted unless the path looks credential-ish.
 MCP tools are decided from their name (verb-first convention, see _mcp_is_read): reads
-auto-approve, mutations keep asking. Web egress and anything unrecognized still go to the
-LLM: their blast radius is not knowable from here and _DESTRUCTIVE only understands shell
-text.
+auto-approve, mutations keep asking. Anything the name cannot settle goes to the LLM, and
+for MCP its "read" verdict is honoured (see step 5 of classify) — it used to be discarded,
+so a tool the model itself called read-only still woke a human. Web egress and unknown
+NON-MCP tools still always ask: their blast radius is not knowable from here, _DESTRUCTIVE
+only understands shell text, and Task/Agent can do anything a subagent can.
+Browser automation (playwright-local) is decided by TARGET HOST, not by name — the whole
+server auto-approves against loopback, and all of it asks against anything else. See
+_browser_gate.
 Compound shell commands are "read" only if every part is read-only; the denylists
 match against the whole command string, so a destructive part anywhere blocks.
 Set CLASSIFY_STRICT=1 to revert to allowlist-only behaviour with no code change.
@@ -69,11 +74,13 @@ Anthropic key loaded from the repo .env; default api base (the .env base is cont
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import sys
 from collections import deque
+from urllib.parse import urlsplit
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread"}
@@ -1136,6 +1143,115 @@ def _mcp_is_read(name, inp):
     return bool(method)
 
 
+# --- Browser automation against a LOOPBACK target (added 2026-08-21) --------
+# playwright-local was the largest remaining source of prompts that woke a human for a
+# decision nobody wanted to make: ~30 in 48h across panes w52:pP, w5H:p2 and w5K:p2,
+# many whose own logged summary read "read-only inspection ... no state changes".
+#
+# None of them were decidable by name. Every leaf is `browser_<noun>` — snapshot,
+# network_requests, console_messages — so _mcp_is_read finds no verb and returns False.
+# Worse, three leaves hit a WRITE word by accident and were vetoed outright: `close`
+# and `run` are in _MCP_WRITE_SOFT, `upload` in _MCP_WRITE_HARD. The verb convention
+# simply does not describe this server.
+#
+# POLICY, chosen by Alex 2026-08-21, stated rather than buried: the WHOLE server
+# auto-approves — click, type and fill_form included, which really do mutate the page —
+# but ONLY while the browser is pointed at a loopback host. Driving a dev server on
+# localhost:8097 is the work. The identical click against a real environment is not.
+# So the host is a GATE, not a hint: an unresolvable target means ask.
+_BROWSER_SERVERS = frozenset({"playwright-local"})
+# Deliberately NOT covered by the whole-server grant: this runs arbitrary code in the
+# Playwright DRIVER rather than in the page, so it can open its own sockets and reach
+# any host it likes — which would make the loopback gate below decorative. Flagged to
+# Alex; empty this set to fold it in.
+_BROWSER_UNGATED = frozenset({"browser_run_code_unsafe"})
+# 0.0.0.0 is here explicitly because ipaddress calls it "unspecified", not "loopback",
+# yet a dev server bound there is reached over loopback in practice.
+_LOOPBACK_NAMES = frozenset({"localhost", "0.0.0.0"})
+# Inert targets a fresh or reset session sits on. about:blank is what browser_navigate
+# is handed to clear a session, and it was itself a measured prompt (twice).
+_INERT_URLS = frozenset({"about:blank", "about:newtab", "chrome://newtab/"})
+# The playwright MCP stamps every result with the page it ended on. That beats
+# remembering the last browser_navigate, because a CLICK navigates too: a measured
+# session went navigate -> /?state=sign-up, then clicked through to /sign-up/employer,
+# so a navigate-only tracker would have judged the wrong page. Reading it back out of
+# the transcript also keeps this session-scoped by construction — there is no state
+# file to go stale, and no way for one pane's URL to leak into another's verdict.
+_PAGE_URL = re.compile(r"Page URL:\s*([^\s\\\"']+)")
+_BROWSER_LOOKBACK = 400
+
+
+def _url_is_local(url):
+    """True if a browser target is loopback (or an inert blank page)."""
+    u = (url or "").strip()
+    if not u:
+        return False
+    if u.lower() in _INERT_URLS:
+        return True
+    try:
+        parts = urlsplit(u)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    if parts.scheme.lower() not in ("http", "https"):
+        return False          # file:/data:/chrome-extension: are not web targets
+    if not host:
+        return False
+    # Parsed, never substring-matched. Two shapes have to fail and do: the lookalike
+    # domain `localhost.evil.com`, and userinfo smuggling — `http://localhost:8097@evil.com/`,
+    # where the real host is what follows the `@` and urlsplit reports `evil.com`.
+    if host in _LOOPBACK_NAMES or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False          # a name we cannot resolve here -> not provably local
+
+
+def _browser_target(inp, transcript_path):
+    """The URL a pending browser call will act on, or "" if it can't be established.
+
+    Two sources, in order: a URL in the call's own input (browser_navigate carries
+    one), then the newest `Page URL:` the server stamped into a result earlier in THIS
+    transcript. "" is a real answer meaning "unknown", and the caller must then ask.
+    """
+    for k in ("url", "target", "href"):
+        v = inp.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    if not transcript_path or not os.path.exists(transcript_path):
+        return ""
+    try:
+        lines = deque(open(transcript_path, errors="replace"),
+                      maxlen=_BROWSER_LOOKBACK)
+    except OSError:
+        return ""
+    # Raw-text scan, no json.loads: a single browser_snapshot result is a whole DOM
+    # dump, and parsing several hundred of them on every prompt would cost more than
+    # the model call this path exists to avoid. The marker survives JSON escaping
+    # intact, and the regex stops at the escaped newline that follows it.
+    for ln in reversed(lines):
+        found = ""
+        for m in _PAGE_URL.finditer(ln):
+            found = m.group(1)        # keep the LAST match on the newest line
+        if found:
+            return found
+    return ""
+
+
+def _browser_gate(name, inp, transcript_path):
+    """(is_browser_call, auto_approve) for an MCP browser-automation tool."""
+    bits = (name or "").split("__")
+    if len(bits) < 3 or bits[1] not in _BROWSER_SERVERS:
+        return False, False
+    leaf = bits[-1]
+    if not leaf.startswith("browser_"):
+        return False, False
+    if leaf in _BROWSER_UNGATED:
+        return True, False
+    return True, _url_is_local(_browser_target(inp, transcript_path))
+
+
 _PROMPT = """You are the middle-man between an autonomous coding agent and its human operator on Slack. The agent paused to ask permission to use a tool. Reply with ONLY a compact JSON object:
 
 {{"decision":"read|modify","category":"<2-4 word label>","summary":"<one or two sentences>"}}
@@ -1457,11 +1573,15 @@ def _last_tool_use(transcript_path):
     return None
 
 
-def classify(name, inp):
+def classify(name, inp, transcript_path=""):
     """Classify a pending tool call. Returns (decision, category, summary) where
     decision is 'read' (safe to auto-approve) or 'modify' (needs a human). This is
     the reusable core shared by the Notification hook (main) and the Agent SDK
-    runner's can_use_tool gate (--tool mode)."""
+    runner's can_use_tool gate (--tool mode).
+
+    transcript_path is optional and only read by the browser gate, which needs the
+    page the session is currently on. Omitting it costs nothing else; a browser call
+    whose target cannot be established falls through and asks, which is the intent."""
     inp = inp or {}
     short = (name or "").split("__")[-1].lower()
     det = _deterministic_summary(name, inp)
@@ -1505,14 +1625,37 @@ def classify(name, inp):
         path = str(inp.get("file_path") or inp.get("notebook_path") or "")
         if path and not _MV_SENSITIVE.search(path):
             return "read", "file edit", det
-    # 4. MCP whose NAME proves it only reads -> read, no LLM. See _mcp_is_read. Mutating
+    # 4. Browser automation. Checked BEFORE the generic name rule so the whole server
+    #    is decided one way: `browser_find` would otherwise slip through _mcp_is_read on
+    #    the verb "find" while its siblings took a different path, which is exactly the
+    #    kind of split behaviour that makes this gate hard to reason about.
+    is_browser, browser_ok = _browser_gate(name, inp, transcript_path)
+    if is_browser:
+        if browser_ok:
+            return "read", "local browser", det
+        # Non-loopback, or no target we could establish. Ask, and let the LLM write the
+        # card — the operator needs to see WHICH host before answering.
+        llm = _llm(name, inp)
+        return ("modify", (llm[1] if llm else "browser automation"),
+                (llm[2] if llm and llm[2] else det))
+    # 4b. MCP whose NAME proves it only reads -> read, no LLM. See _mcp_is_read. Mutating
     #    MCP tools fall through to the LLM exactly as before; permissive mode does not
     #    cover them, because _DESTRUCTIVE only understands shell text and an MCP write's
     #    blast radius is not knowable from here.
     if (name or "").startswith("mcp__") and _mcp_is_read(name, inp):
         return "read", "mcp read", det
-    # 5. Web egress / mutating MCP / unknown -> modify (LLM summarizes).
+    # 5. Web egress / mutating MCP / unknown -> the LLM decides, and for MCP its "read"
+    #    verdict is now HONOURED, mirroring the Bash path above. It used to be thrown
+    #    away here: the model was called only for the category and summary, and "modify"
+    #    was hardcoded. So a tool the model itself described as "read-only inspection
+    #    ... no state changes" still woke a human — measured ~30 times in 48h on
+    #    playwright alone, and the same trap catches every MCP server whose leaf names
+    #    are not verb-first.
+    #    Scoped to mcp__ deliberately: Task/Agent spawns a subagent that can do anything,
+    #    and no model verdict about that is worth trusting from here.
     llm = _llm(name, inp)
+    if llm and llm[0] == "read" and (name or "").startswith("mcp__"):
+        return "read", (llm[1] or "mcp read"), (llm[2] or det)
     return "modify", (llm[1] if llm else "needs review"), (llm[2] if llm and llm[2] else det)
 
 
@@ -1523,14 +1666,15 @@ def main():
         data = json.load(sys.stdin) or {}
     except Exception:
         data = {}
-    tool = _last_tool_use(data.get("transcript_path", ""))
+    transcript = data.get("transcript_path", "")
+    tool = _last_tool_use(transcript)
     if not tool:
         _emit_modify("needs review", os.environ.get("FB", "needs input"))
     name, inp, tool_id = tool
     global _TOOL_NAME, _TOOL_DETAIL
     _TOOL_NAME = name
     _TOOL_DETAIL = _deterministic_summary(name, inp)
-    decision, category, summary = classify(name, inp)
+    decision, category, summary = classify(name, inp, transcript)
     if decision == "read":
         sys.exit(0)                                       # safe -> auto-approve
     if _surface_only(name):
@@ -1549,7 +1693,10 @@ if __name__ == "__main__":
     if "--tool" in sys.argv[1:]:
         try:
             _req = json.load(sys.stdin) or {}
-            _d, _c, _s = classify(_req.get("name", ""), _req.get("input") or {})
+            # transcript_path is optional here: the SDK runner may not have one, and the
+            # browser gate then just cannot establish a target and asks.
+            _d, _c, _s = classify(_req.get("name", ""), _req.get("input") or {},
+                                  _req.get("transcript_path", ""))
             print(json.dumps({"decision": _d, "category": _c, "summary": _s}))
         except Exception:
             print(json.dumps({"decision": "modify", "category": "needs review", "summary": ""}))

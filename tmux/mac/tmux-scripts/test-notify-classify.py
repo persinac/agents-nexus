@@ -574,6 +574,122 @@ EXPECT_MCP_ASK = [
 ]
 
 # ---------------------------------------------------------------------------
+# Browser automation, gated on TARGET HOST rather than tool name (2026-08-21).
+#
+# The whole playwright-local server auto-approves against loopback — click, type and
+# fill_form included — and all of it asks against anything else. So the entire safety
+# property of this feature lives in _url_is_local, and that is what these cases attack.
+# The URL list matters more than the tool list: get a lookalike host wrong and an agent
+# clicks buttons in a real environment unattended.
+# ---------------------------------------------------------------------------
+LOCAL_URLS = [
+    "http://localhost:8097/?state=sign-up",
+    "http://localhost:8097/sign-up/employer",     # measured, reached by clicking
+    "https://localhost:3000/",
+    "http://127.0.0.1:6080/chats?newChat=true",
+    "http://127.0.0.53:8080/",                    # any 127/8 address is loopback
+    "http://[::1]:8097/",
+    "http://0.0.0.0:8097/",                       # dev server bound to all interfaces
+    "http://app.localhost:8097/",                 # *.localhost is reserved for loopback
+    "about:blank",                                # what navigate is given to reset
+    "  http://localhost:8097/  ",                 # surrounding whitespace
+]
+# Every one of these must ASK. The first three are the shapes a substring match on
+# "localhost" would wave straight through.
+NONLOCAL_URLS = [
+    "http://localhost.evil.com/",                 # lookalike domain
+    "http://evil.com/?next=http://localhost:8097",  # loopback only in the query
+    "http://localhost:8097@evil.com/",            # userinfo smuggling: real host is evil.com
+    "https://demo-next.dev.internal.garner.health/",  # measured, a REAL environment
+    "https://app.getgarner.com/",
+    "http://192.168.1.50:8097/",                  # LAN, not loopback
+    "http://10.0.0.5/",
+    "file:///Users/alex/secrets.txt",             # not a web target at all
+    "data:text/html,<script>fetch('http://evil')</script>",
+    "",                                           # unknown target -> must ask
+    "not-a-url",
+]
+# Sampled across the server, deliberately including the three leaves the verb rule got
+# WRONG before this gate existed: close/run hit _MCP_WRITE_SOFT and upload hits
+# _MCP_WRITE_HARD, so all three were vetoed by an accidental word match; find hit
+# _MCP_READ_VERBS and was waved through regardless of host.
+BROWSER_TOOLS = [
+    "browser_snapshot", "browser_network_requests", "browser_network_request",
+    "browser_console_messages", "browser_take_screenshot", "browser_navigate",
+    "browser_navigate_back", "browser_click", "browser_type", "browser_fill_form",
+    "browser_evaluate", "browser_press_key", "browser_hover", "browser_select_option",
+    "browser_drag", "browser_drop", "browser_wait_for", "browser_resize",
+    "browser_tabs", "browser_handle_dialog", "browser_file_upload", "browser_find",
+    "browser_close",
+]
+# Excluded from the whole-server grant on purpose: it runs code in the Playwright
+# DRIVER, not the page, so it can reach any host and the loopback gate cannot bind it.
+BROWSER_ALWAYS_ASK = ["browser_run_code_unsafe"]
+
+
+def _check_browser_gate():
+    fails = []
+    for url in LOCAL_URLS:
+        if not nc._url_is_local(url):
+            fails.append(("expected LOCAL, gate said remote", url))
+    for url in NONLOCAL_URLS:
+        if nc._url_is_local(url):
+            fails.append(("NOT LOOPBACK — gate said local, would auto-approve", url))
+
+    # A URL in the pending call's own input decides it, with no transcript at all.
+    for leaf in BROWSER_TOOLS:
+        name = f"mcp__playwright-local__{leaf}"
+        got = nc.classify(name, {"url": "http://localhost:8097/x"})[0]
+        if got != "read":
+            fails.append((f"expected read on loopback, got {got!r}", name))
+        got = nc.classify(name, {"url": "https://app.getgarner.com/x"})[0]
+        if got != "modify":
+            fails.append((f"REMOTE TARGET — expected ask, got {got!r}", name))
+        # No URL anywhere and no transcript: unknown target, so it must ask.
+        if nc.classify(name, {})[0] != "modify":
+            fails.append(("unknown target must ask, got read", name))
+    for leaf in BROWSER_ALWAYS_ASK:
+        name = f"mcp__playwright-local__{leaf}"
+        if nc.classify(name, {"url": "http://localhost:8097/x"})[0] != "modify":
+            fails.append(("driver-level code exec must ask even on loopback", name))
+
+    # The interaction tools carry no URL, so the current page comes from the newest
+    # `Page URL:` the server stamped into an earlier result. This is the case a
+    # navigate-only tracker gets wrong: the session NAVIGATED to a remote host and then
+    # clicked, so the click must be judged against the remote page, not the stale local
+    # one. Asserted in both directions from the same transcript shape.
+    import tempfile
+    for page_urls, want, why in (
+        (["http://localhost:8097/?state=sign-up",
+          "http://localhost:8097/sign-up/employer"], "read", "clicked deeper into localhost"),
+        (["http://localhost:8097/",
+          "https://app.getgarner.com/"], "modify", "navigated away to a real host"),
+        (["https://app.getgarner.com/",
+          "http://localhost:8097/"], "read", "came back to localhost"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = os.path.join(tmp, "t.jsonl")
+            with open(tpath, "w") as fh:
+                for u in page_urls:
+                    fh.write(json.dumps({"message": {"role": "user", "content": [
+                        {"type": "tool_result",
+                         "content": f"### Page state\n- Page URL: {u}\n- Page Title: x\n"}]}}) + "\n")
+                fh.write(json.dumps({"message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "t1",
+                     "name": "mcp__playwright-local__browser_click",
+                     "input": {"element": "Continue", "ref": "e1"}}]}}) + "\n")
+            got = nc.classify("mcp__playwright-local__browser_click",
+                              {"element": "Continue", "ref": "e1"}, tpath)[0]
+            if got != want:
+                fails.append((f"{why}: expected {want}, got {got}", " -> ".join(page_urls)))
+
+    # Another server must not be swept in by the browser gate.
+    if nc._browser_gate("mcp__atlassian__getConfluencePage", {}, "")[0]:
+        fails.append(("browser gate claimed a non-browser server", "mcp__atlassian__*"))
+    return fails
+
+
+# ---------------------------------------------------------------------------
 # Redaction of the logged `detail` (2026-08-19). notify-asked.log records the literal
 # command so a later audit can see which clause fired — an LLM paraphrase like "downloads
 # artifacts using a private token" cannot answer that. The log is persistent, and a
@@ -854,13 +970,17 @@ def main() -> int:
         if nc._redact(cmd) != cmd:
             fails.append((f"over-redacted to {nc._redact(cmd)!r}", cmd))
 
+    fails += _check_browser_gate()
     fails += _check_repeat_suppression()
     fails += _check_e2e()
 
+    browser_checks = (len(LOCAL_URLS) + len(NONLOCAL_URLS)
+                      + len(BROWSER_TOOLS) * 3 + len(BROWSER_ALWAYS_ASK) + 3 + 1)
     total = (len(EXPECT_READ) + len(EXPECT_WITHHELD)
              + len(EXPECT_BLOCKED) + len(EXPECT_PERMITTED)
              + len(EXPECT_SURFACE) + len(EXPECT_NOT_SURFACE)
              + len(EXPECT_MCP_READ) + len(EXPECT_MCP_ASK) + len(EXPECT_INERT)
+             + browser_checks
              + len(REPEAT_CHECKS) + len(E2E_CASES) + 3
              + len(REDACT_CASES) + len(REDACT_KEEP))
     if fails:
@@ -873,7 +993,8 @@ def main() -> int:
           f"{len(EXPECT_BLOCKED)} hard-blocked, {len(EXPECT_PERMITTED)} permitted, "
           f"{len(EXPECT_SURFACE)} surface, {len(EXPECT_NOT_SURFACE)} not-surface, "
           f"{len(EXPECT_MCP_READ)} mcp-read, {len(EXPECT_MCP_ASK)} mcp-ask, "
-          f"{len(EXPECT_INERT)} inert, {len(REPEAT_CHECKS)} repeat, "
+          f"{len(EXPECT_INERT)} inert, {browser_checks} browser, "
+          f"{len(REPEAT_CHECKS)} repeat, "
           f"{len(REDACT_CASES) + len(REDACT_KEEP)} redaction)")
     return 0
 

@@ -46,10 +46,16 @@ PY
 [ -n "$msg" ] || msg="an agent is blocked — needs input"
 
 # Optional breadcrumb (herdr's per-plugin state dir if it gave us one, else tmp).
+# Every line is TAB-separated and starts with a verb, so the log answers "did the
+# settle window help?" by counting: `edge` = blocked transitions seen, `suppressed`
+# = resolved before the window expired (the win), `fired` = actually alerted.
 log_dir="${HERDR_PLUGIN_STATE_DIR:-${TMPDIR:-/tmp}}"
-{ printf '%s\t%s\tpane=%s ws=%s\n' \
-    "$(date '+%Y-%m-%dT%H:%M:%S')" "$msg" \
-    "${HERDR_PANE_ID:-?}" "${HERDR_WORKSPACE_ID:-?}" >> "$log_dir/presence.log"; } 2>/dev/null || true
+
+_presence_log() {
+  { printf '%s\t%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" >> "$log_dir/presence.log"; } 2>/dev/null || true
+}
+
+_presence_log "edge	$msg	pane=${HERDR_PANE_ID:-?} ws=${HERDR_WORKSPACE_ID:-?}"
 
 # Load the env layer — portable defaults, then per-machine env.sh on top (the same
 # order as open-claude.sh). herdr runs plugin hooks with a STRIPPED environment (no
@@ -70,23 +76,109 @@ NEXUS_TMUX_DIR="${NEXUS_TMUX_DIR:-$HOME/.tmux}"
 # the alert and left the bell unreachable — e.g. notify-send on WSL/headless,
 # where the binary installs fine but no org.freedesktop.Notifications daemon is
 # registered on the session bus, so every toast fails with ServiceUnknown.
-notified=0
+_presence_notify() {
+  local msg="$1"
+  local notified=0
 
-if [ -n "${NEXUS_PRESENCE_NOTIFY_CMD:-}" ]; then
-  NEXUS_PRESENCE_MSG="$msg" sh -c "$NEXUS_PRESENCE_NOTIFY_CMD" >/dev/null 2>&1 && notified=1
+  if [ -n "${NEXUS_PRESENCE_NOTIFY_CMD:-}" ]; then
+    NEXUS_PRESENCE_MSG="$msg" sh -c "$NEXUS_PRESENCE_NOTIFY_CMD" >/dev/null 2>&1 && notified=1
+  fi
+
+  if [ "$notified" = 0 ] && [ "$(uname)" = "Darwin" ] && command -v osascript >/dev/null 2>&1; then
+    local safe="${msg//\"/}"               # AppleScript string can't hold a raw double-quote
+    local sound="${NEXUS_PRESENCE_SOUND:-Submarine}"
+    osascript -e "display notification \"$safe\" with title \"herdr · agent blocked\" sound name \"$sound\"" >/dev/null 2>&1 && notified=1
+  fi
+
+  if [ "$notified" = 0 ] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -u critical "herdr · agent blocked" "$msg" >/dev/null 2>&1 && notified=1
+  fi
+
+  if [ "$notified" = 0 ]; then
+    printf '\a' >/dev/tty 2>/dev/null || true # last resort: terminal bell
+  fi
+}
+
+# --- Settle window (added 2026-08-21) --------------------------------------
+# Alex's permission classifier (agents-nexus tmux/mac/tmux-scripts/notify-classify.py)
+# auto-answers most prompts in 5-10s, because prompts it cannot decide from its
+# deterministic allowlists cost a real API call. Firing "the instant" a pane goes
+# blocked therefore alerted on prompts that were about to answer themselves:
+# MEASURED 333 desktop toasts in one day, the same pane recurring every ~7s, which
+# is exactly that round-trip. Every one was read after it had already resolved.
+#
+# So: defer, then RE-CHECK before alerting. herdr's own [ui.toast].delay_seconds
+# does exactly this for its native toasts, but cannot reach us — this plugin owns
+# the desktop channel and calls osascript directly.
+#
+# Deliberately NOT a daemon: the waiter is a detached child of this hook, so the
+# plugin keeps its zero-infra property. The `blocked` edge is infrequent enough to
+# afford one short-lived process; the hot no-op gate at the top of this file still
+# spawns nothing at all.
+_presence_still_blocked() {
+  local pane="$1" hb="" c
+  hb="$(command -v herdr 2>/dev/null)"
+  if [ -z "$hb" ]; then                    # herdr strips our env, so PATH may not have it
+    for c in /opt/homebrew/bin/herdr /usr/local/bin/herdr "$HOME/.local/bin/herdr"; do
+      [ -x "$c" ] && hb="$c" && break
+    done
+  fi
+  # No reachable binary -> fail OPEN and alert. A missed "needs input" leaves an
+  # agent stuck indefinitely; a surplus toast costs a glance.
+  [ -n "$hb" ] || return 0
+  # `python3 -c` NOT `python3 - <<HEREDOC`: with a heredoc, python reads its PROGRAM
+  # from stdin, so the piped snapshot is unreadable and json.load always throws —
+  # which lands in the fail-open branch below and alerts every single time. That
+  # exact bug shipped in the first draft of this function and presented as "the
+  # settle window does nothing", because failing open is indistinguishable from
+  # "still blocked". Keep stdin free for the pipe.
+  "$hb" api snapshot 2>/dev/null | NEXUS_PANE="$pane" python3 -c '
+import json, os, sys
+pane = os.environ.get("NEXUS_PANE", "")
+try:
+    agents = json.load(sys.stdin)["result"]["snapshot"]["agents"]
+except Exception:
+    sys.exit(0)          # unreadable snapshot -> fail OPEN, alert
+for a in agents:
+    if a.get("pane_id") == pane:
+        # agent_status is the live field. state_labels can retain a stale
+        # {"blocked": "permission_prompt"} entry on a pane that is working
+        # again, so reading that instead would defeat the whole check.
+        sys.exit(0 if a.get("agent_status") == "blocked" else 1)
+sys.exit(1)              # pane closed while we waited -> nothing to alert about
+'
+}
+
+delay="${NEXUS_PRESENCE_DELAY_SECS:-15}"
+case "$delay" in ''|*[!0-9]*) delay=15 ;; esac   # non-numeric override -> default
+
+if [ "$delay" -gt 0 ] && [ -n "${HERDR_PANE_ID:-}" ]; then
+  # One waiter per pane. mkdir is atomic, so a pane that flaps blocked -> clear ->
+  # blocked inside the window cannot stack two waiters and double-alert. A stale
+  # lock from a killed waiter is cleared by the age check below rather than living
+  # forever and silencing the pane.
+  lock="$log_dir/wait-$(printf '%s' "$HERDR_PANE_ID" | tr -c 'A-Za-z0-9_.-' '_').lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    if [ -n "$(find "$lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
+      rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null || exit 0
+    else
+      exit 0                               # a live waiter already owns this pane
+    fi
+  fi
+  _presence_log "deferred ${delay}s	pane=${HERDR_PANE_ID:-?} ws=${HERDR_WORKSPACE_ID:-?}"
+  (
+    trap 'rmdir "$lock" 2>/dev/null' EXIT
+    sleep "$delay"
+    if _presence_still_blocked "$HERDR_PANE_ID"; then
+      _presence_log "fired	$msg	pane=${HERDR_PANE_ID:-?} ws=${HERDR_WORKSPACE_ID:-?}"
+      _presence_notify "$msg"
+    else
+      _presence_log "suppressed (resolved in <${delay}s)	pane=${HERDR_PANE_ID:-?} ws=${HERDR_WORKSPACE_ID:-?}"
+    fi
+  ) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true               # survive this hook's exit
+  exit 0
 fi
 
-if [ "$notified" = 0 ] && [ "$(uname)" = "Darwin" ] && command -v osascript >/dev/null 2>&1; then
-  safe="${msg//\"/}"                       # AppleScript string can't hold a raw double-quote
-  sound="${NEXUS_PRESENCE_SOUND:-Submarine}"
-  osascript -e "display notification \"$safe\" with title \"herdr · agent blocked\" sound name \"$sound\"" >/dev/null 2>&1 && notified=1
-fi
-
-if [ "$notified" = 0 ] && command -v notify-send >/dev/null 2>&1; then
-  notify-send -u critical "herdr · agent blocked" "$msg" >/dev/null 2>&1 && notified=1
-fi
-
-if [ "$notified" = 0 ]; then
-  printf '\a' >/dev/tty 2>/dev/null || true # last resort: terminal bell
-fi
+_presence_notify "$msg"
 exit 0
