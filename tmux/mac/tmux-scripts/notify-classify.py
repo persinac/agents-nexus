@@ -77,7 +77,14 @@ import sys
 from collections import deque
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
-READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread"}
+# `taskoutput` added 2026-08-26: TaskOutput retrieves the stdout/stderr a background
+# task has already produced. It is read-only BY CONSTRUCTION -- it takes a task_id and
+# returns bytes, and there is no argument that can make it write. It was 11 of the 175
+# prompts that reached a human over the prior 6 days, and "task status check" was the
+# single largest classifier category (17). Note its sibling TaskStop is deliberately
+# NOT here: stopping a running task terminates work in flight, which is a real state
+# change and keeps asking.
+READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread", "taskoutput"}
 
 # Tools that load context and change nothing anywhere (added 2026-08-19). Neither is a
 # "read" of the filesystem, so neither fits READ_TOOLS, but both are pure friction:
@@ -1699,6 +1706,40 @@ def classify(name, inp):
             return "read", llm[1], (llm[2] or det)
         _log_decision("ask", denied_by or ("empty" if not cmd else "llm"), cmd)
         return "modify", (llm[1] if llm else "shell command"), (llm[2] if llm and llm[2] else det)
+    # 2a. Monitor: a wrapped shell command, re-run on a long unattended window. Cleared
+    #     ONLY when _deterministic_read can vouch for every segment -- the same authority
+    #     the Bash read-allowlist uses, with _bash_is_denied underneath it unchanged, so
+    #     the hard floor is not widened by this. Measured 2026-08-26: Monitor was 14 of
+    #     the 175 asks over the prior 6 days -- the second-largest tool bucket -- and the
+    #     shape being cleared is read-only tailing (`kubectl get` / `kubectl logs -f`,
+    #     `gh run list`, `aws s3api list-objects-v2`) polled in a loop.
+    #
+    #     Deliberately NOT given the permissive tier that Bash gets. A Monitor body runs
+    #     unattended for up to an hour and re-executes on every tick, so "not provably
+    #     destructive" is a materially weaker guarantee here than for a one-shot Bash
+    #     call. Real traffic makes that concrete -- this refuses `doppler run -c prd --
+    #     python -c ...` (an interpreter holding production secrets), a `chmod +x` on a
+    #     scratch script followed by executing it, and `: > "$ST"` truncating a file.
+    #
+    #     The `ws` variant carries no command at all -- it opens a socket to an arbitrary
+    #     host -- so it falls through to the LLM with the rest of the web-egress bucket.
+    #
+    #     NOTE on measurement: no retrospective "N of 14 would now clear" is offered,
+    #     and none can be. Every logged Monitor command is truncated at exactly 240
+    #     chars, and a command cut mid-token fails this gate for reasons that say
+    #     nothing about the real command. The suite is the evidence here, not the log.
+    if short == "monitor":
+        cmd = (inp.get("command") or "").strip()
+        if cmd:
+            if not _bash_is_denied(cmd) and _deterministic_read(cmd):
+                _log_decision("approve", "monitor-read", cmd)
+                return "read", "read-only monitor", det
+            # Logged as its own tier rather than folded into the Bash tiers: this is a
+            # new clause and the one most likely to need tuning, so an audit has to be
+            # able to see it separately. classify() falls through to the LLM below,
+            # which for a non-Bash tool always answers "modify".
+            _log_decision("ask", "monitor", cmd)
+
     # 3. Local file edits: permitted under the same bar, EXCEPT on a credential-ish
     #    path (same list `mv` is gated on). Editing files is the substance of the work;
     #    every such prompt was reaching a human for no decision anyone wanted to make.
