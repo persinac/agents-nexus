@@ -119,6 +119,21 @@ On this box that state dir is
 `~/.local/state/herdr/plugins/nexus.presence/` — note it is **not** under
 `~/.config/herdr/`, which is where you would probably look first.
 
+### State dir housekeeping
+
+The hook bounds its own footprint, so nothing in that dir needs a cron job:
+
+- **`presence.log` rotates at 1MB** to `presence.log.1` (one generation, same
+  `mv -f` pattern as `hook-notification.sh`'s logs). It had previously grown to
+  549KB / 6,885 lines with no bound at all.
+- **`last-notify.<pane>` cooldown stamps are pruned** on the notify path. Pane
+  ids are ephemeral, so these would otherwise accumulate one per pane forever.
+  The age floor is derived from the cooldown (`cooldown/60 + 60` minutes), so a
+  prune can never delete a stamp that is still able to suppress a toast — even if
+  you set a multi-hour cooldown.
+
+Both only run in the detached worker, never in the hook itself.
+
 ## Rollback
 
 ```bash
