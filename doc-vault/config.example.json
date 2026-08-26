@@ -61,12 +61,14 @@
   "score_threshold": 5,
   "port": 8310,
 
-  "_access_comment": "Off by default. Enabling opens a SECOND listener on access.port that requires a Cloudflare Access JWT. Point your tunnel at access.port, never at port. See README.",
+  "_access_comment": "Off by default. Enabling opens a SECOND listener on access.port that requires a Cloudflare Access JWT. Point your tunnel at access.port, never at port. Every value here is per-machine -- team, aud, allow and ca_bundle differ between hosts, which is why the live config is not committed. See README.",
   "access": {
     "enabled": false,
     "team": "",
     "aud": "",
     "allow": [],
-    "port": 8311
+    "port": 8311,
+    "_ca_bundle_comment": "Only needed where something re-signs outbound TLS (corporate proxy, WARP/Gateway inspection) and python's CA store does not carry that root. Leave empty otherwise.",
+    "ca_bundle": ""
   }
 }

@@ -22,7 +22,10 @@ rather than creating an empty vault — a silent empty vault is indistinguishabl
 every doc.
 
 Live config is `$DOCVAULT_HOME/config.json`, which is not in this repo because it carries machine
-paths and the Access allowlist. Start from `config.example.json`:
+paths and the Access allowlist. Every value under `access` is per-host — `team`, `aud`, `allow` and
+`ca_bundle` all differ between machines, so a second box needs its own config rather than a copy of
+the first one's. The launchd job is macOS-only; a Linux host needs a systemd unit invoking the same
+`docvault.py serve --watch 120`. Start from `config.example.json`:
 
 ```sh
 cp config.example.json ~/doc-vault/config.json    # then edit
