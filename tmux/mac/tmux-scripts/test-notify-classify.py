@@ -693,6 +693,123 @@ EXPECT_NOT_SURFACE = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Tool-level: TaskOutput / TaskStop, and Monitor's wrapped command (2026-08-26).
+#
+# Monitor was the second-largest tool bucket reaching a human (14 of 175 asks over
+# 08-20..08-26) and TaskOutput the third (11); "task status check" was the single
+# largest classifier CATEGORY (17). Both directions matter, for different reasons:
+#
+#   * TaskOutput is read-only by construction -- it takes a task_id and returns bytes
+#     already produced. Its sibling TaskStop TERMINATES work in flight and must keep
+#     asking. The two are one word apart in the logs and trivially confused, so both
+#     are asserted rather than just the one being added.
+#   * Monitor wraps a shell command that re-runs unattended on every tick. It clears
+#     ONLY through _deterministic_read with _bash_is_denied underneath, and is
+#     deliberately NOT given the permissive tier that Bash gets.
+#
+# The ASK cases are drawn from real Monitor bodies observed on this box, not invented:
+# an interpreter holding production secrets (`doppler run -c prd -- python -c`), a
+# chmod'ed scratch script being executed, and a truncating redirect. The negative
+# direction is the point of this block -- clearing a Monitor body is a longer-lived
+# grant than clearing a Bash call, because the body keeps running for up to an hour.
+# ---------------------------------------------------------------------------
+MONITOR_READ = [
+    # concurrent read-only log tails -- the shape this change exists to clear
+    ('( kubectl logs -f deploy/metrics-service -n flashback-fleet --tail=0 & '
+     'kubectl logs -f deploy/kcv-monitor-service -n flashback-fleet --tail=0 & wait )'),
+    # CI poll loop with arithmetic counter
+    ('n=0; while [ $n -lt 30 ]; do gh run list -R flippin-balls/hermes-bridge '
+     '--workflow esp-common-pin.yml --limit 1 --json conclusion,status; '
+     'n=$((n+1)); sleep 20; done'),
+    # object-store poll
+    ('while true; do aws --profile flashback s3api list-objects-v2 '
+     '--bucket pinball-dev --prefix "firmware/board=bridge"; sleep 30; done'),
+]
+
+MONITOR_ASK = [
+    # an interpreter running under production secrets: read-only by intent, unknowable
+    # by inspection. This is why Monitor does not get the permissive tier.
+    ('cd /home/persinac/repos/x && while true; do '
+     'out=$(doppler run -p infrastructure -c prd -- uv run python -c "print(1)"); '
+     'echo "$out"; sleep 30; done'),
+    # makes a scratch script executable, then executes it every tick
+    ('SC=/tmp/claude-1000/x/scratchpad/watch_job.sh; chmod +x "$SC"; '
+     'while true; do "$SC"; sleep 5; done'),
+    # truncating redirect + append: writes, however read-only the kubectl is
+    ('ST=/tmp/claude-1000/x/scratchpad/rollout-state; : > "$ST"; '
+     'while true; do kubectl get deploy -o json >> "$ST"; sleep 5; done'),
+    # egress that mutates something on the far end
+    'while true; do curl -sX POST https://hooks.example.com/notify -d done; sleep 60; done',
+]
+
+# Tool-level read/ask expectations that need no command at all.
+EXPECT_TOOL_READ = [
+    ("TaskOutput", {"task_id": "bt6gxhzfk", "block": True, "timeout": 30000}),
+    ("taskoutput", {"task_id": "bt6gxhzfk", "block": False, "timeout": 0}),
+]
+EXPECT_TOOL_ASK = [
+    # stops a running background task -- real state change, deliberately NOT cleared
+    ("TaskStop", {"task_id": "bt6gxhzfk"}),
+    # the Monitor ws variant carries no command to inspect: it opens a socket to an
+    # arbitrary host, so it belongs with web egress and must never clear on tool name.
+    ("Monitor", {"ws": {"url": "wss://events.example.com/stream"}, "description": "x"}),
+    # a Monitor with no command at all must not clear by falling off the end either
+    ("Monitor", {"description": "x", "timeout_ms": 1000, "persistent": False}),
+]
+
+
+def _check_monitor_and_task_tools():
+    """Monitor/TaskOutput gating. Stubs the model AND the decision log: classify() on
+    the Monitor path appends to gate-decisions.log, and a test run must never write to
+    the production audit trail (the 2026-08-20 pollution bug, via classify-probe.py).
+    The stub captures instead of discarding so the audit TIER is asserted too -- that
+    tier is the only thing a later audit can group this clause by."""
+    fails = []
+    real_llm, real_log = nc._llm, nc._log_decision
+    logged = []
+    nc._llm = lambda name, inp: None
+    nc._log_decision = lambda decision, tier, cmd: logged.append((decision, tier))
+    try:
+        for cmd in MONITOR_READ:
+            decision, cat, _ = nc.classify("Monitor", {"command": cmd, "description": "x"})
+            if decision != "read":
+                fails.append(("Monitor: expected auto-approve, gate withheld", cmd))
+            elif cat != "read-only monitor":
+                fails.append((f"Monitor cleared under wrong category {cat!r}", cmd))
+        for cmd in MONITOR_ASK:
+            if nc.classify("Monitor", {"command": cmd, "description": "x"})[0] != "modify":
+                fails.append(("Monitor MUTATION — expected ask, gate AUTO-APPROVED", cmd))
+
+        # The hard floor must survive being wrapped in a Monitor loop. Built from the
+        # suite's own EXPECT_BLOCKED rather than fresh literals, so this can never
+        # drift from what the destructive guard actually refuses — and so no new
+        # destructive command has to be typed into this file to assert it.
+        for bad in EXPECT_BLOCKED:
+            body = "while true; do " + bad + "; sleep 60; done"
+            if nc.classify("Monitor", {"command": body, "description": "x"})[0] != "modify":
+                fails.append(("DESTRUCTIVE wrapped in Monitor — AUTO-APPROVED", bad))
+
+        # Audit trail: a cleared Monitor is logged under its own tier, not folded into
+        # the Bash tiers, so `monitor-read` can be counted separately when tuning.
+        if ("approve", "monitor-read") not in logged:
+            fails.append(("cleared Monitor not logged under tier 'monitor-read'",
+                          str(sorted(set(logged))[:4])))
+        if ("ask", "monitor") not in logged:
+            fails.append(("withheld Monitor not logged under tier 'monitor'",
+                          str(sorted(set(logged))[:4])))
+
+        for name, inp in EXPECT_TOOL_READ:
+            if nc.classify(name, inp)[0] != "read":
+                fails.append(("expected read-only tool to auto-approve", name))
+        for name, inp in EXPECT_TOOL_ASK:
+            if nc.classify(name, inp)[0] != "modify":
+                fails.append(("expected ask, tool AUTO-APPROVED", f"{name} {inp}"))
+    finally:
+        nc._llm, nc._log_decision = real_llm, real_log
+    return fails
+
+
 def _blocked(cmd):
     """True if permissive mode will NOT approve it.
 
@@ -871,6 +988,14 @@ def _run_main(tmp, name, inp, pane="%e2e", tool_id="toolu_e2e", transcript="t.js
     env.update({"KIND": "permission_prompt", "PANE": pane, "AN": "test",
                 "WAIT_SINCE": "1000", "FB": "needs input",
                 "NOTIFY_DEDUPE_DIR": os.path.join(tmp, "dedupe"),
+                # Redirect the decision log into the temp dir. main() logs every Bash
+                # verdict, so without this each suite run appended real lines to the
+                # production gate-decisions.log under a fake `%e2e` pane -- measured at
+                # 2 lines per run. Same class as the 2026-08-20 classify-probe.py
+                # pollution: a test must never write to the audit trail it is auditing.
+                # NEXUS_TMUX_DIR has exactly one consumer (_GATE_LOG), so this redirects
+                # the log and nothing else.
+                "NEXUS_TMUX_DIR": tmp,
                 # No key -> _llm() returns None without a network call, so an unrecognized
                 # tool deterministically takes the fail-safe "modify" path.
                 "ANTHROPIC_API_KEY": ""})
@@ -988,6 +1113,7 @@ def main() -> int:
         if nc._redact(cmd) != cmd:
             fails.append((f"over-redacted to {nc._redact(cmd)!r}", cmd))
 
+    fails += _check_monitor_and_task_tools()
     fails += _check_repeat_suppression()
     fails += _check_git_recoverable_rm()
     fails += _check_e2e()
@@ -997,6 +1123,8 @@ def main() -> int:
              + len(EXPECT_SURFACE) + len(EXPECT_NOT_SURFACE)
              + len(EXPECT_MCP_READ) + len(EXPECT_MCP_ASK) + len(EXPECT_INERT)
              + len(REPEAT_CHECKS) + len(GIT_RM_CHECKS) + len(E2E_CASES) + 3 + 3
+             + len(MONITOR_READ) + len(MONITOR_ASK) + len(EXPECT_BLOCKED)
+             + len(EXPECT_TOOL_READ) + len(EXPECT_TOOL_ASK) + 2
              + len(REDACT_CASES) + len(REDACT_KEEP))
     if fails:
         print(f"FAIL — {len(fails)} of {total}")
@@ -1008,7 +1136,11 @@ def main() -> int:
           f"{len(EXPECT_BLOCKED)} hard-blocked, {len(EXPECT_PERMITTED)} permitted, "
           f"{len(EXPECT_SURFACE)} surface, {len(EXPECT_NOT_SURFACE)} not-surface, "
           f"{len(EXPECT_MCP_READ)} mcp-read, {len(EXPECT_MCP_ASK)} mcp-ask, "
-          f"{len(EXPECT_INERT)} inert, {len(REPEAT_CHECKS)} repeat, "
+          f"{len(EXPECT_INERT)} inert, "
+          f"{len(MONITOR_READ)} monitor-read, "
+          f"{len(MONITOR_ASK) + len(EXPECT_BLOCKED)} monitor-ask, "
+          f"{len(EXPECT_TOOL_READ)} tool-read, {len(EXPECT_TOOL_ASK)} tool-ask, "
+          f"{len(REPEAT_CHECKS)} repeat, "
           f"{len(GIT_RM_CHECKS)} git-rm, "
           f"{len(REDACT_CASES) + len(REDACT_KEEP)} redaction)")
     return 0
