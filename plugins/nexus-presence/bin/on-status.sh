@@ -43,6 +43,12 @@ case "$delay" in ''|*[!0-9]*) delay=15 ;; esac   # non-numeric -> default, never
 log_dir="${HERDR_PLUGIN_STATE_DIR:-${TMPDIR:-/tmp}}"
 pane="${HERDR_PANE_ID:-?}"
 
+# Bounded like hook-notification.sh's logs; this one reached 549KB unnoticed.
+plog="$log_dir/presence.log"
+if [ "$(wc -c < "$plog" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+  mv -f "$plog" "$plog.1" 2>/dev/null || true
+fi
+
 if [ "$delay" -gt 0 ]; then
   sleep "$delay"
 
@@ -88,6 +94,10 @@ if [ "$cooldown" -gt 0 ]; then
     exit 0
   fi
   { printf '%s\n' "$now" > "$stamp"; } 2>/dev/null || true
+  # Pane ids are ephemeral, so stamps accumulate forever. Age floor is derived
+  # from the cooldown, so a prune can never remove a stamp still able to suppress.
+  find "$log_dir" -maxdepth 1 -type f -name 'last-notify.*' \
+    -mmin "+$(( cooldown / 60 + 60 ))" -delete 2>/dev/null || true
 fi
 
 msg="$(python3 - <<'PY' 2>/dev/null
