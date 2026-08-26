@@ -36,6 +36,7 @@ import os
 import re
 import shutil
 import sqlite3
+import ssl
 import sys
 import threading
 import time
@@ -168,6 +169,10 @@ DEFAULT_ACCESS = {
     "port": 8311,
     "certs_url": "",
     "leeway": 60,
+    # Extra root added on top of the system trust for the JWKS fetch only.
+    # Needed where WARP/Gateway re-signs outbound TLS: python's CA store is not
+    # the macOS keychain, so the fetch fails and the gate 403s every request.
+    "ca_bundle": "",
 }
 
 
@@ -212,8 +217,11 @@ class _JwksCache:
         self._keys: dict[str, tuple[int, int]] = {}
         self._fetched = 0.0
 
-    def _fetch(self, url: str) -> None:
-        with urllib.request.urlopen(url, timeout=5) as resp:
+    def _fetch(self, url: str, ca_bundle: str = "") -> None:
+        ctx = ssl.create_default_context()
+        if ca_bundle:
+            ctx.load_verify_locations(cafile=os.path.expanduser(ca_bundle))
+        with urllib.request.urlopen(url, timeout=5, context=ctx) as resp:
             body = json.loads(resp.read().decode())
         keys: dict[str, tuple[int, int]] = {}
         for k in body.get("keys", []):
@@ -231,13 +239,13 @@ class _JwksCache:
         self._keys = keys
         self._fetched = time.time()
 
-    def get(self, kid: str, url: str) -> tuple[int, int]:
+    def get(self, kid: str, url: str, ca_bundle: str = "") -> tuple[int, int]:
         with self._lock:
             now = time.time()
             need = kid not in self._keys or (now - self._fetched) > self.TTL
             if need and (not self._keys or (now - self._fetched) > self.MIN_REFRESH):
                 try:
-                    self._fetch(url)
+                    self._fetch(url, ca_bundle)
                 except AccessDenied:
                     raise
                 except Exception as exc:
@@ -293,7 +301,7 @@ def verify_access_jwt(token: str, acfg: dict) -> dict:
     if not kid or not isinstance(kid, str):
         raise AccessDenied("token has no kid")
 
-    n, e = _JWKS.get(kid, _certs_url(acfg))
+    n, e = _JWKS.get(kid, _certs_url(acfg), acfg.get("ca_bundle") or "")
     if not _rsa_sha256_verify(n, e, sig, f"{parts[0]}.{parts[1]}".encode()):
         raise AccessDenied("signature does not verify")
 
