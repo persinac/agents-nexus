@@ -46,7 +46,8 @@ sample.json
 # doc-vault: code is committed, the vault is not. The live config carries machine
 # paths, the Cloudflare Access allowlist and an AUD tag; only config.example.json
 # belongs in a public repo. These also catch a DOCVAULT_HOME pointed at the code dir.
-/doc-vault/config.json
+/doc-vault/config*.json
+!/doc-vault/config.example.json
 /doc-vault/docs/
 /doc-vault/index.db
 /doc-vault/server.log

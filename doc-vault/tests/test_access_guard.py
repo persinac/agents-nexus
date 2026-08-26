@@ -3,6 +3,8 @@
 Exercises access_misconfig() plus the enabled-and-complete path, without
 touching the real config.json or reaching Cloudflare.
 """
+import json
+import pathlib
 import sys
 from pathlib import Path
 
@@ -62,6 +64,23 @@ for email, want in [
 
 check("bare '@' entry matches nothing", docvault.email_allowed("a@", {"@"}), False)
 check("empty allow matches nothing", docvault.email_allowed("a@example.org", set()), False)
+
+# A populated default would ship a live allowlist to a public repo in one line.
+check("DEFAULT_ACCESS ships no allowlist", docvault.DEFAULT_ACCESS["allow"], [])
+check("DEFAULT_ACCESS ships no team", docvault.DEFAULT_ACCESS["team"], "")
+check("DEFAULT_ACCESS ships no aud", docvault.DEFAULT_ACCESS["aud"], "")
+check("DEFAULT_ACCESS ships no ca_bundle", docvault.DEFAULT_ACCESS["ca_bundle"], "")
+check("DEFAULT_ACCESS is off", docvault.DEFAULT_ACCESS["enabled"], False)
+
+example = json.loads((pathlib.Path(docvault.CODE_DIR) / "config.example.json").read_text())
+ex_access = example.get("access", {})
+check("config.example.json ships no allowlist", ex_access.get("allow"), [])
+check("config.example.json ships no team", ex_access.get("team"), "")
+check("config.example.json ships no aud", ex_access.get("aud"), "")
+check("config.example.json is off", ex_access.get("enabled"), False)
+
+tracked_live = pathlib.Path(docvault.CODE_DIR) / "config.json"
+check("no live config.json in the code dir", tracked_live.exists(), False)
 
 print(f"\n{'FAILED' if fails else 'all guard checks passed'}")
 sys.exit(1 if fails else 0)
