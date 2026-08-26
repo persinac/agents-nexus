@@ -171,6 +171,30 @@ EXPECT_READ = [
     'git status && git log --oneline | head -5',
     '( cd /tmp && ls )',
     'rg -n pattern . 2>/dev/null | head -20',
+
+    # --- capture assignments + control-flow builtins (added 2026-08-26) ---
+    # `NAME=$(read)` is the most common shell idiom there is, and every form of it was
+    # a false ask: _segment_is_read splits on whitespace to find a command head, so
+    # `img=$(kubectl get pods)` became ['img=$(kubectl', 'get', ...] and `get` stood as
+    # the head once the VAR= prefix was stripped. Fixed by _mask_subs; the substitution
+    # BODY is still validated independently, which the withheld cases below assert.
+    'img=$(kubectl get pods -n prod)',
+    'out=$(git status --porcelain)',
+    'n=$(grep -c ERROR app.log)',
+    'ts=$(date +%s); echo "$ts"',
+    'out=`git status --porcelain`',
+    # inert control-flow builtins — `exit 0` in an early-return poll loop is the real
+    # Monitor body (2026-08-23) that surfaced this
+    'exit 0',
+    'if [ -s "$F" ]; then echo done; exit 0; fi',
+    'for i in 1 2 3; do if [ -f x ]; then break; fi; done',
+    'for i in 1 2 3; do [ -f x ] && continue; echo "$i"; done',
+    # the two real Monitor poll bodies, end to end
+    ('prev=""; for i in $(seq 1 80); do '
+     'img=$(kubectl get deploy m -n m -o jsonpath=\'{.x}\' 2>/dev/null); '
+     'if [ "$img" != "$prev" ]; then echo "i=$img"; prev="$img"; fi; sleep 10; done'),
+    ('for i in $(seq 1 40); do if [ -s "$RUN/results.md" ]; then '
+     'echo written; exit 0; fi; sleep 15; done'),
 ]
 
 # Must NOT auto-approve — either it changes state, or we refuse to vouch for it.
@@ -304,6 +328,22 @@ EXPECT_WITHHELD = [
 # EXPECT_BLOCKED is the important direction. A miss here is not "the gate asked
 # unnecessarily" — it is a destructive command running unattended.
 # ---------------------------------------------------------------------------
+# --- masking must not HIDE a write (added 2026-08-26) ---
+# _mask_subs collapses `$(...)` to one token so the segment's real command head can be
+# found. That is only sound because _deterministic_read validates every substitution
+# body separately first. These assert that second half: a write inside a substitution
+# must still sink the whole command, whatever the shape around it looks like.
+EXPECT_WITHHELD += [
+    'x=$(git push --force origin main)',
+    'out=`git commit -am wip`',
+    'x=$(curl -X POST https://api.example.com/delete)',
+    'x=$(sed -i s/a/b/ f)',
+    'x=$(find . -name "*.tmp" -delete)',
+    'f=$(cat x) > /etc/passwd',
+    'v=$(cat a); w=$(sed -i s/x/y/ b)',
+]
+
+
 EXPECT_BLOCKED = [
     # --- deleting production data (Alex's first named category) ---
     'psql -c "DELETE FROM users WHERE id > 0"',
@@ -810,6 +850,38 @@ def _check_monitor_and_task_tools():
     return fails
 
 
+def _check_sub_masking():
+    """_mask_subs must leave NO substitution behind, and its placeholder must be inert.
+
+    The invariant is coverage, not a matching count: _command_subs reports nested bodies
+    individually (outer AND inner), while the masker collapses the outermost span, which
+    already contains the inner one. So `nested=$(a $(b) c)` is 2 bodies but 1 mask, and
+    that is correct. What must hold is that nothing substitution-shaped survives masking
+    for the token loop to misread, and that the placeholder itself never passes as a
+    command head -- if it did, a bare `$(anything)` segment would clear on the mask
+    alone."""
+    fails = []
+    for c in ['a=$(b) c=`d` e=$((1+2))',
+              'echo "$(x)" `y`',
+              'nested=$(a $(b) c)',
+              'img=$(kubectl get pods -n prod)',
+              'unbalanced=$(oops']:
+        masked = nc._mask_subs(c)
+        # Asked via the scanner itself rather than a literal "$(" search: `$((arith))`
+        # legitimately survives masking and contains "$(", so a text search would flag
+        # correct output. _command_subs is also the authority the soundness argument
+        # rests on, so asking IT whether anything is left is the invariant that matters.
+        if nc._command_subs(masked):
+            fails.append(("_mask_subs left a substitution behind", f"{c!r} -> {masked!r}"))
+    # arithmetic is NOT a substitution and must survive untouched, or `$((i+1))` breaks
+    if nc._mask_subs('n=$((i+1))') != 'n=$((i+1))':
+        fails.append(("_mask_subs must not touch $((arith))", nc._mask_subs('n=$((i+1))')))
+    # the placeholder must not be a command head that clears
+    if nc._segment_is_read(nc._SUB_MASK):
+        fails.append(("mask placeholder passes as a read command head", nc._SUB_MASK))
+    return fails
+
+
 def _blocked(cmd):
     """True if permissive mode will NOT approve it.
 
@@ -1113,6 +1185,7 @@ def main() -> int:
         if nc._redact(cmd) != cmd:
             fails.append((f"over-redacted to {nc._redact(cmd)!r}", cmd))
 
+    fails += _check_sub_masking()
     fails += _check_monitor_and_task_tools()
     fails += _check_repeat_suppression()
     fails += _check_git_recoverable_rm()
@@ -1124,7 +1197,7 @@ def main() -> int:
              + len(EXPECT_MCP_READ) + len(EXPECT_MCP_ASK) + len(EXPECT_INERT)
              + len(REPEAT_CHECKS) + len(GIT_RM_CHECKS) + len(E2E_CASES) + 3 + 3
              + len(MONITOR_READ) + len(MONITOR_ASK) + len(EXPECT_BLOCKED)
-             + len(EXPECT_TOOL_READ) + len(EXPECT_TOOL_ASK) + 2
+             + len(EXPECT_TOOL_READ) + len(EXPECT_TOOL_ASK) + 2 + 7
              + len(REDACT_CASES) + len(REDACT_KEEP))
     if fails:
         print(f"FAIL — {len(fails)} of {total}")
