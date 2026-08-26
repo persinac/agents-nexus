@@ -2,7 +2,7 @@ id = "nexus.presence"
 name = "Nexus Presence"
 version = "0.1.0"
 min_herdr_version = "0.7.3"
-description = "Desktop notification the instant a herdr agent goes `blocked` (needs input). Event-driven via pane.agent_status_changed — no keybinding, no daemon, no polling. Uses the desktop channel so it complements (never double-notifies) the substrated/slack-bridge stack; set NEXUS_PRESENCE_NOTIFY_CMD to route the message elsewhere."
+description = "Desktop notification when a herdr agent goes `blocked` (needs input) and is still blocked after a settle window, so prompts the notify-classify auto-approver takes do not ping. Event-driven via pane.agent_status_changed — no keybinding, no daemon, no polling. Redundant on a box running ~/.tmux/hook-notification.sh, which already sends a classifier-gated desktop toast; intended for boxes without that stack. Set NEXUS_PRESENCE_NOTIFY_CMD to route elsewhere."
 platforms = ["macos", "linux"]
 
 # Pure event-hook plugin: no [[panes]], no [[actions]], no keybinding.
