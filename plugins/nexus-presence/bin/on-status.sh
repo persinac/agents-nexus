@@ -1,34 +1,105 @@
 #!/usr/bin/env bash
-# nexus.presence — herdr event-hook for `pane.agent_status_changed`.
-#
-# Pops a DESKTOP notification the instant a herdr agent transitions to `blocked`
-# (needs input: a permission prompt, an elicitation dialog, an end-of-turn
-# question). Zero-infra & non-duplicative by design:
-#   - Pure herdr event-hook -> OS notifier. No daemon, no Slack, no keybinding.
-#   - The full nexus stack (substrated + slack-bridge) already pushes `blocked`
-#     to Slack via its own events.subscribe. Presence uses the DESKTOP channel,
-#     which that stack does not touch -> no double-notify. It is also the path
-#     for a teammate running herdr + this plugin WITHOUT the daemon/bridge stack.
-#   - Override the channel with NEXUS_PRESENCE_NOTIFY_CMD (message exported as
-#     NEXUS_PRESENCE_MSG) to route anywhere — e.g. the Slack bus on a headless box.
-#
-# herdr injects: HERDR_PLUGIN_EVENT_JSON (the {event,data} payload), HERDR_PLUGIN_ROOT,
-# HERDR_PLUGIN_STATE_DIR, HERDR_PANE_ID, HERDR_WORKSPACE_ID.
+
+# nexus.presence hook: toast when an agent is blocked AND still blocked after
+# the settle window. Knobs, injected env vars, measurements: ../README.md
 
 json="${HERDR_PLUGIN_EVENT_JSON:-}"
 [ -n "$json" ] || exit 0
 
-# Fast gate: act only on a transition TO `blocked`. Every other status change
-# (idle/working/done/unknown) is a no-op with NO subprocess — the event fires a
-# lot and herdr rate-limits plugin commands, so the common path must stay cheap.
-# herdr serializes compact JSON, so the literal is `"agent_status":"blocked"`.
+# Every other status fires here too, so this gate must stay subprocess-free.
 case "$json" in
   *'"agent_status":"blocked"'*) ;;
   *) exit 0 ;;
 esac
 
-# Build a human message from the payload. python3 is the stack's lingua franca and
-# runs only on the (infrequent) blocked path, never on the hot no-op gate above.
+# herdr waits for plugin commands, so this must not sleep: detach and return.
+# Injected vars don't survive the detach — pass each one the child needs.
+if [ -z "${NEXUS_PRESENCE_SETTLED:-}" ]; then
+  NEXUS_PRESENCE_SETTLED=1 \
+  HERDR_PLUGIN_EVENT_JSON="$json" \
+  HERDR_PLUGIN_STATE_DIR="${HERDR_PLUGIN_STATE_DIR:-}" \
+  HERDR_PANE_ID="${HERDR_PANE_ID:-}" \
+  HERDR_WORKSPACE_ID="${HERDR_WORKSPACE_ID:-}" \
+  HERDR_BIN_PATH="${HERDR_BIN_PATH:-}" \
+  NEXUS_TMUX_DIR="${NEXUS_TMUX_DIR:-}" \
+    nohup "$0" </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  exit 0
+fi
+
+# --- detached worker: everything below is off herdr's critical path ---
+
+# herdr strips the env, so the NEXUS_PRESENCE_* knobs are invisible without this.
+# Sourced here and not in the hook: it costs ~945ms, which was most of the old ~1s.
+NEXUS_TMUX_DIR="${NEXUS_TMUX_DIR:-$HOME/.tmux}"
+# shellcheck source=/dev/null
+[ -f "$NEXUS_TMUX_DIR/env.defaults.sh" ] && source "$NEXUS_TMUX_DIR/env.defaults.sh"
+# shellcheck source=/dev/null
+[ -f "$NEXUS_TMUX_DIR/env.sh" ] && source "$NEXUS_TMUX_DIR/env.sh"
+
+delay="${NEXUS_PRESENCE_DELAY_SECS:-15}"
+case "$delay" in ''|*[!0-9]*) delay=15 ;; esac   # non-numeric -> default, never error
+
+log_dir="${HERDR_PLUGIN_STATE_DIR:-${TMPDIR:-/tmp}}"
+pane="${HERDR_PANE_ID:-?}"
+
+# Bounded like hook-notification.sh's logs; this one reached 549KB unnoticed.
+plog="$log_dir/presence.log"
+if [ "$(wc -c < "$plog" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+  mv -f "$plog" "$plog.1" 2>/dev/null || true
+fi
+
+if [ "$delay" -gt 0 ]; then
+  sleep "$delay"
+
+  herdr_bin="${HERDR_BIN_PATH:-}"
+  if [ -z "$herdr_bin" ] || [ ! -x "$herdr_bin" ]; then
+    herdr_bin="$(command -v herdr 2>/dev/null)"
+  fi
+  if [ -z "$herdr_bin" ] || [ ! -x "$herdr_bin" ]; then
+    [ -x /opt/homebrew/bin/herdr ] && herdr_bin=/opt/homebrew/bin/herdr
+  fi
+  if [ -z "$herdr_bin" ] || [ ! -x "$herdr_bin" ]; then
+    [ -x /usr/local/bin/herdr ] && herdr_bin=/usr/local/bin/herdr
+  fi
+
+  # Fails OPEN: an unreadable status notifies. A swallowed ping strands an agent.
+  if [ -n "$herdr_bin" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
+    cur="$("$herdr_bin" agent get "$HERDR_PANE_ID" 2>/dev/null)"
+    if [ -n "$cur" ]; then
+      case "$cur" in
+        *'"agent_status":"blocked"'*) ;;   # still waiting on a human -> notify
+        *)
+          { printf '%s\t%s\tpane=%s ws=%s outcome=suppressed(settled)\n' \
+              "$(date '+%Y-%m-%dT%H:%M:%S')" "recovered within ${delay}s" \
+              "$pane" "${HERDR_WORKSPACE_ID:-?}" >> "$log_dir/presence.log"; } 2>/dev/null || true
+          exit 0 ;;
+      esac
+    fi
+  fi
+fi
+
+# Stamp, not a lock: a race costs a duplicate toast, a stale lock mutes forever.
+cooldown="${NEXUS_PRESENCE_COOLDOWN_SECS:-$delay}"
+case "$cooldown" in ''|*[!0-9]*) cooldown="$delay" ;; esac
+if [ "$cooldown" -gt 0 ]; then
+  stamp="$log_dir/last-notify.$(printf '%s' "$pane" | tr -c 'A-Za-z0-9._-' '_')"
+  now="$(date +%s)"
+  last="$(cat "$stamp" 2>/dev/null)"
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ "$((now - last))" -lt "$cooldown" ]; then
+    { printf '%s\t%s\tpane=%s ws=%s outcome=suppressed(cooldown)\n' \
+        "$(date '+%Y-%m-%dT%H:%M:%S')" "toast $((now - last))s ago" \
+        "$pane" "${HERDR_WORKSPACE_ID:-?}" >> "$log_dir/presence.log"; } 2>/dev/null || true
+    exit 0
+  fi
+  { printf '%s\n' "$now" > "$stamp"; } 2>/dev/null || true
+  # Pane ids are ephemeral, so stamps accumulate forever. Age floor is derived
+  # from the cooldown, so a prune can never remove a stamp still able to suppress.
+  find "$log_dir" -maxdepth 1 -type f -name 'last-notify.*' \
+    -mmin "+$(( cooldown / 60 + 60 ))" -delete 2>/dev/null || true
+fi
+
 msg="$(python3 - <<'PY' 2>/dev/null
 import json, os
 try:
@@ -45,31 +116,12 @@ PY
 )"
 [ -n "$msg" ] || msg="an agent is blocked — needs input"
 
-# Optional breadcrumb (herdr's per-plugin state dir if it gave us one, else tmp).
-log_dir="${HERDR_PLUGIN_STATE_DIR:-${TMPDIR:-/tmp}}"
-{ printf '%s\t%s\tpane=%s ws=%s\n' \
+{ printf '%s\t%s\tpane=%s ws=%s outcome=notified\n' \
     "$(date '+%Y-%m-%dT%H:%M:%S')" "$msg" \
-    "${HERDR_PANE_ID:-?}" "${HERDR_WORKSPACE_ID:-?}" >> "$log_dir/presence.log"; } 2>/dev/null || true
+    "$pane" "${HERDR_WORKSPACE_ID:-?}" >> "$log_dir/presence.log"; } 2>/dev/null || true
 
-# Load the env layer — portable defaults, then per-machine env.sh on top (the same
-# order as open-claude.sh). herdr runs plugin hooks with a STRIPPED environment (no
-# NEXUS_* reaches us), so without this NEXUS_PRESENCE_NOTIFY_CMD / _SOUND set in
-# env.sh are invisible here and the documented override silently does nothing.
-# Sourced AFTER the fast gate above: only a real `blocked` transition pays for it,
-# so the high-frequency no-op path still spawns nothing.
-NEXUS_TMUX_DIR="${NEXUS_TMUX_DIR:-$HOME/.tmux}"
-# shellcheck source=/dev/null
-[ -f "$NEXUS_TMUX_DIR/env.defaults.sh" ] && source "$NEXUS_TMUX_DIR/env.defaults.sh"
-# shellcheck source=/dev/null
-[ -f "$NEXUS_TMUX_DIR/env.sh" ] && source "$NEXUS_TMUX_DIR/env.sh"
-
-# Dispatch. Precedence: explicit override -> macOS toast -> Linux toast -> bell.
-# A channel must SUCCEED to count as delivered; a channel that EXISTS but fails
-# falls through to the next. The old form selected a branch on `command -v` alone
-# and swallowed the result with `|| true`, so a present-but-broken notifier ate
-# the alert and left the bell unreachable — e.g. notify-send on WSL/headless,
-# where the binary installs fine but no org.freedesktop.Notifications daemon is
-# registered on the session bus, so every toast fails with ServiceUnknown.
+# A channel must SUCCEED to count as delivered, else fall through to the next:
+# notify-send installs fine on WSL/headless with no daemon, and once ate the alert.
 notified=0
 
 if [ -n "${NEXUS_PRESENCE_NOTIFY_CMD:-}" ]; then
