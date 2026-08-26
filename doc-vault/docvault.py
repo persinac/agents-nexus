@@ -135,6 +135,8 @@ DEFAULT_CONFIG = {
     # Seconds a file must be untouched before the watch loop will capture it.
     "settle_seconds": 45,
     "port": 8310,
+    # Comment author on the ungated loopback port, which has no identity to read.
+    "local_author": "local",
     # See the "cloudflare access" section. Disabled means `serve` behaves
     # exactly as it always has: one unauthenticated loopback listener.
     "access": {},
@@ -371,6 +373,34 @@ CREATE TABLE IF NOT EXISTS docs (
     added_at     TEXT NOT NULL,
     source       TEXT NOT NULL DEFAULT 'crawl'
 );
+CREATE TABLE IF NOT EXISTS doc_versions (
+    id           INTEGER PRIMARY KEY,
+    doc_id       INTEGER NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+    n            INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    vault_name   TEXT NOT NULL,
+    byte_size    INTEGER NOT NULL,
+    origin_mtime TEXT NOT NULL,
+    added_at     TEXT NOT NULL,
+    UNIQUE (doc_id, n),
+    UNIQUE (doc_id, content_hash)
+);
+CREATE TABLE IF NOT EXISTS comments (
+    id         INTEGER PRIMARY KEY,
+    doc_id     INTEGER NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+    version_n  INTEGER NOT NULL DEFAULT 1,
+    kind       TEXT NOT NULL CHECK (kind IN ('general','highlight')),
+    body       TEXT NOT NULL,
+    author     TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    quote      TEXT NOT NULL DEFAULT '',
+    prefix     TEXT NOT NULL DEFAULT '',
+    suffix     TEXT NOT NULL DEFAULT '',
+    resolved   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_versions_doc ON doc_versions(doc_id, n DESC);
+CREATE INDEX IF NOT EXISTS idx_versions_hash ON doc_versions(content_hash);
+CREATE INDEX IF NOT EXISTS idx_comments_doc ON comments(doc_id, created_at);
 CREATE TABLE IF NOT EXISTS origins (
     doc_id  INTEGER NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
     path    TEXT NOT NULL,
@@ -419,11 +449,58 @@ def ensure_vault() -> None:
     VAULT.mkdir(parents=True, exist_ok=True)
 
 
+def migrate_versions(conn: sqlite3.Connection) -> str | None:
+    """Give docs a version_n and backfill doc_versions. Idempotent; returns a note."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(docs)")}
+    if not cols or "version_n" in cols:
+        return None
+
+    # Rebuild only to drop UNIQUE(content_hash); ids are carried because
+    # docs_fts.rowid and every /doc/<id> URL depend on them.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.executescript("""
+        CREATE TABLE docs_rebuilt (
+            id           INTEGER PRIMARY KEY,
+            content_hash TEXT NOT NULL,
+            title        TEXT NOT NULL,
+            title_key    TEXT NOT NULL,
+            lede         TEXT NOT NULL DEFAULT '',
+            collection   TEXT NOT NULL DEFAULT 'notes',
+            vault_name   TEXT NOT NULL,
+            byte_size    INTEGER NOT NULL,
+            origin_mtime TEXT NOT NULL,
+            added_at     TEXT NOT NULL,
+            source       TEXT NOT NULL DEFAULT 'crawl',
+            version_n    INTEGER NOT NULL DEFAULT 1
+        );
+        INSERT INTO docs_rebuilt (id, content_hash, title, title_key, lede, collection,
+                                  vault_name, byte_size, origin_mtime, added_at, source,
+                                  version_n)
+             SELECT id, content_hash, title, title_key, lede, collection,
+                    vault_name, byte_size, origin_mtime, added_at, source, 1 FROM docs;
+        DROP TABLE docs;
+        ALTER TABLE docs_rebuilt RENAME TO docs;
+        CREATE INDEX IF NOT EXISTS idx_docs_collection ON docs(collection);
+        CREATE INDEX IF NOT EXISTS idx_docs_title_key ON docs(title_key);
+        INSERT INTO doc_versions (doc_id, n, content_hash, vault_name, byte_size,
+                                  origin_mtime, added_at)
+             SELECT id, 1, content_hash, vault_name, byte_size, origin_mtime, added_at
+             FROM docs;
+    """)
+    conn.execute("PRAGMA foreign_keys = ON")
+    n = conn.execute("SELECT COUNT(*) FROM doc_versions").fetchone()[0]
+    conn.commit()
+    return f"migrated {n} docs to versioned storage"
+
+
 def init_db() -> None:
     ensure_vault()
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     with db() as conn:
         conn.executescript(SCHEMA)
+        note = migrate_versions(conn)
+        if note:
+            print(f"  [migrate] {note}", flush=True)
 
 
 def now_iso() -> str:
@@ -759,7 +836,7 @@ def deposit(path: Path, cfg: dict, *, source: str = "crawl",
             ) -> tuple[str, int | None, str]:
     """Copy a file into the vault and index it.
 
-    Returns (status, doc_id, title) where status is added | duplicate.
+    Returns (status, doc_id, title): added | duplicate | versioned | reverted.
     """
     raw = path.read_bytes()
     content_hash = hashlib.sha256(raw).hexdigest()
@@ -772,9 +849,59 @@ def deposit(path: Path, cfg: dict, *, source: str = "crawl",
     own_conn = conn is None
     conn = conn or db()
     try:
-        row = conn.execute("SELECT id FROM docs WHERE content_hash = ?", (content_hash,)).fetchone()
+        # Path is checked before content hash: order is what distinguishes a
+        # rewrite (new version) from the same file copied elsewhere (duplicate).
+        known = conn.execute(
+            "SELECT d.id, d.content_hash, d.version_n FROM origins o "
+            "JOIN docs d ON d.id = o.doc_id WHERE o.path = ?", (str(path),)).fetchone()
+        if known and known["content_hash"] == content_hash:
+            conn.execute("INSERT OR REPLACE INTO origins (doc_id, path, seen_at) VALUES (?,?,?)",
+                         (known["id"], str(path), now_iso()))
+            conn.executemany("INSERT OR IGNORE INTO tags (doc_id, tag) VALUES (?,?)",
+                             [(known["id"], t) for t in all_tags])
+            conn.commit()
+            return "duplicate", known["id"], doc_title
+
+        if known:
+            doc_id = known["id"]
+            vault_name = f"{slugify(doc_title)[:60]}-{content_hash[:8]}.html"
+            shutil.copy2(path, DOCS_DIR / vault_name)
+            prior = conn.execute(
+                "SELECT n FROM doc_versions WHERE doc_id = ? AND content_hash = ?",
+                (doc_id, content_hash)).fetchone()
+            if prior:
+                n = prior["n"]
+                status = "reverted"
+            else:
+                n = int(known["version_n"]) + 1
+                conn.execute(
+                    """INSERT INTO doc_versions (doc_id, n, content_hash, vault_name,
+                                                 byte_size, origin_mtime, added_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (doc_id, n, content_hash, vault_name, len(raw), mtime, now_iso()),
+                )
+                status = "versioned"
+            conn.execute(
+                """UPDATE docs SET content_hash = ?, vault_name = ?, byte_size = ?,
+                                   origin_mtime = ?, version_n = ?, lede = ?, title = ?
+                   WHERE id = ?""",
+                (content_hash, vault_name, len(raw), mtime, n, meta["lede"],
+                 doc_title, doc_id),
+            )
+            conn.execute("INSERT OR REPLACE INTO origins (doc_id, path, seen_at) VALUES (?,?,?)",
+                         (doc_id, str(path), now_iso()))
+            conn.executemany("INSERT OR IGNORE INTO tags (doc_id, tag) VALUES (?,?)",
+                             [(doc_id, t) for t in all_tags])
+            conn.execute("DELETE FROM docs_fts WHERE rowid = ?", (doc_id,))
+            conn.execute("INSERT INTO docs_fts (rowid, title, lede, body) VALUES (?,?,?,?)",
+                         (doc_id, doc_title, meta["lede"], meta["body"]))
+            conn.commit()
+            return status, doc_id, doc_title
+
+        row = conn.execute("SELECT doc_id FROM doc_versions WHERE content_hash = ? LIMIT 1",
+                           (content_hash,)).fetchone()
         if row:
-            doc_id = row["id"]
+            doc_id = row["doc_id"]
             conn.execute(
                 "INSERT OR REPLACE INTO origins (doc_id, path, seen_at) VALUES (?,?,?)",
                 (doc_id, str(path), now_iso()),
@@ -796,6 +923,12 @@ def deposit(path: Path, cfg: dict, *, source: str = "crawl",
              vault_name, len(raw), mtime, now_iso(), source),
         )
         doc_id = cur.lastrowid
+        conn.execute(
+            """INSERT INTO doc_versions (doc_id, n, content_hash, vault_name,
+                                         byte_size, origin_mtime, added_at)
+               VALUES (?,1,?,?,?,?,?)""",
+            (doc_id, content_hash, vault_name, len(raw), mtime, now_iso()),
+        )
         conn.execute(
             "INSERT OR REPLACE INTO origins (doc_id, path, seen_at) VALUES (?,?,?)",
             (doc_id, str(path), now_iso()),
@@ -889,17 +1022,17 @@ def cmd_crawl(args) -> int:
             print(f"\n({len(rejected)} rejected — rerun with --verbose to audit)")
         return 0
 
-    counts = {"added": 0, "duplicate": 0}
+    counts = {"added": 0, "duplicate": 0, "versioned": 0, "reverted": 0}
     with db() as conn:
         for path, _score, _title in accepted:
             status, _doc_id, title = deposit(path, cfg, source="crawl", conn=conn)
             counts[status] = counts.get(status, 0) + 1
-            marker = "+" if status == "added" else "="
+            marker = {"added": "+", "versioned": "^", "reverted": "<"}.get(status, "=")
             coll = resolve_collection(path, cfg, title)
             print(f"  {marker} {coll:<15} {title[:46]:<46} {short(path)}")
 
-    print(f"\nDeposited {counts['added']} new, {counts['duplicate']} already present "
-          f"(deduped by content hash).")
+    print(f"\nDeposited {counts['added']} new, {counts['versioned']} new versions, "
+          f"{counts['duplicate']} already present.")
     if rejected and args.verbose:
         print("\nREJECTED")
         for path, why in rejected:
@@ -940,7 +1073,7 @@ def cmd_put(args) -> int:
                                     tags=tags, title=args.title)
     print(f"{status}: {title}")
     print(f"  http://localhost:{cfg['port']}/doc/{doc_id}")
-    if args.move and status == "added":
+    if args.move and status in ("added", "versioned", "reverted"):
         path.unlink()
         print(f"  removed origin {path}")
     return 0
@@ -1492,6 +1625,12 @@ def render_doc(doc_id: int) -> bytes | None:
         siblings = conn.execute(
             "SELECT id, origin_mtime FROM docs WHERE title_key = ? AND id != ? "
             "ORDER BY origin_mtime DESC", (row["title_key"], doc_id)).fetchall()
+        versions = conn.execute(
+            "SELECT n, byte_size, added_at FROM doc_versions WHERE doc_id = ? "
+            "ORDER BY n DESC", (doc_id,)).fetchall()
+        notes = conn.execute(
+            "SELECT id, kind, body, author, created_at, version_n, quote "
+            "FROM comments WHERE doc_id = ? ORDER BY created_at DESC", (doc_id,)).fetchall()
 
     home = str(Path.home())
     tags = sorted([t for t in ((row["tags"] or "").split(",") if row["tags"] else []) if t],
@@ -1504,25 +1643,204 @@ def render_doc(doc_id: int) -> bytes | None:
         sib = f'<span>other versions: {links}</span>'
     paths = " ".join(f"<span>{escape(p.replace(home, '~'))}</span>" for p in origins)
 
+    vn = int(row["version_n"] or 1)
+    if len(versions) < 2:
+        vlabel = f"v{vn}"
+    else:
+        hist = "; ".join(f"v{v['n']} · {v['added_at'][:16]} · {v['byte_size'] // 1024}KB"
+                         for v in versions)
+        vlabel = f'<span title="{escape(hist)}">v{vn} of {len(versions)}</span>'
+
+    items = []
+    for c in notes:
+        q = (f'<div class="cq" data-quote="{escape(c["quote"])}">“{escape(c["quote"][:180])}”</div>'
+             if c["kind"] == "highlight" and c["quote"] else "")
+        stale = "" if int(c["version_n"] or 1) == vn else f' · on v{c["version_n"]}'
+        items.append(
+            f'<li class="cmt {"hl" if c["kind"] == "highlight" else "gen"}">{q}'
+            f'<div class="cb">{escape(c["body"])}</div>'
+            f'<div class="cm">{escape(c["author"])} · {escape(c["created_at"][:16])}{stale}</div></li>')
+    clist = "".join(items) or '<li class="empty-c">No comments yet.</li>'
+
     body = f"""<div class="viewer-bar">
   <a class="btn" href="/">← all</a>
   <a class="btn" href="/collection/{urllib.parse.quote(row["collection"])}">{escape(row["collection"])}</a>
   <h1>{escape(row["title"])}</h1>
+  <span class="vtag">{vlabel}</span>
+  <button class="btn" id="ctoggle">comments ({len(notes)})</button>
   <a class="btn" href="/raw/{doc_id}" target="_blank">open raw ↗</a>
 </div>
 <div class="paths">{chips}{paths} {sib}</div>
-<iframe src="/raw/{doc_id}" title="{escape(row["title"])}"></iframe>"""
+<div class="split">
+  <iframe id="docframe" src="/raw/{doc_id}" title="{escape(row["title"])}"></iframe>
+  <aside id="cpane">
+    <form method="post" action="/doc/{doc_id}/comment" id="cform">
+      <input type="hidden" name="kind" value="general">
+      <input type="hidden" name="quote" value="">
+      <input type="hidden" name="prefix" value="">
+      <input type="hidden" name="suffix" value="">
+      <div id="qpreview"></div>
+      <textarea name="body" rows="3" maxlength="{MAX_COMMENT_BODY}"
+                placeholder="Comment on this doc. Select text in the doc to anchor it."></textarea>
+      <div class="crow">
+        <button type="submit" class="btn">post</button>
+        <button type="button" class="btn" id="cclear">clear selection</button>
+      </div>
+    </form>
+    <ul id="clist">{clist}</ul>
+  </aside>
+</div>"""
 
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{escape(row["title"])} — doc-vault</title><style>{PAGE_CSS}
-body{{overflow:hidden}} .paths{{max-height:70px;overflow:auto}}
-iframe{{height:calc(100vh - 49px - 36px)}}</style></head>
-<body>{body}<script>{PAGE_JS}</script></body></html>""".encode()
+<title>{escape(row["title"])} — doc-vault</title><style>{PAGE_CSS}{COMMENT_CSS}</style></head>
+<body>{body}<script>{PAGE_JS}
+{COMMENT_JS}</script></body></html>""".encode()
+
+
+COMMENT_CSS = """
+body{overflow:hidden}
+.paths{max-height:70px;overflow:auto}
+.split{display:flex;height:calc(100vh - 49px - 36px)}
+#docframe{flex:1;height:100%}
+#cpane{width:330px;min-width:330px;border-left:1px solid var(--rule);
+  background:var(--panel);overflow:auto;padding:10px;display:none}
+#cpane.open{display:block}
+.split.with-pane #docframe{flex:1}
+#cform textarea{width:100%;box-sizing:border-box;font:inherit;font-size:13px;
+  background:var(--surface);color:var(--ink);border:1px solid var(--rule);
+  border-radius:4px;padding:6px;resize:vertical}
+.crow{display:flex;gap:6px;margin:6px 0 12px}
+#qpreview:not(:empty){font-size:12px;border-left:3px solid var(--brass);
+  padding:4px 8px;margin-bottom:6px;opacity:.85;max-height:70px;overflow:auto}
+#clist{list-style:none;padding:0;margin:0}
+.cmt{border-top:1px solid var(--rule);padding:8px 0;font-size:13px}
+.cmt.hl{border-left:3px solid var(--brass);padding-left:8px}
+.cq{font-size:12px;opacity:.8;cursor:pointer;margin-bottom:4px}
+.cq:hover{opacity:1;color:var(--accent)}
+.cb{white-space:pre-wrap}
+.cm{font-size:11px;opacity:.6;margin-top:4px}
+.empty-c{opacity:.6;font-size:13px;padding:8px 0}
+.vtag{font-size:12px;opacity:.75;margin:0 6px}
+"""
+
+COMMENT_JS = """
+(function(){
+  var pane=document.getElementById('cpane'), split=document.querySelector('.split'),
+      form=document.getElementById('cform'), frame=document.getElementById('docframe'),
+      qp=document.getElementById('qpreview');
+  function setPane(on){
+    pane.classList.toggle('open',on); split.classList.toggle('with-pane',on);
+    try{localStorage.setItem('dv-cpane',on?'1':'0')}catch(e){}
+  }
+  var want='0'; try{want=localStorage.getItem('dv-cpane')||'0'}catch(e){}
+  setPane(want==='1');
+  document.getElementById('ctoggle').onclick=function(){setPane(!pane.classList.contains('open'))};
+
+  function setQuote(q,pre,suf){
+    form.kind.value=q?'highlight':'general';
+    form.quote.value=q||''; form.prefix.value=pre||''; form.suffix.value=suf||'';
+    qp.textContent=q?('“'+q.slice(0,300)+'”'):'';
+  }
+  document.getElementById('cclear').onclick=function(){setQuote('','','')};
+
+  function grab(){
+    var d=frame.contentDocument; if(!d) return;
+    var sel=d.getSelection(); if(!sel||sel.isCollapsed) return;
+    var q=sel.toString().replace(/\\s+/g,' ').trim(); if(!q) return;
+    var text=(d.body.innerText||'').replace(/\\s+/g,' ');
+    var i=text.indexOf(q);
+    setQuote(q, i>0?text.slice(Math.max(0,i-40),i):'', i>=0?text.slice(i+q.length,i+q.length+40):'');
+    setPane(true); form.body.focus();
+  }
+  frame.addEventListener('load',function(){
+    try{frame.contentDocument.addEventListener('mouseup',grab)}catch(e){}
+  });
+
+  document.querySelectorAll('.cq').forEach(function(el){
+    el.onclick=function(){
+      var q=el.getAttribute('data-quote'); if(!q) return;
+      var d=frame.contentDocument; if(!d) return;
+      var w=frame.contentWindow;
+      if(w.find){ w.getSelection().removeAllRanges(); w.find(q.slice(0,80)); }
+    };
+  });
+})();
+"""
+
+MAX_COMMENT_BODY = 8192
+MAX_QUOTE = 2048
+MAX_POST_BYTES = 32768
+
+
+def add_comment(doc_id: int, kind: str, body: str, author: str, *,
+                quote: str = "", prefix: str = "", suffix: str = "") -> int | None:
+    """Insert a comment against the doc's CURRENT version. Returns its id, or None."""
+    body = body.strip()[:MAX_COMMENT_BODY]
+    if not body or kind not in ("general", "highlight"):
+        return None
+    with db() as conn:
+        row = conn.execute("SELECT version_n FROM docs WHERE id = ?", (doc_id,)).fetchone()
+        if not row:
+            return None
+        cur = conn.execute(
+            """INSERT INTO comments (doc_id, version_n, kind, body, author, created_at,
+                                     quote, prefix, suffix)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (doc_id, row["version_n"], kind, body, author or "unknown", now_iso(),
+             quote.strip()[:MAX_QUOTE], prefix.strip()[:MAX_QUOTE], suffix.strip()[:MAX_QUOTE]),
+        )
+        conn.commit()
+        return cur.lastrowid
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "docvault"
+    comment_author = ""
+
+    def _author(self) -> str:
+        return self.comment_author or load_config().get("local_author") or "local"
+
+    def _same_origin(self) -> bool:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        host = (self.headers.get("Host") or "").strip().lower()
+        return urllib.parse.urlparse(origin).netloc.strip().lower() == host
+
+    def _read_form(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return {}
+        if length <= 0 or length > MAX_POST_BYTES:
+            return {}
+        raw = self.rfile.read(length).decode("utf-8", "replace")
+        return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+
+    def do_POST(self):
+        if not self._same_origin():
+            return self._send(b"cross-origin post refused", "text/plain", 403)
+        parsed = urllib.parse.urlparse(self.path)
+        m = re.fullmatch(r"/doc/(\d+)/comment", urllib.parse.unquote(parsed.path))
+        if not m:
+            return self._send(b"no such endpoint", "text/plain", 404)
+        doc_id = int(m.group(1))
+        try:
+            form = self._read_form()
+            cid = add_comment(doc_id, form.get("kind", "general"), form.get("body", ""),
+                              self._author(), quote=form.get("quote", ""),
+                              prefix=form.get("prefix", ""), suffix=form.get("suffix", ""))
+        except Exception as exc:
+            print(f"  [comment] 500 doc {doc_id}: {exc!r}", flush=True)
+            return self._send(b"comment failed", "text/plain", 500)
+        if cid is None:
+            return self._send(b"rejected: empty body, bad kind, or unknown doc",
+                              "text/plain", 400)
+        self.send_response(303)
+        self.send_header("Location", f"/doc/{doc_id}")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def log_message(self, fmt, *args):
         if os.environ.get("DOCVAULT_VERBOSE"):
@@ -1598,7 +1916,8 @@ class AuthHandler(Handler):
 
     access_cfg: dict = {}
 
-    def do_GET(self):
+    def _authorise(self) -> bool:
+        """Verify identity and set the comment author. False means a 403 was sent."""
         try:
             token = access_token_from_headers(self.headers)
             if not token:
@@ -1607,14 +1926,23 @@ class AuthHandler(Handler):
         except AccessDenied as exc:
             # Reason only -- never the token.
             print(f"  [access] 403 {self.path}: {exc}", flush=True)
-            return self._send(
-                shell("forbidden", '<div class="empty">Not authorised.</div>'), code=403)
+            self._send(shell("forbidden", '<div class="empty">Not authorised.</div>'), code=403)
+            return False
         except Exception as exc:
             print(f"  [access] 403 {self.path}: unexpected {exc!r}", flush=True)
-            return self._send(
-                shell("forbidden", '<div class="empty">Not authorised.</div>'), code=403)
+            self._send(shell("forbidden", '<div class="empty">Not authorised.</div>'), code=403)
+            return False
         self.access_email = str(claims.get("email") or "")
-        return super().do_GET()
+        self.comment_author = self.access_email
+        return True
+
+    def do_GET(self):
+        if self._authorise():
+            return super().do_GET()
+
+    def do_POST(self):
+        if self._authorise():
+            return super().do_POST()
 
 
 def watch_loop(interval: int, cfg: dict) -> None:
@@ -1722,8 +2050,8 @@ def cmd_access_selftest(args) -> int:
         threading.Thread(target=gate.serve_forever, daemon=True).start()
         base = f"http://127.0.0.1:{gate.server_address[1]}/"
 
-        def status(token: str | None) -> int:
-            req = urllib.request.Request(base)
+        def status(token: str | None, path: str = "", data: bytes | None = None) -> int:
+            req = urllib.request.Request(base + path, data=data)
             if token is not None:
                 req.add_header("Cf-Access-Jwt-Assertion", token)
             try:
@@ -1757,9 +2085,18 @@ def cmd_access_selftest(args) -> int:
             ("garbage", "not.a.jwt", 403),
         ]
 
+        post = urllib.parse.urlencode({"kind": "general", "body": "gate probe"}).encode()
+        cases += [
+            ("POST with no token", None, 403, "/doc/1/comment", post),
+            ("POST with garbage token", "not.a.jwt", 403, "/doc/1/comment", post),
+            ("POST not on the allowlist", mint(email=stranger), 403, "/doc/1/comment", post),
+        ]
+
         failed = 0
-        for name, token, want in cases:
-            got = status(token)
+        for case in cases:
+            name, token, want = case[0], case[1], case[2]
+            path, data = (case[3], case[4]) if len(case) > 3 else ("", None)
+            got = status(token, path, data)
             ok = got == want
             failed += not ok
             print(f"  {'ok  ' if ok else 'FAIL'}  {name}: want {want}, got {got}")

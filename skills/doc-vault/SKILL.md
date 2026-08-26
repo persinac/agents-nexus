@@ -157,10 +157,12 @@ tail ~/doc-vault/server.log
 
 ## Notes
 
-- Dedupe is by content hash. The same doc found in several places is ONE entry listing every
-  origin path. Same title, different content stays separate and cross-links as "other versions".
-- If you rewrote a doc in place, the new version deposits as a SEPARATE entry; the old one
-  remains. Mention this to the user rather than silently leaving two.
+- Identity is the ORIGIN PATH. Re-depositing the same path with new content adds a version and
+  keeps the SAME id — `put` prints `versioned:` instead of `added:`. Identical bytes at a new path
+  is still one doc with two origins (`duplicate:`). Same title at a different path stays a
+  SEPARATE doc; title is not identity.
+- Rewriting a doc in place no longer creates a second entry. It becomes a new version of the
+  same id, so there is nothing to warn the user about.
 - A doc under a watched root is auto-deposited within 120s even if you skip `put`. That is a
   safety net, not the intended path — it cannot assign a collection or topic tags.
 - Read `$AGENTS_NEXUS_DIR/doc-vault/README.md` before changing classifier or collection rules. Two rules there

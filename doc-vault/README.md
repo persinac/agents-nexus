@@ -4,7 +4,9 @@ A local index for the HTML docs agents write — review decks, investigation rep
 briefs. It exists because those docs were being written into whatever directory an agent
 happened to be in, and then lost.
 
-Stdlib Python 3.10+ only. No pip install, no virtualenv, no external services.
+Stdlib Python 3.9+ only. No pip install, no virtualenv, no external services. `from __future__
+import annotations` is what keeps the floor there — the `X | Y` annotations never get evaluated.
+Verified on 3.9.6 and 3.14.2.
 
 ## Code here, data outside
 
@@ -51,6 +53,45 @@ doc-vault reindex               # re-derive text, collection and auto-tags
 
 `put` takes `--collection`, `--tag` (repeatable), `--ticket` (shorthand for `--tag ticket:KEY`),
 `--title`, and `--move` (delete the origin after depositing).
+
+## Versions — a rewrite keeps its ID
+
+Identity is the **origin path**, not the content. Re-depositing a file that is already known at
+that path adds a version and moves the doc's pointer; the ID, tags and collection are untouched,
+so `/doc/12` stays `/doc/12` forever.
+
+| you do | status | result |
+|---|---|---|
+| deposit a new path | `added` | new doc, v1 |
+| deposit the same path, same bytes | `duplicate` | nothing changes |
+| deposit the same path, new bytes | `versioned` | v2, same ID |
+| deposit content matching an earlier version of that doc | `reverted` | pointer moves back, no v4 |
+| deposit identical bytes at a *different* path | `duplicate` | one doc, two origins |
+
+Two files that merely share a title stay separate docs — title is not identity. That is deliberate:
+grouping by title would fuse unrelated log-sift runs, which all sign the same title.
+
+Every version's HTML is kept on disk (`docs/<slug>-<hash8>.html`), so history is not lost. There is
+no UI for reading an old version yet; the doc page shows `v2 of 3` with dates on hover.
+
+## Comments — general and anchored
+
+The doc page has a comments pane (toggle in the viewer bar; its open/closed state is remembered
+per-browser). Two kinds:
+
+- **general** — about the doc as a whole.
+- **highlight** — select text in the doc and the form anchors to it, storing the exact quote plus
+  ~40 characters either side. Clicking a stored quote finds it again in the doc.
+
+A comment records the version it was made on. After a rewrite, older comments stay visible and are
+marked `on v1`, since the text they point at may no longer exist. Anchors are stored as quote plus
+context rather than offsets, so re-anchoring into a later version stays possible later.
+
+Author comes from the request: the gated port uses the verified Access email, and the ungated
+loopback port uses `local_author` from the config (default `local`), because it has no identity to
+read. POST is refused cross-origin, capped at 32KB per request and 8KB per comment body, and — this
+is the part that matters — is gated on the Access port exactly as GET is. A `do_GET`-only gate would
+have left an authenticated-looking write surface open on the public hostname.
 
 ## Two axes, different in kind
 

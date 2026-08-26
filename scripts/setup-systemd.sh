@@ -54,7 +54,7 @@ EOF
 
 # doc-vault: long-running server, so Restart=always rather than a timer. Code is in
 # the repo; the vault (docs/, index.db, config.json) is DOCVAULT_HOME and is not.
-# Needs python 3.10+ (PEP 604 unions in annotations are evaluated at import).
+# Needs python 3.9+ (verified on 3.9.6 and 3.14.2).
 sudo tee /etc/systemd/system/agents-nexus-doc-vault.service << EOF
 [Unit]
 Description=doc-vault — index and serve agent-authored HTML docs
