@@ -1,0 +1,74 @@
+{
+  "_comment": "Copy to $DOCVAULT_HOME/config.json (default ~/doc-vault/config.json) and edit. This file is the committed example; the live config holds machine paths and the Access allowlist and is never committed.",
+  "roots": [
+    { "path": "~", "depth": 1 },
+    { "path": "~/investigations", "depth": 3 },
+    { "path": "~/Downloads", "depth": 1 },
+    { "path": "~/.claude/mr-walkthrough", "depth": 3 },
+    { "path": "~/repos", "depth": 4 },
+    { "path": "~/work/repos", "depth": 6 },
+    { "path": "~/notes", "depth": 5 }
+  ],
+  "collections": [
+    "investigations",
+    "log-sift",
+    "notes",
+    "merge-requests",
+    "ideation",
+    "r&d"
+  ],
+  "default_collection": "notes",
+  "collection_rules": [
+    { "title": "*log-sift", "collection": "log-sift" },
+    { "match": "/.claude/mr-walkthrough/", "collection": "merge-requests" },
+    { "name": "*walkthrough*", "collection": "merge-requests" },
+    { "match": "/ideation/", "collection": "ideation" },
+    { "name": "*ideation*", "collection": "ideation" },
+    { "match": "/investigations/", "collection": "investigations" },
+    { "name": "dossier-sift-*", "collection": "investigations" },
+    { "name": "*eval*report*", "collection": "r&d" },
+    { "name": "*-case.html", "collection": "r&d" }
+  ],
+  "prune_dirs": [
+    "node_modules", ".git", ".venv", "venv", "site-packages", "__pycache__",
+    ".cache", "Library", "dist", "build", "coverage", "htmlcov", ".next",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", "templates", "llm_eval",
+    "test-reporters", "pwa-manifest", "examples", "static", ".terraform",
+    "target", "vendor", ".idea", ".gradle"
+  ],
+  "deny_path": [
+    "/.claude/plugins/",
+    "/dashboard/ui/",
+    "/report/",
+    "/tests/data/",
+    "/test/fixtures/"
+  ],
+  "deny_name": [
+    "index.html",
+    "report.html",
+    "test-report.html",
+    "eval_report_*.html",
+    "template.html",
+    "*.template.html",
+    "*_template.html",
+    "*-template.html",
+    "*_base.html",
+    "*-base.html"
+  ],
+  "always_allow": [],
+  "min_bytes": 4096,
+  "max_bytes": 8388608,
+  "score_threshold": 5,
+  "port": 8310,
+
+  "_access_comment": "Off by default. Enabling opens a SECOND listener on access.port that requires a Cloudflare Access JWT. Point your tunnel at access.port, never at port. Every value here is per-machine -- team, aud, allow and ca_bundle differ between hosts, which is why the live config is not committed. See README.",
+  "access": {
+    "enabled": false,
+    "team": "",
+    "aud": "",
+    "allow": [],
+    "port": 8311,
+    "_ca_bundle_comment": "Only needed where something re-signs outbound TLS (corporate proxy, WARP/Gateway inspection) and python's CA store does not carry that root. Leave empty otherwise.",
+    "ca_bundle": ""
+  }
+}

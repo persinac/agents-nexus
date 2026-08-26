@@ -1,11 +1,13 @@
 {
   "com.agents-nexus.agent-memory.flush": "Flushes buffered tmux + agent events to the agent-memory DB",
   "com.agents-nexus.automode-watchdog": "Watches for Claude Code's fail-closed auto-mode classifier denials and cycles a stuck pane to Manual mode, reverting once idle",
+  "com.agents-nexus.doc-vault": "Indexes agent-authored HTML docs and serves them on localhost:8310; polls the crawl roots every 120s. Optionally gates a Cloudflare-tunnel-facing port behind Access",
   "com.agents-nexus.docker": "Starts the agents-nexus Docker stack at login (proxy, langfuse, mnemon)",
   "com.agents-nexus.gl-reviews": "Writes the GitLab review queue into today's Obsidian daily note",
   "com.agents-nexus.gl-reviews-prune": "Prunes stale reviewer assignments from open GitLab MRs",
   "com.agents-nexus.langfuse-cost-snapshot": "Daily: snapshots Langfuse cost/usage into Postgres so spend history survives the 10-day trace TTL",
   "com.agents-nexus.muninn.sync": "Syncs reMarkable rM1 handwritten pages into the Obsidian vault",
+  "com.agents-nexus.notify-pipeline-check": "Hourly: verifies the notify-classify permission gate is still absorbing prompts (handled-rate, classifier reachability, log rotation, presence-plugin canary) and pings Slack only on an anomaly",
   "com.agents-nexus.obs-decay": "Weekly review: surfaces stale Obsidian notes for the user to action",
   "com.agents-nexus.obs-digest": "Digests the previous business day's Obsidian notes and posts to Slack",
   "com.agents-nexus.obs-tag": "Auto-tags newly-modified Obsidian notes via Claude",

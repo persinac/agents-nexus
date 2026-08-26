@@ -43,6 +43,18 @@ repos-manifest.yaml
 # Stray credential/sample drops (never commit secrets)
 sample.json
 
+# doc-vault: code is committed, the vault is not. The live config carries machine
+# paths, the Cloudflare Access allowlist and an AUD tag; only config.example.json
+# belongs in a public repo. These also catch a DOCVAULT_HOME pointed at the code dir.
+/doc-vault/config.json
+/doc-vault/docs/
+/doc-vault/index.db
+/doc-vault/server.log
+/doc-vault/*.bak-*
+# CA roots exported from a local trust store (access.ca_bundle) are host-specific.
+/doc-vault/*.crt
+/doc-vault/*.pem
+
 # Private, auth-gated catalog overlays (e.g. a company marketplace). The REAL overlay
 # (plugins/catalog.<org>.toml) is local-only — it may carry private marketplace URLs and
 # internal plugin names, so it must NEVER land in this public repo. Only the example

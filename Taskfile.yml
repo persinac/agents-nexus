@@ -390,6 +390,32 @@ tasks:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist
 
+  notify:check:
+    desc: "Check the permission-notification pipeline now (read-only; no Slack, no state write)"
+    cmds:
+      - python3 scripts/notify-pipeline-check.py --window-hours {{.WINDOW | default 6}} --dry-run
+
+  notify:check:test:
+    desc: "Prove every notify-pipeline-check detector still fires (fixture tests)"
+    cmds:
+      - python3 scripts/test-notify-pipeline-check.py
+
+  launchd:install:notify-pipeline-check:
+    desc: Install launchd agent to check the notification pipeline hourly (alerts to Slack only on anomaly)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.notify-pipeline-check.plist > ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist
+      - echo "Installed — hourly over a 2h window, Slack only on anomaly (6h per-condition cooldown). Logs /tmp/agents-nexus-notify-pipeline-check.log, history ~/.tmux/notify-pipeline-health.log"
+
+  launchd:uninstall:notify-pipeline-check:
+    desc: Remove the notify-pipeline-check launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist
+
   launchd:install:langfuse-cost-snapshot:
     desc: Install launchd agent to snapshot Langfuse cost into Postgres daily (4:17am)
     vars:
@@ -405,6 +431,24 @@ tasks:
     cmds:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
+
+  launchd:install:doc-vault:
+    desc: Install launchd agent for the doc-vault server (KeepAlive; serves 8310, watches crawl roots)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      # Pre-move label, same port: leaving it loaded crash-loops the new job.
+      - launchctl bootout gui/$(id -u)/com.docvault.server 2>/dev/null || true
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.doc-vault.plist > ~/Library/LaunchAgents/com.agents-nexus.doc-vault.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.doc-vault.plist
+      - echo "Installed — doc-vault on http://localhost:8310 (data in $HOME/doc-vault, logs at $HOME/doc-vault/server.log)"
+
+  launchd:uninstall:doc-vault:
+    desc: Remove the doc-vault launchd agent (leaves the vault data untouched)
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.doc-vault.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.doc-vault.plist
 
   launchd:install:slack-bridge:
     desc: Install launchd agent to keep the Slack bridge running (KeepAlive; requires SLACK_* tokens in .env)

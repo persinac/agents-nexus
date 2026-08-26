@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Marker: how `doc-vault theme --check` tells an on-theme doc from a bespoke one.
+     Keep it. -->
+<meta name="doc-theme" content="garner-doc/1">
+<title>TITLE — replace me</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/*{{CSS}}*/
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ===================== RAIL =====================
+       The TOC is the reason this template exists. Every <section> below has an
+       id, and every id has a link here. Keep them in sync: a TOC entry that
+       does not jump is worse than no TOC. Delete rows you do not use. -->
+  <aside class="rail">
+    <div class="rail-mark">SUBJECT <span>/ kind</span></div>
+    <nav class="toc">
+      <a href="#glance">At a glance</a>
+      <a href="#findings">Findings</a>
+      <a href="#detail">Detail</a>
+      <a href="#risks">Risks</a>
+      <a href="#appendix">Appendix</a>
+    </nav>
+    <div class="rail-note">One or two lines of standing context — who this is for,
+      or the single caveat a reader must carry through the whole doc.</div>
+  </aside>
+
+  <main>
+
+    <!-- ===================== MASTHEAD ===================== -->
+    <header class="masthead">
+      <div class="eyebrow">KIND · SCOPE</div>
+      <h1>The claim, stated as a <em>sentence</em></h1>
+      <p class="dek">One or two sentences that give away the answer. A reader who
+        stops here should still leave with the verdict.</p>
+      <div class="stamp">
+        <span>2026-08-24</span>
+        <span>author / agent</span>
+        <span>FC-0000</span>
+        <span>source: where the numbers came from</span>
+      </div>
+    </header>
+
+    <!-- ===================== AT A GLANCE =====================
+         Stat tiles. Use for 3-6 numbers a reader needs before anything else.
+         .ok = good, .warn = bad, no class = neutral. Never colour a tile by
+         "importance" — only by whether the number is good or bad news. -->
+    <section id="glance">
+      <div class="sec-head">
+        <div class="eyebrow">01</div>
+        <h2>At a glance</h2>
+      </div>
+      <div class="tiles">
+        <div class="tile">
+          <div class="tile-k">metric</div>
+          <div class="tile-v ok">42</div>
+          <div class="tile-s">qualifier</div>
+        </div>
+        <div class="tile">
+          <div class="tile-k">metric</div>
+          <div class="tile-v">7</div>
+          <div class="tile-s">qualifier</div>
+        </div>
+        <div class="tile">
+          <div class="tile-k">metric</div>
+          <div class="tile-v warn">3</div>
+          <div class="tile-s">qualifier</div>
+        </div>
+      </div>
+      <p>A short paragraph that says what the tiles mean together. Not a
+        restatement of each number.</p>
+    </section>
+
+    <!-- ===================== FINDINGS (cards) =====================
+         One card per finding / change / entity. .is-key stripes it petrol for
+         the ones that matter; .is-moot stripes it grey for the ones that turned
+         out not to. Chips carry status, not decoration. -->
+    <section id="findings">
+      <div class="sec-head">
+        <div class="eyebrow">02</div>
+        <h2>Findings</h2>
+      </div>
+      <div class="cards">
+
+        <div class="card is-key">
+          <div class="stripe"></div>
+          <div class="card-body">
+            <div class="card-top">
+              <h3>The finding, as a claim</h3>
+              <span class="chip done">confirmed</span>
+              <span class="chip svc">svc-chatbot</span>
+            </div>
+            <p>What is true, and the evidence for it. One idea per sentence.</p>
+            <div class="scroll">
+              <table>
+                <thead>
+                  <tr><th>Thing</th><th>Where</th><th class="num">Count</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>row</td><td><code>path/to/file.py:120</code></td><td class="num">12</td></tr>
+                  <tr><td>row</td><td><code>path/to/other.py:44</code></td><td class="num">3</td></tr>
+                  <tr class="total"><td>total</td><td></td><td class="num">15</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="callout soft">
+              <div class="lab">watch</div>
+              <p>A caveat that a reader acting on this card would otherwise miss.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card is-moot">
+          <div class="stripe"></div>
+          <div class="card-body">
+            <div class="card-top">
+              <h3>Something ruled out</h3>
+              <span class="chip moot">moot</span>
+            </div>
+            <p>Why it does not matter after all. Keep these — a reader who had the
+              same hypothesis needs to see it was tested.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===================== DETAIL =====================
+         Prose, gates, flow. Pick what fits; delete the rest. -->
+    <section id="detail">
+      <div class="sec-head">
+        <div class="eyebrow">03</div>
+        <h2>Detail</h2>
+      </div>
+
+      <p>Ordinary prose. Line length is capped at <code>--measure</code> (66ch)
+        because that is what makes long docs readable.</p>
+
+      <!-- Numbered preconditions / steps. The number is a CSS counter — do not
+           type it. -->
+      <div class="gates">
+        <div class="gate">
+          <div class="gate-n"></div>
+          <div class="gate-txt">
+            <p>The condition that must hold.</p>
+            <p class="why">Why it matters, in the quieter voice.</p>
+          </div>
+        </div>
+        <div class="gate">
+          <div class="gate-n"></div>
+          <div class="gate-txt">
+            <p>The next condition.</p>
+            <p class="why">Its consequence if skipped.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- A left-to-right pipeline. .trap marks the hop where it breaks. -->
+      <div class="flow-wrap">
+        <div class="flow">
+          <div class="node">START</div>
+          <div class="hop"><div class="hop-l">step</div><div class="hop-line"></div></div>
+          <div class="node">MIDDLE</div>
+          <div class="hop trap"><div class="hop-l">breaks here</div><div class="hop-line"></div></div>
+          <div class="node end">END</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== RISKS ===================== -->
+    <section id="risks">
+      <div class="sec-head">
+        <div class="eyebrow">04</div>
+        <h2>Risks</h2>
+      </div>
+      <div class="callout">
+        <div class="lab">blocker</div>
+        <p>The thing that stops this working. Default callout is clay/danger;
+          <code>.soft</code> is brass/caution, <code>.calm</code> is petrol/neutral.</p>
+      </div>
+      <div class="two">
+        <div class="stack">
+          <h3>What we know</h3>
+          <ul class="tight">
+            <li>Point.</li>
+            <li>Point.</li>
+          </ul>
+        </div>
+        <div class="stack">
+          <h3>What we do not</h3>
+          <ul class="tight">
+            <li>Open question.</li>
+            <li>Open question.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== APPENDIX =====================
+         Everything true but not decision-relevant goes in here, collapsed. This
+         section may be long — it is what keeps the top of the doc short. Never
+         delete it to save space, and never promote it to the main flow. -->
+    <section id="appendix">
+      <div class="sec-head">
+        <div class="eyebrow">05</div>
+        <h2>Appendix</h2>
+      </div>
+      <details>
+        <summary>Reproducible queries / raw output</summary>
+        <div class="details-body">
+          <h3>What this is</h3>
+          <p>The full evidence, so a reader can re-run it.</p>
+          <pre>$ command --that --was --run
+output line
+output line</pre>
+        </div>
+      </details>
+    </section>
+
+    <footer>
+      <span>generated 2026-08-24</span>
+      <span>doc-vault: garner-doc/1</span>
+      <span>source of record: …</span>
+    </footer>
+
+  </main>
+</div>
+</body>
+</html>
