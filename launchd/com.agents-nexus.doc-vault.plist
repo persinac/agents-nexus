@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.doc-vault</string>
+
+    <!-- doc-vault: local index of agent-authored HTML docs, served on 8310.
+         Replaces the pre-move com.docvault.server label, which ran the same
+         code out of ~/doc-vault. Bootout that label before loading this one or
+         both definitions fight over port 8310.
+
+         Code lives in the repo; the vault (docs/, index.db, config.json) stays
+         in DOCVAULT_HOME so nothing machine-specific is ever committed.
+
+         --watch 120 polls the crawl roots every two minutes and auto-deposits
+         anything new, which is the whole reason this runs as a service. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>__AGENTS_NEXUS_DIR__/doc-vault/docvault.py</string>
+        <string>serve</string>
+        <string>--watch</string>
+        <string>120</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__AGENTS_NEXUS_DIR__/doc-vault</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>AGENTS_NEXUS_DIR</key>
+        <string>__AGENTS_NEXUS_DIR__</string>
+        <key>DOCVAULT_HOME</key>
+        <string>__HOME__/doc-vault</string>
+        <!-- launchd's default PATH is stripped to /usr/bin:/bin:/usr/sbin:/sbin,
+             where python3 is the macOS system stub (3.9-era). doc-vault needs
+             homebrew's 3.14, so put /opt/homebrew/bin first. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:__HOME__/.local/bin</string>
+    </dict>
+
+    <!-- Long-running server: start at load, restart if it dies. If this process
+         exits at all, something is wrong and it should come back.
+         ThrottleInterval caps a crash loop (e.g. port 8310 already bound by a
+         manual `docvault.py serve`) at one restart every 10s. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Kept in the vault dir, not /tmp, so watch-deposit history and any FTS
+         errors survive a reboot. Writes are rare: request logging is off unless
+         DOCVAULT_VERBOSE is set, so only startup lines, [watch] additions and
+         [access] denials land here. -->
+    <key>StandardOutPath</key>
+    <string>__HOME__/doc-vault/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/doc-vault/server.log</string>
+</dict>
+</plist>
