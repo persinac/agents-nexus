@@ -530,6 +530,10 @@ _READ_CMDS = frozenset({
 # through to the LLM" reliably means "asks the human". A `for` loop over grep/cat is
 # precisely the shape that should never have interrupted anyone, and it was the
 # single most common one that did.
+_CONTROL_BUILTINS = frozenset({
+    "exit", "break", "continue", "return", "false", "shift", "wait",
+})
+
 _STRUCTURAL = frozenset({
     "do", "done", "then", "else", "elif", "fi", "esac", "{", "}", "!", "time", ";;",
 })
@@ -1001,6 +1005,11 @@ def _segment_is_read(seg):
     seg = seg.strip()
     if not seg:
         return True
+    # Substitutions are collapsed to one token BEFORE anything looks for a command
+    # head. Their bodies are validated separately by _deterministic_read via
+    # _command_subs; leaving them inline only lets whitespace-splitting mistake their
+    # interior for a command. See _mask_subs.
+    seg = _mask_subs(seg)
     # A comment executes nothing. Multi-line command bodies are full of these (617 of
     # the 8,601-call withheld sample carried one) and each arrived as its own segment,
     # failing on `#` as an "unrecognized command head".
@@ -1074,6 +1083,12 @@ def _segment_is_read(seg):
         # assignment or a shell-option change and is inert — note `set -euo pipefail`
         # carries `pipefail` as a VALUE for -o, so this cannot require all-flags.
         return len(toks) > 1 and "-p" not in toks[1:]
+    # Shell control-flow builtins. None executes anything or touches state outside the
+    # running shell, and each was reaching a human on its own: `exit 0` inside an
+    # early-return poll loop (`if [ -s "$F" ]; then echo done; exit 0; fi`) is the shape
+    # that surfaced this, from a real Monitor body on 2026-08-23.
+    if cmd in _CONTROL_BUILTINS:
+        return True
     if cmd in _READ_CMDS:
         return True
     if cmd in _READ_SUB:
@@ -1101,6 +1116,68 @@ def _segment_is_read(seg):
 # "$(git rev-parse ...)" && ...` with three `2>/dev/null`s was falling through
 # to the LLM on this alone.
 _SAFE_REDIRECT = re.compile(r"[12&]?>&?(/dev/null|[0-2]\b)")
+
+
+_SUB_MASK = "__NEXUS_SUB__"
+
+
+def _mask_subs(seg):
+    """Replace every `$(...)`/backtick substitution with one inert token.
+
+    _segment_is_read finds a segment's command head by splitting on whitespace. That
+    tears `img=$(kubectl get pods -n prod)` into ['img=$(kubectl', 'get', 'pods',
+    '-n', 'prod)'], and the VAR= rule at the top of its token loop then strips
+    `img=$(kubectl` and leaves `get` standing as the apparent command head. `get` is in
+    no allowlist, so the whole command was withheld -- a false ask on the single most
+    common shell idiom there is, capturing a read into a variable.
+
+    Masking first is SOUND rather than a loosening of policy: _deterministic_read runs
+    _command_subs over the same text and refuses the command outright unless EVERY
+    substitution body is itself read-only, so by the time a segment arrives here the
+    contents being masked are already proven reads. What remains to decide is the shape
+    of the segment around them, which is what the token loop is actually for.
+
+    The traversal mirrors _command_subs exactly, including skipping `$((arith))` --
+    which expands numbers and cannot run a command. test-notify-classify.py asserts the
+    two agree on where substitutions start, so this cannot drift away from the scanner
+    whose guarantee it depends on.
+    """
+    out, i, n = [], 0, len(seg)
+    while i < n:
+        if seg.startswith("$((", i):                  # arithmetic — executes nothing
+            depth, j = 0, i + 1
+            while j < n:
+                if seg[j] == "(":
+                    depth += 1
+                elif seg[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                j += 1
+            out.append(seg[i:j])
+            i = j
+            continue
+        if seg.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if seg[j] == "(":
+                    depth += 1
+                elif seg[j] == ")":
+                    depth -= 1
+                j += 1
+            out.append(_SUB_MASK)
+            i = j
+            continue
+        if seg[i] == "`":
+            j = seg.find("`", i + 1)
+            j = n if j == -1 else j + 1
+            out.append(_SUB_MASK)
+            i = j
+            continue
+        out.append(seg[i])
+        i += 1
+    return "".join(out)
 
 
 def _command_subs(cmd):
