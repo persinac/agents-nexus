@@ -988,6 +988,14 @@ def _run_main(tmp, name, inp, pane="%e2e", tool_id="toolu_e2e", transcript="t.js
     env.update({"KIND": "permission_prompt", "PANE": pane, "AN": "test",
                 "WAIT_SINCE": "1000", "FB": "needs input",
                 "NOTIFY_DEDUPE_DIR": os.path.join(tmp, "dedupe"),
+                # Redirect the decision log into the temp dir. main() logs every Bash
+                # verdict, so without this each suite run appended real lines to the
+                # production gate-decisions.log under a fake `%e2e` pane -- measured at
+                # 2 lines per run. Same class as the 2026-08-20 classify-probe.py
+                # pollution: a test must never write to the audit trail it is auditing.
+                # NEXUS_TMUX_DIR has exactly one consumer (_GATE_LOG), so this redirects
+                # the log and nothing else.
+                "NEXUS_TMUX_DIR": tmp,
                 # No key -> _llm() returns None without a network call, so an unrecognized
                 # tool deterministically takes the fail-safe "modify" path.
                 "ANTHROPIC_API_KEY": ""})
