@@ -52,9 +52,31 @@ OnUnitActiveSec=120
 WantedBy=timers.target
 EOF
 
+# doc-vault: long-running server, so Restart=always rather than a timer. Code is in
+# the repo; the vault (docs/, index.db, config.json) is DOCVAULT_HOME and is not.
+# Needs python 3.10+ (PEP 604 unions in annotations are evaluated at import).
+sudo tee /etc/systemd/system/agents-nexus-doc-vault.service << EOF
+[Unit]
+Description=doc-vault — index and serve agent-authored HTML docs
+After=network-online.target
+
+[Service]
+Type=simple
+User=${NEXUS_USER}
+WorkingDirectory=${NEXUS_DIR}/doc-vault
+Environment=HOME=${NEXUS_HOME}
+Environment=DOCVAULT_HOME=${NEXUS_HOME}/doc-vault
+ExecStart=/usr/bin/env python3 ${NEXUS_DIR}/doc-vault/docvault.py serve --watch 120
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
-sudo systemctl enable agents-nexus agents-nexus-flush.timer
-sudo systemctl start agents-nexus-flush.timer
+sudo systemctl enable agents-nexus agents-nexus-flush.timer agents-nexus-doc-vault
+sudo systemctl start agents-nexus-flush.timer agents-nexus-doc-vault
 
 echo "Done. All units enabled."
 echo "Docker stack is already running — will auto-start on next reboot."

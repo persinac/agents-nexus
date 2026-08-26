@@ -4,7 +4,7 @@ A local index for the HTML docs agents write — review decks, investigation rep
 briefs. It exists because those docs were being written into whatever directory an agent
 happened to be in, and then lost.
 
-Stdlib Python only. No pip install, no virtualenv, no external services.
+Stdlib Python 3.10+ only. No pip install, no virtualenv, no external services.
 
 ## Code here, data outside
 
