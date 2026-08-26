@@ -390,6 +390,32 @@ tasks:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist
 
+  notify:check:
+    desc: "Check the permission-notification pipeline now (read-only; no Slack, no state write)"
+    cmds:
+      - python3 scripts/notify-pipeline-check.py --window-hours {{.WINDOW | default 6}} --dry-run
+
+  notify:check:test:
+    desc: "Prove every notify-pipeline-check detector still fires (fixture tests)"
+    cmds:
+      - python3 scripts/test-notify-pipeline-check.py
+
+  launchd:install:notify-pipeline-check:
+    desc: Install launchd agent to check the notification pipeline hourly (alerts to Slack only on anomaly)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.notify-pipeline-check.plist > ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist
+      - echo "Installed — hourly over a 2h window, Slack only on anomaly (6h per-condition cooldown). Logs /tmp/agents-nexus-notify-pipeline-check.log, history ~/.tmux/notify-pipeline-health.log"
+
+  launchd:uninstall:notify-pipeline-check:
+    desc: Remove the notify-pipeline-check launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist
+
   launchd:install:langfuse-cost-snapshot:
     desc: Install launchd agent to snapshot Langfuse cost into Postgres daily (4:17am)
     vars:
