@@ -43,5 +43,25 @@ try:
 except docvault.AccessDenied as exc:
     check("verify with no aud -> raises", "aud" in str(exc), True)
 
+ALLOW = {"someone@example.com", "@example.org"}
+for email, want in [
+    ("someone@example.com", True),          # exact
+    ("other@example.com", False),           # exact list is not a domain rule
+    ("anyone@example.org", True),           # domain rule
+    ("ANYONE@EXAMPLE.ORG".lower(), True),
+    ("anyone@sub.example.org", False),      # subdomain must not inherit
+    ("anyone@example.org.evil.com", False), # suffix must not match
+    ("anyone@notexample.org", False),
+    ("example.org", False),                 # bare domain, no local part
+    ("@example.org", False),                # empty local part
+    ("", False),
+    ("weird-no-at", False),
+    ("a@b@example.org", True),              # last @ wins, domain is example.org
+]:
+    check(f"email_allowed({email!r})", docvault.email_allowed(email, ALLOW), want)
+
+check("bare '@' entry matches nothing", docvault.email_allowed("a@", {"@"}), False)
+check("empty allow matches nothing", docvault.email_allowed("a@example.org", set()), False)
+
 print(f"\n{'FAILED' if fails else 'all guard checks passed'}")
 sys.exit(1 if fails else 0)

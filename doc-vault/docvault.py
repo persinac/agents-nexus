@@ -327,9 +327,18 @@ def verify_access_jwt(token: str, acfg: dict) -> dict:
     if not allow:
         raise AccessDenied("access.allow is empty")
     email = str(claims.get("email") or "").strip().lower()
-    if email not in allow:
+    if not email_allowed(email, allow):
         raise AccessDenied(f"{email or '<no email claim>'} is not on the allowlist")
     return claims
+
+
+def email_allowed(email: str, allow: set[str]) -> bool:
+    """True if email matches an exact entry, or an "@domain" entry, in allow."""
+    # Shape first: "@domain" is itself an entry, so it would match an empty local part.
+    local, at, domain = email.rpartition("@")
+    if not (local and at and domain):
+        return False
+    return email in allow or f"@{domain}" in allow
 
 
 def access_token_from_headers(headers) -> str:
@@ -1692,7 +1701,7 @@ def cmd_access_selftest(args) -> int:
 
         acfg = access_config({"access": {
             "enabled": True, "team": "selftest", "aud": aud,
-            "allow": [allowed], "certs_url": certs_url,
+            "allow": [allowed, "@allowed-domain.test"], "certs_url": certs_url,
         }})
 
         def mint(alg="RS256", use_kid=kid, **over) -> str:
@@ -1734,6 +1743,9 @@ def cmd_access_selftest(args) -> int:
             ("no token at all", None, 403),
             ("empty token", "", 403),
             ("not on the allowlist", mint(email=stranger), 403),
+            ("allowed by @domain rule", mint(email="anyone@allowed-domain.test"), 200),
+            ("subdomain of an allowed domain", mint(email="a@sub.allowed-domain.test"), 403),
+            ("domain rule as a bare email", mint(email="@allowed-domain.test"), 403),
             ("expired", mint(exp=int(time.time()) - 3600), 403),
             ("wrong aud", mint(aud=["b" * 64]), 403),
             ("wrong issuer", mint(iss="https://evil.cloudflareaccess.com"), 403),

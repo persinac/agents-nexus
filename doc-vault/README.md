@@ -146,6 +146,11 @@ address — separate ports is what makes the distinction real.
 }
 ```
 
+`allow` entries are either an exact address or `@domain`, which admits any address at that domain
+(exact-match only — `@example.com` does not admit `user@sub.example.com`). Use a domain entry when
+the Cloudflare policy is already domain-scoped, so membership is decided in one place instead of
+two; use exact addresses when the origin should be narrower than the policy.
+
 `aud` is not optional. Without it, a token minted for *any* application in the team verifies here,
 which is most of the protection gone. `serve` refuses to open the gated port when `team`, `aud`, or
 `allow` is missing — it logs the gap and keeps serving 8310, rather than exiting (KeepAlive would
