@@ -6,7 +6,7 @@
 # generic message). Good stress test that the installer never blocks on an all-optional
 # plugin.
 
-setup_guide = "No required deps — pure herdr event-hook -> desktop toast on `blocked`. Deliberately uses the desktop channel so it complements (never duplicates) the substrated/slack-bridge Slack path."
+setup_guide = "No required deps — pure herdr event-hook -> desktop toast on `blocked`, gated by a settle window so prompts the notify-classify auto-approver takes do not ping. Complements the substrated/slack-bridge Slack path, but is REDUNDANT alongside ~/.tmux/hook-notification.sh, which already sends a classifier-gated desktop toast — disable it there."
 
 [[requires]]
 type = "bin"

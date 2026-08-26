@@ -155,10 +155,17 @@ if command -v herdr >/dev/null 2>&1 && [ -x "$REPO_DIR/scripts/herdr-plugin-inst
     [ -f "$pdir/herdr-plugin.toml" ] || continue
     pid="$(sed -n 's/^id[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$pdir/herdr-plugin.toml" | head -1)"
     pname="$(basename "$pdir")"
-    # only resync plugins the box already opted into (linked); don't newly install
-    case "$linked" in
-      *"$pid"*) run "bash \"$REPO_DIR/scripts/herdr-plugin-install.sh\" \"$pname\"" 2>&1 | sed 's/^/  /'; changed=1 ;;
-      *) say "  - $pname not linked (skip; opt in with: scripts/herdr-plugin-install.sh $pname)" ;;
+    # Resync only plugins that are linked AND enabled. A disabled plugin must be
+    # skipped because the installer calls `herdr plugin link`, which re-enables —
+    # so resyncing one would silently undo a deliberate `herdr plugin disable`.
+    pline="$(printf '%s\n' "$linked" | grep -F -- "- $pid (" | head -1)"
+    case "$pline" in
+      *" enabled ["*)
+        run "bash \"$REPO_DIR/scripts/herdr-plugin-install.sh\" \"$pname\"" 2>&1 | sed 's/^/  /'; changed=1 ;;
+      *" disabled ["*)
+        say "  - $pname linked but disabled (skip; re-enable with: herdr plugin enable $pid)" ;;
+      *)
+        say "  - $pname not linked (skip; opt in with: scripts/herdr-plugin-install.sh $pname)" ;;
     esac
   done
 else

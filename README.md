@@ -101,7 +101,7 @@ the installer then offers a multi-select from [`plugins/catalog.toml`](plugins/c
 | Plugin | Default | What it gives you |
 |---|:---:|---|
 | **`nexus.fleet`** | on | `prefix+shift+n` fuzzy repo/worktree picker → spawns a context-injected agent. `prefix+shift+b` creates a workspace bucket. |
-| **`nexus.presence`** | on | Desktop toast the instant an agent goes `blocked`. Pure event hook — no keybinding, no daemon, no polling. Deliberately a *different* channel from Slack so it doesn't double-notify. |
+| **`nexus.presence`** | on | Desktop toast when an agent goes `blocked` and is *still* blocked after a settle window, so prompts the classifier auto-approves don't ping. Pure event hook — no keybinding, no daemon, no polling. **Redundant if you run `~/.tmux/hook-notification.sh`**, which already sends a classifier-gated desktop toast — disable presence there. |
 | **`nexus.observe`** | on | Split-alongside dashboards: memory health (`shift+m`), fleet APM (`shift+a`), note search (`shift+f`), command center (`shift+o`). Degrades to a status view when the memory DB is unreachable. |
 | **`nexus.mission`** | off | Launch Conductor missions from a chord (`ctrl+a shift+p`). Heavier deps — opt-in. |
 

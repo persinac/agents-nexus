@@ -48,14 +48,31 @@ returning in ~60ms instead of the ~1s it took before. The detached worker does
 the waiting, the env sourcing (~945ms of that old ~1s, and the real reason it
 moved off the hook), the status re-check, and the notify.
 
-## Why the desktop channel
+## Why the desktop channel — and when it IS redundant
 
 The full nexus stack (`substrated` + `slack-bridge`) already subscribes to
 `pane.agent_status_changed` and posts a Slack card to `#nexus` when an agent
-blocks. Presence deliberately uses a **different** channel — the desktop — so it
-adds a signal without double-notifying. It's also the zero-infra path: a teammate
-running herdr + this plugin gets blocked-alerts with none of the daemon/bridge
-stack.
+blocks. Presence uses a **different** channel — the desktop — so it adds a signal
+rather than repeating that one. Its real value is as the zero-infra path: a
+teammate running herdr + this plugin gets blocked-alerts with none of the
+daemon/bridge stack.
+
+**On a box that also runs the nexus Notification hook, this plugin is redundant —
+turn it off.** `~/.tmux/hook-notification.sh` already fires a desktop toast
+("Claude Code … needs input") and it is *classifier-gated*: it exits before
+notifying when `notify-classify.py` auto-approves. So presence adds a second
+desktop toast for the same genuine block, differing only in title and sound.
+
+An earlier version of this file claimed presence "never double-notifies". That was
+wrong — it reasoned only about the Slack path and missed that the Notification
+hook uses the desktop channel too. Verified 2026-08-26; presence is disabled on
+the box where it was found.
+
+```bash
+herdr plugin disable nexus.presence
+```
+
+Keep it enabled only where `hook-notification.sh` is absent.
 
 ## Channels (precedence)
 
