@@ -1828,19 +1828,49 @@ COMMENT_JS = """
   }
   function clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); }
 
-  function findRange(quote){
-    var d=frame.contentDocument; if(!d||!quote) return null;
-    var probe=quote.slice(0,60), walk=d.createTreeWalker(d.body,NodeFilter.SHOW_TEXT), n;
+  // Flattened, whitespace-collapsed text plus a char-to-(node,offset) map. A
+  // quote routinely crosses inline markup and source line breaks, and neither
+  // survives a per-text-node indexOf against raw nodeValue.
+  var tindex=null;
+  function buildIndex(){
+    tindex={norm:'', map:[]};
+    var d=frame.contentDocument; if(!d||!d.body) return;
+    var walk=d.createTreeWalker(d.body,NodeFilter.SHOW_TEXT,{acceptNode:function(n){
+      var p=n.parentNode, tag=p&&p.nodeName;
+      if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT') return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }});
+    var n, out=[], norm='';
     while((n=walk.nextNode())){
-      var i=n.nodeValue.indexOf(probe.slice(0,24));
-      if(i>=0){
-        try{
-          var r=d.createRange();
-          r.setStart(n,i); r.setEnd(n,Math.min(n.nodeValue.length,i+probe.length));
-          if(r.getBoundingClientRect().height) return r;
-        }catch(e){}
+      var v=n.nodeValue;
+      for(var i=0;i<v.length;i++){
+        var ch=v.charAt(i);
+        if(ch===' '||ch==='\\t'||ch==='\\n'||ch==='\\r'||ch==='\\f'||ch==='\\u00a0'){
+          if(norm.length&&norm.charAt(norm.length-1)!==' '){ norm+=' '; out.push([n,i]); }
+        }else{ norm+=ch; out.push([n,i]); }
       }
     }
+    tindex.norm=norm; tindex.map=out;
+  }
+
+  function findRange(quote){
+    var d=frame.contentDocument; if(!d||!quote) return null;
+    if(!tindex) buildIndex();
+    var want=quote.replace(/\\s+/g,' ').trim();
+    if(!want||!tindex.norm) return null;
+    var at=tindex.norm.indexOf(want);
+    if(at<0){
+      want=want.slice(0,24);
+      at=want?tindex.norm.indexOf(want):-1;
+      if(at<0) return null;
+    }
+    var s=tindex.map[at], e=tindex.map[at+want.length-1];
+    if(!s||!e) return null;
+    try{
+      var r=d.createRange();
+      r.setStart(s[0],s[1]); r.setEnd(e[0],e[1]+1);
+      if(r.getClientRects().length) return r;
+    }catch(err){}
     return null;
   }
 
@@ -2154,6 +2184,7 @@ COMMENT_JS = """
   counts();
 
   frame.addEventListener('load',function(){
+    tindex=null;
     try{
       var d=frame.contentDocument;
       d.addEventListener('mouseup',onSelect);

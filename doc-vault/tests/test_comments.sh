@@ -83,6 +83,13 @@ printf '  cross-origin     -> '; curl -s -o /dev/null -w '%{http_code} (expect 4
   -H 'Origin: https://evil.example' --data-urlencode 'x=1' --data-urlencode 'y=1' \
   "$B/doc/1/comment/1/pos"
 
+# Canary, not a test: whether a quote actually anchors is decided in the browser
+# and this suite has no DOM. It only catches a literal return of the per-text-node
+# lookup, which failed on any quote crossing inline markup or a source line break.
+printf '=== anchor lookup canary: '
+rg -q 'n.nodeValue.indexOf' docvault.py && echo "REGRESSED to per-node lookup" \
+  || echo "still index-based"
+
 echo "=== resolve is reversible and moves the counts ==="
 printf '  resolve          -> '; curl -s -o /dev/null -w '%{http_code} (expect 200)\n' -X POST \
   --data-urlencode 'resolved=1' "$B/doc/1/comment/1/resolve"
