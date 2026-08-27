@@ -275,6 +275,36 @@ SELF_DUMPING = [
      "aws configure export-credentials (prints key + secret + session token)"),
     (r"\bhelm\s+get\s+values\b", "helm get values"),
     (r"\bnpm\s+config\s+list\b", "npm config list (may print _authToken)"),
+    # WHY THIS EXISTS (2026-08-27): `doppler run -- docker compose config nats`, run to
+    # check a service's volume mounts during a broker outage, printed
+    # NATS_AUTH_CALLOUT_PASS in full. The value had to be rotated.
+    #
+    # This is the SAME shape as the doppler configure --json entry above -- REDACTION
+    # LIVES IN THE HUMAN-READABLE FORMATTER and the machine-readable path bypasses it --
+    # but it arrives by a route none of the other rules can see:
+    #   * the command names no credential path, so path-plus-reader cannot fire;
+    #   * the file it DOES name is an ordinary docker-compose.yaml that contains no
+    #     secret at all -- the secret exists only in the environment and is
+    #     INTERPOLATED IN at render time. Reading the YAML is safe; rendering it is not.
+    # `docker inspect` is the same disclosure by a different verb: it prints the resolved
+    # Config.Env of a running container.
+    #
+    # Scoped to the two rendering subcommands rather than to `docker`, because the vast
+    # majority of docker usage discloses nothing and a blanket rule would be ignored.
+    # `docker compose config` and bare `docker config` (swarm) both match: the optional
+    # group keeps one pattern covering both spellings.
+    #
+    # ⚠️ NOT exempted: --services / --volumes / --images, which print only names. They
+    # are safe by construction, but they are also one edit away from the dangerous form,
+    # and the doppler --only-names precedent shows how much comment is needed to keep a
+    # narrow exemption honest. A false block here costs one rephrase; a false allow costs
+    # a rotation. If the names-only forms become common, exempt them deliberately -- with
+    # [^|;&]* scoping so the flag only exempts its own command segment.
+    (r"\bdocker(\s+compose)?\s+config\b",
+     "docker compose config (renders the RESOLVED environment; secrets that live only "
+     "in env are interpolated into the output even though the YAML holds none)"),
+    (r"\bdocker\s+inspect\b",
+     "docker inspect (prints the container's resolved Config.Env)"),
 ]
 
 # A self-dumping command blocks on its own; otherwise fall through to path-plus-reader.
