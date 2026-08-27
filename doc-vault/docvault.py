@@ -1399,9 +1399,10 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 2px}
 .viewer-bar{position:sticky;top:0;z-index:10;background:var(--panel);border-bottom:1px solid var(--line);
   padding:11px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
 .viewer-bar h1{margin:0;font-size:15px;font-weight:600;flex:1;min-width:180px}
-.viewer-bar a.btn{font-family:var(--mono);font-size:12px;border:1px solid var(--line);
-  border-radius:7px;padding:5px 11px;color:var(--muted);white-space:nowrap}
-.viewer-bar a.btn:hover{border-color:var(--accent);color:var(--accent)}
+.viewer-bar .btn{font-family:var(--mono);font-size:12px;border:1px solid var(--line);
+  border-radius:7px;padding:5px 11px;color:var(--muted);white-space:nowrap;
+  background:none;cursor:pointer}
+.viewer-bar .btn:hover{border-color:var(--accent);color:var(--accent)}
 iframe{display:block;width:100%;border:0;background:var(--panel)}
 .paths{font-family:var(--mono);font-size:11px;color:var(--muted);padding:8px 20px;
   border-bottom:1px solid var(--line);background:var(--bg);word-break:break-all;
@@ -1643,8 +1644,9 @@ def render_doc(doc_id: int) -> bytes | None:
             "SELECT n, byte_size, added_at FROM doc_versions WHERE doc_id = ? "
             "ORDER BY n DESC", (doc_id,)).fetchall()
         notes = conn.execute(
-            "SELECT id, kind, body, author, created_at, version_n, quote, pos_x, pos_y "
-            "FROM comments WHERE doc_id = ? ORDER BY created_at DESC", (doc_id,)).fetchall()
+            "SELECT id, kind, body, author, created_at, version_n, quote, pos_x, pos_y, "
+            "resolved FROM comments WHERE doc_id = ? ORDER BY created_at DESC",
+            (doc_id,)).fetchall()
 
     home = str(Path.home())
     tags = sorted([t for t in ((row["tags"] or "").split(",") if row["tags"] else []) if t],
@@ -1668,12 +1670,19 @@ def render_doc(doc_id: int) -> bytes | None:
     cdata = json.dumps([
         {"id": c["id"], "kind": c["kind"], "body": c["body"], "author": c["author"],
          "created_at": c["created_at"], "version_n": int(c["version_n"] or 1),
-         "quote": c["quote"] or "", "pos_x": c["pos_x"], "pos_y": c["pos_y"]}
+         "quote": c["quote"] or "", "pos_x": c["pos_x"], "pos_y": c["pos_y"],
+         "resolved": int(c["resolved"] or 0)}
         for c in notes
     ]).replace("</", "<\\/")
+    open_n = sum(1 for c in notes if not c["resolved"])
+    done_n = len(notes) - open_n
     empty = ('' if notes else
              '<div class="board-empty">no notes yet — select text in the doc, '
              'or hit “+ note”.</div>')
+    # Always emitted, because resolving happens without a reload and the JS needs
+    # something to update.
+    donebtn = (f'<button class="btn" id="cdone"{"" if done_n else " hidden"}>'
+               f'resolved ({done_n})</button>')
 
     body = f"""<div class="viewer-bar">
   <a class="btn" href="/">← all</a>
@@ -1681,7 +1690,8 @@ def render_doc(doc_id: int) -> bytes | None:
   <h1>{escape(row["title"])}</h1>
   <span class="vtag">{vlabel}</span>
   <button class="btn" id="cadd">+ note</button>
-  <button class="btn" id="ctoggle">notes ({len(notes)})</button>
+  <button class="btn" id="ctoggle">notes ({open_n})</button>
+  {donebtn}
   <a class="btn" href="/raw/{doc_id}" target="_blank">open raw ↗</a>
 </div>
 <div class="paths">{chips}{paths} {sib}</div>
@@ -1755,6 +1765,21 @@ body{overflow:hidden}
   font-family:var(--sans);letter-spacing:.01em}
 .note .nstale{font-family:var(--sans);font-size:10px;opacity:.7;
   border:1px dashed var(--note-edge);border-radius:6px;padding:0 4px;margin-left:4px}
+.note .nm{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.nact{margin-left:auto;display:flex;gap:3px;opacity:0;transition:opacity .12s ease}
+.note:hover .nact,.nact:focus-within{opacity:1}
+.nx{font-family:var(--hand);font-size:13px;line-height:1;cursor:pointer;
+  color:var(--note-ink);background:rgba(255,255,255,.34);
+  border:1.3px solid var(--note-edge);border-radius:225px 15px 255px 15px/15px 255px 15px 225px;
+  padding:0 5px 1px}
+.nx:hover{background:rgba(255,255,255,.7)}
+.nxdel:hover{border-color:#b4453c;color:#b4453c}
+.nx.armed{font-size:11px;font-family:var(--sans);border-color:#b4453c;color:#b4453c;
+  background:rgba(180,69,60,.12)}
+.note.resolved{opacity:.5;filter:saturate(.45)}
+.note.resolved .nb{text-decoration:line-through}
+.note.resolved:hover{opacity:.85}
+#cdone.on{border-color:var(--accent);color:var(--accent)}
 #compose{width:236px;z-index:60;cursor:auto}
 #compose textarea{
   width:100%;box-sizing:border-box;background:transparent;color:var(--note-ink);
@@ -1788,7 +1813,7 @@ COMMENT_JS = """
       marks=document.getElementById('marks'), lines=document.getElementById('lines'),
       DOC=+board.dataset.doc, CURV=+board.dataset.version,
       notes=JSON.parse(document.getElementById('cdata').textContent||'[]'),
-      compose=null, pending=null, drag=null, draggedAt=0;
+      compose=null, pending=null, drag=null, draggedAt=0, showDone=false;
 
   function jitter(seed,span){ var x=Math.sin(seed*12.9898)*43758.5453; return ((x-Math.floor(x))*2-1)*span; }
   function colourOf(id){ return 'c'+(1+(id%4)); }
@@ -1803,19 +1828,49 @@ COMMENT_JS = """
   }
   function clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); }
 
-  function findRange(quote){
-    var d=frame.contentDocument; if(!d||!quote) return null;
-    var probe=quote.slice(0,60), walk=d.createTreeWalker(d.body,NodeFilter.SHOW_TEXT), n;
+  // Flattened, whitespace-collapsed text plus a char-to-(node,offset) map. A
+  // quote routinely crosses inline markup and source line breaks, and neither
+  // survives a per-text-node indexOf against raw nodeValue.
+  var tindex=null;
+  function buildIndex(){
+    tindex={norm:'', map:[]};
+    var d=frame.contentDocument; if(!d||!d.body) return;
+    var walk=d.createTreeWalker(d.body,NodeFilter.SHOW_TEXT,{acceptNode:function(n){
+      var p=n.parentNode, tag=p&&p.nodeName;
+      if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT') return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }});
+    var n, out=[], norm='';
     while((n=walk.nextNode())){
-      var i=n.nodeValue.indexOf(probe.slice(0,24));
-      if(i>=0){
-        try{
-          var r=d.createRange();
-          r.setStart(n,i); r.setEnd(n,Math.min(n.nodeValue.length,i+probe.length));
-          if(r.getBoundingClientRect().height) return r;
-        }catch(e){}
+      var v=n.nodeValue;
+      for(var i=0;i<v.length;i++){
+        var ch=v.charAt(i);
+        if(ch===' '||ch==='\\t'||ch==='\\n'||ch==='\\r'||ch==='\\f'||ch==='\\u00a0'){
+          if(norm.length&&norm.charAt(norm.length-1)!==' '){ norm+=' '; out.push([n,i]); }
+        }else{ norm+=ch; out.push([n,i]); }
       }
     }
+    tindex.norm=norm; tindex.map=out;
+  }
+
+  function findRange(quote){
+    var d=frame.contentDocument; if(!d||!quote) return null;
+    if(!tindex) buildIndex();
+    var want=quote.replace(/\\s+/g,' ').trim();
+    if(!want||!tindex.norm) return null;
+    var at=tindex.norm.indexOf(want);
+    if(at<0){
+      want=want.slice(0,24);
+      at=want?tindex.norm.indexOf(want):-1;
+      if(at<0) return null;
+    }
+    var s=tindex.map[at], e=tindex.map[at+want.length-1];
+    if(!s||!e) return null;
+    try{
+      var r=d.createRange();
+      r.setStart(s[0],s[1]); r.setEnd(e[0],e[1]+1);
+      if(r.getClientRects().length) return r;
+    }catch(err){}
     return null;
   }
 
@@ -1863,6 +1918,20 @@ COMMENT_JS = """
     notes.forEach(function(c){
       var el=document.getElementById('n'+c.id); if(!el) return;
       el._anchor=null;
+      el.classList.toggle('resolved',!!c.resolved);
+      el.hidden=!!c.resolved&&!showDone;
+      if(c.resolved){
+        // A resolved note keeps no marker and no line, so ticking one off really
+        // clears the doc rather than just recolouring the note.
+        if(!el.hidden){
+          var dy=stackY;
+          while(used.some(function(u){return Math.abs(u-dy)<80})) dy+=22;
+          used.push(dy);
+          el.style.left=right+'px'; el.style.top=dy+'px';
+          el.style.transform='rotate('+jitter(c.id,1.9).toFixed(2)+'deg)';
+        }
+        return;
+      }
       if(c.kind==='highlight'&&c.quote&&c.version_n===CURV){
         var r=findRange(c.quote);
         if(r){
@@ -1907,7 +1976,11 @@ COMMENT_JS = """
       ? '<div class="nq" title="find this in the doc">“'+esc(c.quote.slice(0,150))+'”</div>' : '';
     var stale=(c.version_n!==CURV)?'<span class="nstale">on v'+c.version_n+'</span>':'';
     el.innerHTML=q+'<div class="nb">'+esc(c.body)+'</div>'+
-      '<div class="nm">'+esc(c.author)+' · '+esc((c.created_at||'').slice(0,16))+stale+'</div>';
+      '<div class="nm">'+esc(c.author)+' · '+esc((c.created_at||'').slice(0,16))+stale+
+      '<span class="nact"><button class="nx" data-act="resolve" title="resolve">✓</button>'+
+      '<button class="nx nxdel" data-act="del" title="delete for everyone">×</button></span></div>';
+    el.querySelector('[data-act=resolve]').onclick=function(){ toggleResolved(c,el); };
+    el.querySelector('[data-act=del]').onclick=function(e){ askDelete(c,el,e.target); };
     var qe=el.querySelector('.nq');
     if(qe) qe.onclick=function(){
       // The quote line is the biggest grab target on the note, so it has to be
@@ -1923,7 +1996,7 @@ COMMENT_JS = """
 
   function startDrag(e,c,el){
     if(e.button!==0||el.id==='compose') return;
-    if(e.target.closest('.nbtn,textarea')) return;
+    if(e.target.closest('.nbtn,.nx,textarea')) return;
     e.preventDefault();
     drag={c:c, el:el, dx:e.clientX-el.offsetLeft, dy:e.clientY-el.offsetTop, moved:false};
     el.classList.add('dragging');
@@ -1947,6 +2020,58 @@ COMMENT_JS = """
     if(!d.moved) return;
     draggedAt=Date.now();
     savePos(d.c,d.el.offsetLeft,d.el.offsetTop+scrollTop());
+  }
+
+  function counts(){
+    var open=0;
+    notes.forEach(function(c){ if(!c.resolved) open++; });
+    var done=notes.length-open;
+    var t=document.getElementById('ctoggle'), d=document.getElementById('cdone');
+    if(t) t.textContent='notes ('+open+')';
+    if(d){ d.textContent='resolved ('+done+')'; d.hidden=(done===0); }
+  }
+
+  function post(c,verb,params){
+    var data=new URLSearchParams();
+    for(var k in params) data.set(k,params[k]);
+    return fetch('/doc/'+DOC+'/comment/'+c.id+'/'+verb,{method:'POST',headers:{
+        'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'fetch'},
+      body:data.toString()})
+      .then(function(r){ if(!r.ok) throw r.status; });
+  }
+
+  function toggleResolved(c,el){
+    var was=c.resolved?1:0;
+    c.resolved=was?0:1;
+    counts(); place();
+    post(c,'resolve',{resolved:c.resolved?'1':'0'}).catch(function(){
+      c.resolved=was; counts(); place();
+    });
+  }
+
+  function askDelete(c,el,btn){
+    if(btn.dataset.armed!=='1'){
+      btn.dataset.armed='1'; btn.textContent='delete?';
+      btn.classList.add('armed');
+      setTimeout(function(){
+        if(btn.dataset.armed==='1'){
+          btn.dataset.armed=''; btn.textContent='×'; btn.classList.remove('armed');
+        }
+      },3000);
+      return;
+    }
+    post(c,'delete',{}).then(function(){
+      var i=notes.indexOf(c);
+      if(i>=0) notes.splice(i,1);
+      el.remove(); counts(); place();
+      if(!notes.length){
+        var em=document.createElement('div');
+        em.className='board-empty'; em.textContent='no notes left.';
+        board.appendChild(em);
+      }
+    }).catch(function(){
+      btn.textContent='failed'; btn.dataset.armed='';
+    });
   }
 
   function savePos(c,x,y){
@@ -2011,9 +2136,7 @@ COMMENT_JS = """
       body:data.toString()})
       .then(function(r){ return r.ok?r.json():Promise.reject(r.status); })
       .then(function(c){
-        notes.push(c); render(c); closeCompose(); place();
-        var t=document.getElementById('ctoggle');
-        if(t) t.textContent='notes ('+notes.length+')';
+        notes.push(c); render(c); closeCompose(); place(); counts();
         var em=document.querySelector('.board-empty'); if(em) em.remove();
       })
       .catch(function(err){
@@ -2043,11 +2166,25 @@ COMMENT_JS = """
     try{localStorage.setItem('dv-board',hid?'0':'1')}catch(e){}
   };
   document.getElementById('cadd').onclick=function(){ openCompose(null); };
+  var dbtn=document.getElementById('cdone');
+  if(dbtn) dbtn.onclick=function(){
+    showDone=!showDone;
+    dbtn.classList.toggle('on',showDone);
+    try{localStorage.setItem('dv-done',showDone?'1':'0')}catch(e){}
+    place();
+  };
 
   notes.forEach(render);
   try{ if(localStorage.getItem('dv-board')==='0') board.classList.add('hidden'); }catch(e){}
+  try{
+    if(localStorage.getItem('dv-done')==='1'){
+      showDone=true; if(dbtn) dbtn.classList.add('on');
+    }
+  }catch(e){}
+  counts();
 
   frame.addEventListener('load',function(){
+    tindex=null;
     try{
       var d=frame.contentDocument;
       d.addEventListener('mouseup',onSelect);
@@ -2113,6 +2250,24 @@ def set_comment_pos(doc_id: int, cid: int, x: str, y: str) -> bool:
         return cur.rowcount == 1
 
 
+def set_comment_resolved(doc_id: int, cid: int, resolved: bool) -> bool:
+    """Tick a note off, or bring it back. Reversible; the row is kept either way."""
+    with db() as conn:
+        cur = conn.execute(
+            "UPDATE comments SET resolved = ? WHERE id = ? AND doc_id = ?",
+            (1 if resolved else 0, cid, doc_id))
+        conn.commit()
+        return cur.rowcount == 1
+
+
+def delete_comment(doc_id: int, cid: int) -> bool:
+    """Destroy a note. There is no undo, which is why the UI asks twice."""
+    with db() as conn:
+        cur = conn.execute("DELETE FROM comments WHERE id = ? AND doc_id = ?", (cid, doc_id))
+        conn.commit()
+        return cur.rowcount == 1
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "docvault"
     comment_author = ""
@@ -2142,18 +2297,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(b"cross-origin post refused", "text/plain", 403)
         parsed = urllib.parse.urlparse(self.path)
         path = urllib.parse.unquote(parsed.path)
-        mp = re.fullmatch(r"/doc/(\d+)/comment/(\d+)/pos", path)
+        mp = re.fullmatch(r"/doc/(\d+)/comment/(\d+)/(pos|resolve|delete)", path)
         if mp:
-            doc_id, cid = int(mp.group(1)), int(mp.group(2))
+            doc_id, cid, verb = int(mp.group(1)), int(mp.group(2)), mp.group(3)
             try:
                 form = self._read_form()
-                moved = set_comment_pos(doc_id, cid, form.get("x", ""), form.get("y", ""))
+                if verb == "pos":
+                    ok = set_comment_pos(doc_id, cid, form.get("x", ""), form.get("y", ""))
+                elif verb == "resolve":
+                    ok = set_comment_resolved(doc_id, cid, form.get("resolved") == "1")
+                else:
+                    ok = delete_comment(doc_id, cid)
             except Exception as exc:
-                print(f"  [comment] 500 move {cid}: {exc!r}", flush=True)
-                return self._send(b"move failed", "text/plain", 500)
-            if not moved:
-                return self._send(b"rejected: bad position or unknown comment",
+                print(f"  [comment] 500 {verb} {cid}: {exc!r}", flush=True)
+                return self._send(f"{verb} failed".encode(), "text/plain", 500)
+            if not ok:
+                return self._send(b"rejected: bad input or unknown comment",
                                   "text/plain", 400)
+            if verb == "delete":
+                print(f"  [comment] deleted {cid} on doc {doc_id}", flush=True)
             return self._send(b"ok", "text/plain")
         m = re.fullmatch(r"/doc/(\d+)/comment", path)
         if not m:
@@ -2174,7 +2336,7 @@ class Handler(BaseHTTPRequestHandler):
             with db() as conn:
                 c = conn.execute(
                     "SELECT id, kind, body, author, created_at, version_n, quote, "
-                    "pos_x, pos_y FROM comments WHERE id = ?", (cid,)).fetchone()
+                    "pos_x, pos_y, resolved FROM comments WHERE id = ?", (cid,)).fetchone()
             return self._send(json.dumps(dict(c)).encode(), "application/json")
         self.send_response(303)
         self.send_header("Location", f"/doc/{doc_id}")
