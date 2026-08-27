@@ -1651,45 +1651,35 @@ def render_doc(doc_id: int) -> bytes | None:
                          for v in versions)
         vlabel = f'<span title="{escape(hist)}">v{vn} of {len(versions)}</span>'
 
-    items = []
-    for c in notes:
-        q = (f'<div class="cq" data-quote="{escape(c["quote"])}">“{escape(c["quote"][:180])}”</div>'
-             if c["kind"] == "highlight" and c["quote"] else "")
-        stale = "" if int(c["version_n"] or 1) == vn else f' · on v{c["version_n"]}'
-        items.append(
-            f'<li class="cmt {"hl" if c["kind"] == "highlight" else "gen"}">{q}'
-            f'<div class="cb">{escape(c["body"])}</div>'
-            f'<div class="cm">{escape(c["author"])} · {escape(c["created_at"][:16])}{stale}</div></li>')
-    clist = "".join(items) or '<li class="empty-c">No comments yet.</li>'
+    cdata = json.dumps([
+        {"id": c["id"], "kind": c["kind"], "body": c["body"], "author": c["author"],
+         "created_at": c["created_at"], "version_n": int(c["version_n"] or 1),
+         "quote": c["quote"] or ""}
+        for c in notes
+    ]).replace("</", "<\\/")
+    empty = ('' if notes else
+             '<div class="board-empty">no notes yet — select text in the doc, '
+             'or hit “+ note”.</div>')
 
     body = f"""<div class="viewer-bar">
   <a class="btn" href="/">← all</a>
   <a class="btn" href="/collection/{urllib.parse.quote(row["collection"])}">{escape(row["collection"])}</a>
   <h1>{escape(row["title"])}</h1>
   <span class="vtag">{vlabel}</span>
-  <button class="btn" id="ctoggle">comments ({len(notes)})</button>
+  <button class="btn" id="cadd">+ note</button>
+  <button class="btn" id="ctoggle">notes ({len(notes)})</button>
   <a class="btn" href="/raw/{doc_id}" target="_blank">open raw ↗</a>
 </div>
 <div class="paths">{chips}{paths} {sib}</div>
-<div class="split">
+<div class="stage">
   <iframe id="docframe" src="/raw/{doc_id}" title="{escape(row["title"])}"></iframe>
-  <aside id="cpane">
-    <form method="post" action="/doc/{doc_id}/comment" id="cform">
-      <input type="hidden" name="kind" value="general">
-      <input type="hidden" name="quote" value="">
-      <input type="hidden" name="prefix" value="">
-      <input type="hidden" name="suffix" value="">
-      <div id="qpreview"></div>
-      <textarea name="body" rows="3" maxlength="{MAX_COMMENT_BODY}"
-                placeholder="Comment on this doc. Select text in the doc to anchor it."></textarea>
-      <div class="crow">
-        <button type="submit" class="btn">post</button>
-        <button type="button" class="btn" id="cclear">clear selection</button>
-      </div>
-    </form>
-    <ul id="clist">{clist}</ul>
-  </aside>
-</div>"""
+  <div id="board" data-doc="{doc_id}" data-version="{vn}">
+    <svg id="wires" xmlns="http://www.w3.org/2000/svg"></svg>
+    {empty}
+  </div>
+  <div id="seltip">+ note</div>
+</div>
+<script type="application/json" id="cdata">{cdata}</script>"""
 
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1699,72 +1689,280 @@ def render_doc(doc_id: int) -> bytes | None:
 
 
 COMMENT_CSS = """
+:root{
+  --note-1:#fff7c2; --note-2:#d8f2dc; --note-3:#dbeafe; --note-4:#ffe0e0;
+  --note-ink:#22201a; --note-edge:rgba(0,0,0,.30);
+  --hand:"Bradley Hand","Chalkboard SE","Marker Felt",Chalkboard,"Comic Sans MS",cursive;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --note-1:#4a4318; --note-2:#22402a; --note-3:#1e3350; --note-4:#4a2626;
+    --note-ink:#f2efe6; --note-edge:rgba(255,255,255,.34);
+  }
+}
 body{overflow:hidden}
 .paths{max-height:70px;overflow:auto}
-.split{display:flex;height:calc(100vh - 49px - 36px)}
-#docframe{flex:1;height:100%}
-#cpane{width:330px;min-width:330px;border-left:1px solid var(--rule);
-  background:var(--panel);overflow:auto;padding:10px;display:none}
-#cpane.open{display:block}
-.split.with-pane #docframe{flex:1}
-#cform textarea{width:100%;box-sizing:border-box;font:inherit;font-size:13px;
-  background:var(--surface);color:var(--ink);border:1px solid var(--rule);
-  border-radius:4px;padding:6px;resize:vertical}
-.crow{display:flex;gap:6px;margin:6px 0 12px}
-#qpreview:not(:empty){font-size:12px;border-left:3px solid var(--brass);
-  padding:4px 8px;margin-bottom:6px;opacity:.85;max-height:70px;overflow:auto}
-#clist{list-style:none;padding:0;margin:0}
-.cmt{border-top:1px solid var(--rule);padding:8px 0;font-size:13px}
-.cmt.hl{border-left:3px solid var(--brass);padding-left:8px}
-.cq{font-size:12px;opacity:.8;cursor:pointer;margin-bottom:4px}
-.cq:hover{opacity:1;color:var(--accent)}
-.cb{white-space:pre-wrap}
-.cm{font-size:11px;opacity:.6;margin-top:4px}
-.empty-c{opacity:.6;font-size:13px;padding:8px 0}
+.stage{position:relative;height:calc(100vh - 49px - 36px)}
+#docframe{width:100%;height:100%;border:0;display:block}
+#board{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+#board.hidden{display:none}
+#wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;
+  mix-blend-mode:multiply}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) #wires{mix-blend-mode:screen}
+}
+.note{
+  position:absolute;width:216px;pointer-events:auto;padding:10px 12px 8px;
+  font-family:var(--hand);font-size:14.5px;line-height:1.34;color:var(--note-ink);
+  background:var(--note-1);
+  border-radius:255px 15px 225px 15px/15px 225px 15px 255px;
+  border:1.6px solid var(--note-edge);
+  box-shadow:2px 3px 0 rgba(0,0,0,.10),0 10px 18px rgba(0,0,0,.10);
+  transition:transform .12s ease, box-shadow .12s ease;
+}
+.note.c2{background:var(--note-2)} .note.c3{background:var(--note-3)}
+.note.c4{background:var(--note-4)}
+.note::after{
+  content:"";position:absolute;inset:-4px -5px -6px -4px;pointer-events:none;
+  border:1.2px solid var(--note-edge);opacity:.34;
+  border-radius:15px 225px 15px 255px/225px 15px 255px 15px;
+}
+.note:hover{transform:rotate(0deg) scale(1.03);z-index:40;
+  box-shadow:3px 4px 0 rgba(0,0,0,.12),0 16px 26px rgba(0,0,0,.16)}
+.note .nq{
+  font-size:12px;opacity:.72;margin:-2px 0 6px;padding-left:7px;
+  border-left:2.5px solid var(--note-edge);cursor:pointer;font-style:italic}
+.note .nq:hover{opacity:1}
+.note .nb{white-space:pre-wrap;word-break:break-word}
+.note .nm{font-size:11px;opacity:.62;margin-top:7px;
+  font-family:var(--sans);letter-spacing:.01em}
+.note .nstale{font-family:var(--sans);font-size:10px;opacity:.7;
+  border:1px dashed var(--note-edge);border-radius:6px;padding:0 4px;margin-left:4px}
+#compose{width:236px;z-index:60}
+#compose textarea{
+  width:100%;box-sizing:border-box;background:transparent;color:var(--note-ink);
+  border:0;outline:0;resize:none;font-family:var(--hand);font-size:14.5px;
+  line-height:1.34;min-height:66px}
+#compose textarea::placeholder{color:var(--note-ink);opacity:.45}
+.nrow{display:flex;gap:8px;align-items:center;margin-top:6px;
+  font-family:var(--sans);font-size:11px}
+.nbtn{
+  font-family:var(--hand);font-size:14px;cursor:pointer;color:var(--note-ink);
+  background:rgba(255,255,255,.34);border:1.4px solid var(--note-edge);
+  border-radius:225px 15px 255px 15px/15px 255px 15px 225px;padding:1px 11px 2px}
+.nbtn:hover{background:rgba(255,255,255,.6)}
+#seltip{
+  position:absolute;z-index:70;pointer-events:auto;display:none;
+  font-family:var(--hand);font-size:14px;padding:2px 11px 3px;cursor:pointer;
+  background:var(--note-1);color:var(--note-ink);border:1.6px solid var(--note-edge);
+  border-radius:225px 15px 255px 15px/15px 255px 15px 225px;
+  box-shadow:2px 3px 0 rgba(0,0,0,.12)}
 .vtag{font-size:12px;opacity:.75;margin:0 6px}
+.board-empty{
+  position:absolute;right:16px;top:14px;width:216px;pointer-events:none;
+  font-family:var(--hand);font-size:14px;color:var(--muted);opacity:.75;
+  transform:rotate(-1.4deg)}
 """
 
 COMMENT_JS = """
 (function(){
-  var pane=document.getElementById('cpane'), split=document.querySelector('.split'),
-      form=document.getElementById('cform'), frame=document.getElementById('docframe'),
-      qp=document.getElementById('qpreview');
-  function setPane(on){
-    pane.classList.toggle('open',on); split.classList.toggle('with-pane',on);
-    try{localStorage.setItem('dv-cpane',on?'1':'0')}catch(e){}
-  }
-  var want='0'; try{want=localStorage.getItem('dv-cpane')||'0'}catch(e){}
-  setPane(want==='1');
-  document.getElementById('ctoggle').onclick=function(){setPane(!pane.classList.contains('open'))};
+  var frame=document.getElementById('docframe'), board=document.getElementById('board'),
+      wires=document.getElementById('wires'), tip=document.getElementById('seltip'),
+      DOC=+board.dataset.doc, CURV=+board.dataset.version,
+      notes=JSON.parse(document.getElementById('cdata').textContent||'[]'),
+      compose=null, pending=null;
 
-  function setQuote(q,pre,suf){
-    form.kind.value=q?'highlight':'general';
-    form.quote.value=q||''; form.prefix.value=pre||''; form.suffix.value=suf||'';
-    qp.textContent=q?('“'+q.slice(0,300)+'”'):'';
-  }
-  document.getElementById('cclear').onclick=function(){setQuote('','','')};
+  function jitter(seed,span){ var x=Math.sin(seed*12.9898)*43758.5453; return ((x-Math.floor(x))*2-1)*span; }
+  function colourOf(id){ return 'c'+(1+(id%4)); }
 
-  function grab(){
-    var d=frame.contentDocument; if(!d) return;
-    var sel=d.getSelection(); if(!sel||sel.isCollapsed) return;
-    var q=sel.toString().replace(/\\s+/g,' ').trim(); if(!q) return;
-    var text=(d.body.innerText||'').replace(/\\s+/g,' ');
-    var i=text.indexOf(q);
-    setQuote(q, i>0?text.slice(Math.max(0,i-40),i):'', i>=0?text.slice(i+q.length,i+q.length+40):'');
-    setPane(true); form.body.focus();
+  function findRange(quote){
+    var d=frame.contentDocument; if(!d||!quote) return null;
+    var probe=quote.slice(0,60), walk=d.createTreeWalker(d.body,NodeFilter.SHOW_TEXT), n;
+    while((n=walk.nextNode())){
+      var i=n.nodeValue.indexOf(probe.slice(0,24));
+      if(i>=0){
+        try{
+          var r=d.createRange();
+          r.setStart(n,i); r.setEnd(n,Math.min(n.nodeValue.length,i+probe.length));
+          if(r.getBoundingClientRect().height) return r;
+        }catch(e){}
+      }
+    }
+    return null;
   }
-  frame.addEventListener('load',function(){
-    try{frame.contentDocument.addEventListener('mouseup',grab)}catch(e){}
-  });
 
-  document.querySelectorAll('.cq').forEach(function(el){
-    el.onclick=function(){
-      var q=el.getAttribute('data-quote'); if(!q) return;
-      var d=frame.contentDocument; if(!d) return;
+  function svg(tag,attrs){
+    var e=document.createElementNS('http://www.w3.org/2000/svg',tag);
+    for(var k in attrs) e.setAttribute(k,attrs[k]);
+    return e;
+  }
+
+  function marker(rects,colour,seed){
+    for(var i=0;i<rects.length;i++){
+      var b=rects[i]; if(!b.height) continue;
+      var y=b.top+b.height*0.62, h=Math.max(9,b.height*0.72);
+      wires.appendChild(svg('path',{
+        d:'M'+b.left+','+(y+jitter(seed+i,1.4))+' L'+b.right+','+(y+jitter(seed+i+3,1.4)),
+        stroke:colour, 'stroke-width':h, 'stroke-linecap':'round',
+        fill:'none', opacity:'.55'}));
+    }
+  }
+
+  function place(){
+    var right=board.clientWidth-248, stackY=14, used=[];
+    wires.setAttribute('viewBox','0 0 '+board.clientWidth+' '+board.clientHeight);
+    wires.innerHTML='';
+    notes.forEach(function(c){
+      var el=document.getElementById('n'+c.id); if(!el) return;
+      var y=stackY, anchored=null;
+      if(c.kind==='highlight'&&c.quote&&c.version_n===CURV){
+        var r=findRange(c.quote);
+        if(r){
+          var rects=r.getClientRects(), last=rects[rects.length-1];
+          marker(rects,'var(--note-'+(1+(c.id%4))+')',c.id);
+          // Leave from the text block's margin, not the quote's end, or the wire
+          // draws straight through the rest of the line and reads as a strikethrough.
+          var host=(r.startContainer.parentElement||frame.contentDocument.body)
+                     .getBoundingClientRect();
+          anchored={x:host.right+8, y:last.top+last.height/2};
+          y=Math.max(6,anchored.y-26);
+        }
+      }
+      while(used.some(function(u){return Math.abs(u-y)<Math.max(96,el.offsetHeight*0.7)})) y+=22;
+      used.push(y);
+      el.style.left=right+'px'; el.style.top=y+'px';
+      el.style.transform='rotate('+jitter(c.id,1.9).toFixed(2)+'deg)';
+      if(anchored){
+        var x1=Math.min(anchored.x,right-14), y1=anchored.y,
+            x2=right-6, y2=y+26, mx=(x1+x2)/2;
+        wires.appendChild(svg('path',{
+          d:'M'+x1+','+y1+' Q'+mx+','+(y1+jitter(c.id+7,9))+' '+x2+','+y2,
+          fill:'none', stroke:'var(--note-edge)', 'stroke-width':'1.5',
+          'stroke-linecap':'round', opacity:'.65'}));
+      }
+    });
+    if(compose) positionCompose();
+  }
+
+  function positionCompose(){
+    if(!compose) return;
+    var right=board.clientWidth-268, y=14;
+    if(pending&&pending.rect) y=Math.max(6,pending.rect.top+pending.rect.height/2-30);
+    compose.style.left=right+'px'; compose.style.top=y+'px';
+    compose.style.transform='rotate('+jitter(99,1.4).toFixed(2)+'deg)';
+  }
+
+  function render(c){
+    var el=document.createElement('div');
+    el.className='note '+colourOf(c.id); el.id='n'+c.id;
+    var q=(c.kind==='highlight'&&c.quote)
+      ? '<div class="nq" title="find this in the doc">“'+esc(c.quote.slice(0,150))+'”</div>' : '';
+    var stale=(c.version_n!==CURV)?'<span class="nstale">on v'+c.version_n+'</span>':'';
+    el.innerHTML=q+'<div class="nb">'+esc(c.body)+'</div>'+
+      '<div class="nm">'+esc(c.author)+' · '+esc((c.created_at||'').slice(0,16))+stale+'</div>';
+    var qe=el.querySelector('.nq');
+    if(qe) qe.onclick=function(){
       var w=frame.contentWindow;
-      if(w.find){ w.getSelection().removeAllRanges(); w.find(q.slice(0,80)); }
+      if(w&&w.find){ w.getSelection().removeAllRanges(); w.find(c.quote.slice(0,80)); place(); }
     };
+    board.appendChild(el);
+  }
+  function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+
+  function openCompose(sel){
+    pending=sel||null;
+    if(!compose){
+      compose=document.createElement('div');
+      compose.className='note c1'; compose.id='compose';
+      compose.innerHTML='<div class="nq" id="cq" style="display:none"></div>'+
+        '<textarea placeholder="write a note…"></textarea>'+
+        '<div class="nrow"><button class="nbtn" id="csave">pin it</button>'+
+        '<button class="nbtn" id="ccancel">cancel</button><span id="cscope"></span></div>';
+      board.appendChild(compose);
+      compose.querySelector('#csave').onclick=save;
+      compose.querySelector('#ccancel').onclick=closeCompose;
+      compose.querySelector('textarea').addEventListener('keydown',function(e){
+        if((e.metaKey||e.ctrlKey)&&e.key==='Enter') save();
+        if(e.key==='Escape') closeCompose();
+      });
+    }
+    var cq=compose.querySelector('#cq');
+    if(pending&&pending.quote){
+      cq.style.display=''; cq.textContent='“'+pending.quote.slice(0,150)+'”';
+      compose.querySelector('#cscope').textContent='anchored';
+    }else{
+      cq.style.display='none'; compose.querySelector('#cscope').textContent='whole doc';
+    }
+    positionCompose();
+    compose.querySelector('textarea').focus();
+  }
+  function closeCompose(){
+    if(compose){ compose.remove(); compose=null; }
+    pending=null; tip.style.display='none';
+  }
+
+  function save(){
+    var ta=compose.querySelector('textarea'), body=ta.value.trim();
+    if(!body) { ta.focus(); return; }
+    var data=new URLSearchParams();
+    data.set('kind',pending&&pending.quote?'highlight':'general');
+    data.set('body',body);
+    if(pending&&pending.quote){
+      data.set('quote',pending.quote);
+      data.set('prefix',pending.prefix||''); data.set('suffix',pending.suffix||'');
+    }
+    fetch('/doc/'+DOC+'/comment',{method:'POST',headers:{
+        'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'fetch'},
+      body:data.toString()})
+      .then(function(r){ return r.ok?r.json():Promise.reject(r.status); })
+      .then(function(c){
+        notes.push(c); render(c); closeCompose(); place();
+        var t=document.getElementById('ctoggle');
+        if(t) t.textContent='notes ('+notes.length+')';
+        var em=document.querySelector('.board-empty'); if(em) em.remove();
+      })
+      .catch(function(err){
+        compose.querySelector('#cscope').textContent='failed ('+err+')';
+      });
+  }
+
+  function onSelect(){
+    var d=frame.contentDocument; if(!d) return;
+    var sel=d.getSelection();
+    if(!sel||sel.isCollapsed){ if(!compose) tip.style.display='none'; return; }
+    var q=sel.toString().replace(/\\s+/g,' ').trim();
+    if(!q){ tip.style.display='none'; return; }
+    var b=sel.getRangeAt(0).getBoundingClientRect();
+    var text=(d.body.innerText||'').replace(/\\s+/g,' '), i=text.indexOf(q);
+    var info={quote:q, rect:b,
+      prefix:i>0?text.slice(Math.max(0,i-40),i):'',
+      suffix:i>=0?text.slice(i+q.length,i+q.length+40):''};
+    tip.style.display='block';
+    tip.style.left=Math.min(b.left,board.clientWidth-120)+'px';
+    tip.style.top=Math.max(0,b.bottom+6)+'px';
+    tip.onclick=function(){ openCompose(info); };
+  }
+
+  document.getElementById('ctoggle').onclick=function(){
+    var hid=board.classList.toggle('hidden');
+    try{localStorage.setItem('dv-board',hid?'0':'1')}catch(e){}
+  };
+  document.getElementById('cadd').onclick=function(){ openCompose(null); };
+
+  notes.forEach(render);
+  try{ if(localStorage.getItem('dv-board')==='0') board.classList.add('hidden'); }catch(e){}
+
+  frame.addEventListener('load',function(){
+    try{
+      var d=frame.contentDocument;
+      d.addEventListener('mouseup',onSelect);
+      d.addEventListener('keyup',onSelect);
+      frame.contentWindow.addEventListener('scroll',place,{passive:true});
+    }catch(e){}
+    place();
   });
+  window.addEventListener('resize',place);
+  setTimeout(place,300);
 })();
 """
 
@@ -1837,6 +2035,12 @@ class Handler(BaseHTTPRequestHandler):
         if cid is None:
             return self._send(b"rejected: empty body, bad kind, or unknown doc",
                               "text/plain", 400)
+        if self.headers.get("X-Requested-With") == "fetch":
+            with db() as conn:
+                c = conn.execute(
+                    "SELECT id, kind, body, author, created_at, version_n, quote "
+                    "FROM comments WHERE id = ?", (cid,)).fetchone()
+            return self._send(json.dumps(dict(c)).encode(), "application/json")
         self.send_response(303)
         self.send_header("Location", f"/doc/{doc_id}")
         self.send_header("Content-Length", "0")
