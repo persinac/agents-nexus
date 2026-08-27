@@ -396,7 +396,9 @@ CREATE TABLE IF NOT EXISTS comments (
     quote      TEXT NOT NULL DEFAULT '',
     prefix     TEXT NOT NULL DEFAULT '',
     suffix     TEXT NOT NULL DEFAULT '',
-    resolved   INTEGER NOT NULL DEFAULT 0
+    resolved   INTEGER NOT NULL DEFAULT 0,
+    pos_x      REAL,
+    pos_y      REAL
 );
 CREATE INDEX IF NOT EXISTS idx_versions_doc ON doc_versions(doc_id, n DESC);
 CREATE INDEX IF NOT EXISTS idx_versions_hash ON doc_versions(content_hash);
@@ -493,14 +495,26 @@ def migrate_versions(conn: sqlite3.Connection) -> str | None:
     return f"migrated {n} docs to versioned storage"
 
 
+def migrate_comment_positions(conn: sqlite3.Connection) -> str | None:
+    """Give comments a dragged board position. Idempotent; returns a note."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(comments)")}
+    if not cols or "pos_x" in cols:
+        return None
+    conn.execute("ALTER TABLE comments ADD COLUMN pos_x REAL")
+    conn.execute("ALTER TABLE comments ADD COLUMN pos_y REAL")
+    conn.commit()
+    n = conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+    return f"added board positions to {n} comments"
+
+
 def init_db() -> None:
     ensure_vault()
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     with db() as conn:
         conn.executescript(SCHEMA)
-        note = migrate_versions(conn)
-        if note:
-            print(f"  [migrate] {note}", flush=True)
+        for note in (migrate_versions(conn), migrate_comment_positions(conn)):
+            if note:
+                print(f"  [migrate] {note}", flush=True)
 
 
 def now_iso() -> str:
@@ -1629,7 +1643,7 @@ def render_doc(doc_id: int) -> bytes | None:
             "SELECT n, byte_size, added_at FROM doc_versions WHERE doc_id = ? "
             "ORDER BY n DESC", (doc_id,)).fetchall()
         notes = conn.execute(
-            "SELECT id, kind, body, author, created_at, version_n, quote "
+            "SELECT id, kind, body, author, created_at, version_n, quote, pos_x, pos_y "
             "FROM comments WHERE doc_id = ? ORDER BY created_at DESC", (doc_id,)).fetchall()
 
     home = str(Path.home())
@@ -1654,7 +1668,7 @@ def render_doc(doc_id: int) -> bytes | None:
     cdata = json.dumps([
         {"id": c["id"], "kind": c["kind"], "body": c["body"], "author": c["author"],
          "created_at": c["created_at"], "version_n": int(c["version_n"] or 1),
-         "quote": c["quote"] or ""}
+         "quote": c["quote"] or "", "pos_x": c["pos_x"], "pos_y": c["pos_y"]}
         for c in notes
     ]).replace("</", "<\\/")
     empty = ('' if notes else
@@ -1674,7 +1688,7 @@ def render_doc(doc_id: int) -> bytes | None:
 <div class="stage">
   <iframe id="docframe" src="/raw/{doc_id}" title="{escape(row["title"])}"></iframe>
   <div id="board" data-doc="{doc_id}" data-version="{vn}">
-    <svg id="wires" xmlns="http://www.w3.org/2000/svg"></svg>
+    <svg id="wires" xmlns="http://www.w3.org/2000/svg"><g id="marks"></g><g id="lines"></g></svg>
     {empty}
   </div>
   <div id="seltip">+ note</div>
@@ -1727,8 +1741,11 @@ body{overflow:hidden}
   border:1.2px solid var(--note-edge);opacity:.34;
   border-radius:15px 225px 15px 255px/225px 15px 255px 15px;
 }
-.note:hover{transform:rotate(0deg) scale(1.03);z-index:40;
+.note{cursor:grab}
+.note:hover{z-index:40;
   box-shadow:3px 4px 0 rgba(0,0,0,.12),0 16px 26px rgba(0,0,0,.16)}
+.note.dragging{cursor:grabbing;z-index:90;transition:none;
+  box-shadow:4px 6px 0 rgba(0,0,0,.14),0 20px 34px rgba(0,0,0,.20)}
 .note .nq{
   font-size:12px;opacity:.72;margin:-2px 0 6px;padding-left:7px;
   border-left:2.5px solid var(--note-edge);cursor:pointer;font-style:italic}
@@ -1738,7 +1755,7 @@ body{overflow:hidden}
   font-family:var(--sans);letter-spacing:.01em}
 .note .nstale{font-family:var(--sans);font-size:10px;opacity:.7;
   border:1px dashed var(--note-edge);border-radius:6px;padding:0 4px;margin-left:4px}
-#compose{width:236px;z-index:60}
+#compose{width:236px;z-index:60;cursor:auto}
 #compose textarea{
   width:100%;box-sizing:border-box;background:transparent;color:var(--note-ink);
   border:0;outline:0;resize:none;font-family:var(--hand);font-size:14.5px;
@@ -1768,12 +1785,23 @@ COMMENT_JS = """
 (function(){
   var frame=document.getElementById('docframe'), board=document.getElementById('board'),
       wires=document.getElementById('wires'), tip=document.getElementById('seltip'),
+      marks=document.getElementById('marks'), lines=document.getElementById('lines'),
       DOC=+board.dataset.doc, CURV=+board.dataset.version,
       notes=JSON.parse(document.getElementById('cdata').textContent||'[]'),
-      compose=null, pending=null;
+      compose=null, pending=null, drag=null, draggedAt=0;
 
   function jitter(seed,span){ var x=Math.sin(seed*12.9898)*43758.5453; return ((x-Math.floor(x))*2-1)*span; }
   function colourOf(id){ return 'c'+(1+(id%4)); }
+
+  // Pinned notes are stored in DOCUMENT space, so a dragged note keeps its place
+  // beside the text it was dropped on instead of sliding away as the doc scrolls.
+  function scrollTop(){
+    try{
+      var d=frame.contentDocument;
+      return (d.documentElement&&d.documentElement.scrollTop)||d.body.scrollTop||0;
+    }catch(e){ return 0; }
+  }
+  function clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); }
 
   function findRange(quote){
     var d=frame.contentDocument; if(!d||!quote) return null;
@@ -1801,46 +1829,65 @@ COMMENT_JS = """
     for(var i=0;i<rects.length;i++){
       var b=rects[i]; if(!b.height) continue;
       var y=b.top+b.height*0.62, h=Math.max(9,b.height*0.72);
-      wires.appendChild(svg('path',{
+      marks.appendChild(svg('path',{
         d:'M'+b.left+','+(y+jitter(seed+i,1.4))+' L'+b.right+','+(y+jitter(seed+i+3,1.4)),
         stroke:colour, 'stroke-width':h, 'stroke-linecap':'round',
         fill:'none', opacity:'.55'}));
     }
   }
 
+  function drawLines(){
+    lines.innerHTML='';
+    notes.forEach(function(c){
+      var el=document.getElementById('n'+c.id);
+      if(!el||!el._anchor) return;
+      var a=el._anchor, nb={left:el.offsetLeft, top:el.offsetTop,
+                            w:el.offsetWidth, h:el.offsetHeight};
+      var ncx=nb.left+nb.w/2, ax=(ncx>=a.mid)?a.right:a.left, ay=a.bottom;
+      var nx=(ax<=nb.left)?nb.left:(ax>=nb.left+nb.w?nb.left+nb.w:ncx),
+          ny=nb.top+Math.min(26,nb.h/2);
+      var cx=(ax+nx)/2, cy=(ay+ny)/2+jitter(c.id+7,7);
+      lines.appendChild(svg('path',{
+        d:'M'+ax+','+ay+' Q'+cx+','+cy+' '+nx+','+ny,
+        fill:'none', stroke:'var(--note-edge)', 'stroke-width':'1.5',
+        'stroke-linecap':'round', opacity:'.7'}));
+      lines.appendChild(svg('circle',{cx:ax, cy:ay, r:'2.6',
+        fill:'var(--note-edge)', opacity:'.8'}));
+    });
+  }
+
   function place(){
-    var right=board.clientWidth-248, stackY=14, used=[];
+    var right=board.clientWidth-248, stackY=14, used=[], sy=scrollTop();
     wires.setAttribute('viewBox','0 0 '+board.clientWidth+' '+board.clientHeight);
-    wires.innerHTML='';
+    marks.innerHTML='';
     notes.forEach(function(c){
       var el=document.getElementById('n'+c.id); if(!el) return;
-      var y=stackY, anchored=null;
+      el._anchor=null;
       if(c.kind==='highlight'&&c.quote&&c.version_n===CURV){
         var r=findRange(c.quote);
         if(r){
           var rects=r.getClientRects(), last=rects[rects.length-1];
           marker(rects,'var(--note-'+(1+(c.id%4))+')',c.id);
-          // Leave from the text block's margin, not the quote's end, or the wire
-          // draws straight through the rest of the line and reads as a strikethrough.
-          var host=(r.startContainer.parentElement||frame.contentDocument.body)
-                     .getBoundingClientRect();
-          anchored={x:host.right+8, y:last.top+last.height/2};
-          y=Math.max(6,anchored.y-26);
+          // Land on the line's BOTTOM edge: the last leg must cross whatever text
+          // follows the quote, and a run through the leading reads as an underline.
+          el._anchor={left:last.left, right:last.right, bottom:last.bottom,
+                      mid:(last.left+last.right)/2};
         }
       }
-      while(used.some(function(u){return Math.abs(u-y)<Math.max(96,el.offsetHeight*0.7)})) y+=22;
-      used.push(y);
-      el.style.left=right+'px'; el.style.top=y+'px';
-      el.style.transform='rotate('+jitter(c.id,1.9).toFixed(2)+'deg)';
-      if(anchored){
-        var x1=Math.min(anchored.x,right-14), y1=anchored.y,
-            x2=right-6, y2=y+26, mx=(x1+x2)/2;
-        wires.appendChild(svg('path',{
-          d:'M'+x1+','+y1+' Q'+mx+','+(y1+jitter(c.id+7,9))+' '+x2+','+y2,
-          fill:'none', stroke:'var(--note-edge)', 'stroke-width':'1.5',
-          'stroke-linecap':'round', opacity:'.65'}));
+      if(c.pos_x!=null&&c.pos_y!=null){
+        el.classList.add('pinned');
+        el.style.left=clamp(c.pos_x,4,Math.max(4,board.clientWidth-el.offsetWidth-4))+'px';
+        el.style.top=(c.pos_y-sy)+'px';
+      }else{
+        el.classList.remove('pinned');
+        var y=el._anchor?Math.max(6,el._anchor.bottom-26):stackY;
+        while(used.some(function(u){return Math.abs(u-y)<Math.max(96,el.offsetHeight*0.7)})) y+=22;
+        used.push(y);
+        el.style.left=right+'px'; el.style.top=y+'px';
       }
+      el.style.transform='rotate('+jitter(c.id,1.9).toFixed(2)+'deg)';
     });
+    drawLines();
     if(compose) positionCompose();
   }
 
@@ -1855,6 +1902,7 @@ COMMENT_JS = """
   function render(c){
     var el=document.createElement('div');
     el.className='note '+colourOf(c.id); el.id='n'+c.id;
+    el.title='drag to move · double-click to re-anchor';
     var q=(c.kind==='highlight'&&c.quote)
       ? '<div class="nq" title="find this in the doc">“'+esc(c.quote.slice(0,150))+'”</div>' : '';
     var stale=(c.version_n!==CURV)?'<span class="nstale">on v'+c.version_n+'</span>':'';
@@ -1862,10 +1910,57 @@ COMMENT_JS = """
       '<div class="nm">'+esc(c.author)+' · '+esc((c.created_at||'').slice(0,16))+stale+'</div>';
     var qe=el.querySelector('.nq');
     if(qe) qe.onclick=function(){
+      // The quote line is the biggest grab target on the note, so it has to be
+      // draggable too — which means ignoring the click that ends a real drag.
+      if(Date.now()-draggedAt<250) return;
       var w=frame.contentWindow;
       if(w&&w.find){ w.getSelection().removeAllRanges(); w.find(c.quote.slice(0,80)); place(); }
     };
+    el.addEventListener('pointerdown',function(e){ startDrag(e,c,el); });
+    el.addEventListener('dblclick',function(){ savePos(c,null,null); });
     board.appendChild(el);
+  }
+
+  function startDrag(e,c,el){
+    if(e.button!==0||el.id==='compose') return;
+    if(e.target.closest('.nbtn,textarea')) return;
+    e.preventDefault();
+    drag={c:c, el:el, dx:e.clientX-el.offsetLeft, dy:e.clientY-el.offsetTop, moved:false};
+    el.classList.add('dragging');
+    try{ el.setPointerCapture(e.pointerId); }catch(err){}
+  }
+
+  function onDragMove(e){
+    if(!drag) return;
+    drag.moved=true;
+    drag.el.style.left=clamp(e.clientX-drag.dx,4,
+      Math.max(4,board.clientWidth-drag.el.offsetWidth-4))+'px';
+    drag.el.style.top=clamp(e.clientY-drag.dy,4,
+      Math.max(4,board.clientHeight-30))+'px';
+    drawLines();
+  }
+
+  function onDragEnd(){
+    if(!drag) return;
+    var d=drag; drag=null;
+    d.el.classList.remove('dragging');
+    if(!d.moved) return;
+    draggedAt=Date.now();
+    savePos(d.c,d.el.offsetLeft,d.el.offsetTop+scrollTop());
+  }
+
+  function savePos(c,x,y){
+    var was=[c.pos_x,c.pos_y];
+    c.pos_x=x; c.pos_y=y;
+    place();
+    var data=new URLSearchParams();
+    data.set('x',x==null?'':String(Math.round(x)));
+    data.set('y',y==null?'':String(Math.round(y)));
+    fetch('/doc/'+DOC+'/comment/'+c.id+'/pos',{method:'POST',headers:{
+        'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'fetch'},
+      body:data.toString()})
+      .then(function(r){ if(!r.ok) throw r.status; })
+      .catch(function(){ c.pos_x=was[0]; c.pos_y=was[1]; place(); });
   }
   function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
 
@@ -1962,6 +2057,9 @@ COMMENT_JS = """
     place();
   });
   window.addEventListener('resize',place);
+  window.addEventListener('pointermove',onDragMove);
+  window.addEventListener('pointerup',onDragEnd);
+  window.addEventListener('pointercancel',onDragEnd);
   setTimeout(place,300);
 })();
 """
@@ -1992,6 +2090,29 @@ def add_comment(doc_id: int, kind: str, body: str, author: str, *,
         return cur.lastrowid
 
 
+MAX_POS = 100000.0
+
+
+def set_comment_pos(doc_id: int, cid: int, x: str, y: str) -> bool:
+    """Pin a note to a dragged position, or re-anchor it when x and y are empty."""
+    if x == "" and y == "":
+        px = py = None
+    else:
+        try:
+            px, py = float(x), float(y)
+        except ValueError:
+            return False
+        # NaN fails every comparison, so this rejects it along with the infinities.
+        if not (-MAX_POS <= px <= MAX_POS and -MAX_POS <= py <= MAX_POS):
+            return False
+    with db() as conn:
+        cur = conn.execute(
+            "UPDATE comments SET pos_x = ?, pos_y = ? WHERE id = ? AND doc_id = ?",
+            (px, py, cid, doc_id))
+        conn.commit()
+        return cur.rowcount == 1
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "docvault"
     comment_author = ""
@@ -2020,7 +2141,21 @@ class Handler(BaseHTTPRequestHandler):
         if not self._same_origin():
             return self._send(b"cross-origin post refused", "text/plain", 403)
         parsed = urllib.parse.urlparse(self.path)
-        m = re.fullmatch(r"/doc/(\d+)/comment", urllib.parse.unquote(parsed.path))
+        path = urllib.parse.unquote(parsed.path)
+        mp = re.fullmatch(r"/doc/(\d+)/comment/(\d+)/pos", path)
+        if mp:
+            doc_id, cid = int(mp.group(1)), int(mp.group(2))
+            try:
+                form = self._read_form()
+                moved = set_comment_pos(doc_id, cid, form.get("x", ""), form.get("y", ""))
+            except Exception as exc:
+                print(f"  [comment] 500 move {cid}: {exc!r}", flush=True)
+                return self._send(b"move failed", "text/plain", 500)
+            if not moved:
+                return self._send(b"rejected: bad position or unknown comment",
+                                  "text/plain", 400)
+            return self._send(b"ok", "text/plain")
+        m = re.fullmatch(r"/doc/(\d+)/comment", path)
         if not m:
             return self._send(b"no such endpoint", "text/plain", 404)
         doc_id = int(m.group(1))
@@ -2038,8 +2173,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-Requested-With") == "fetch":
             with db() as conn:
                 c = conn.execute(
-                    "SELECT id, kind, body, author, created_at, version_n, quote "
-                    "FROM comments WHERE id = ?", (cid,)).fetchone()
+                    "SELECT id, kind, body, author, created_at, version_n, quote, "
+                    "pos_x, pos_y FROM comments WHERE id = ?", (cid,)).fetchone()
             return self._send(json.dumps(dict(c)).encode(), "application/json")
         self.send_response(303)
         self.send_header("Location", f"/doc/{doc_id}")
