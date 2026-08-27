@@ -83,6 +83,40 @@ printf '  cross-origin     -> '; curl -s -o /dev/null -w '%{http_code} (expect 4
   -H 'Origin: https://evil.example' --data-urlencode 'x=1' --data-urlencode 'y=1' \
   "$B/doc/1/comment/1/pos"
 
+echo "=== resolve is reversible and moves the counts ==="
+printf '  resolve          -> '; curl -s -o /dev/null -w '%{http_code} (expect 200)\n' -X POST \
+  --data-urlencode 'resolved=1' "$B/doc/1/comment/1/resolve"
+curl -s "$B/doc/1" -o "$T/pr.html"
+printf '  resolved in cdata: '; grab '"resolved": 1' "$T/pr.html"
+printf '  open count:      '; grab 'notes \(\d+\)' "$T/pr.html"
+printf '  resolved count:  '; grab 'resolved \(\d+\)' "$T/pr.html"
+printf '  unresolve        -> '; curl -s -o /dev/null -w '%{http_code} (expect 200)\n' -X POST \
+  --data-urlencode 'resolved=0' "$B/doc/1/comment/1/resolve"
+curl -s "$B/doc/1" -o "$T/pr2.html"
+printf '  back to open:    '; grab 'notes \(\d+\)' "$T/pr2.html"
+printf '  resolved hidden: '; rg -qF 'id="cdone" hidden' "$T/pr2.html" && echo hidden || echo SHOWN
+printf '  unknown comment  -> '; curl -s -o /dev/null -w '%{http_code} (expect 400)\n' -X POST \
+  --data-urlencode 'resolved=1' "$B/doc/1/comment/9999/resolve"
+printf '  cross-origin     -> '; curl -s -o /dev/null -w '%{http_code} (expect 403)\n' -X POST \
+  -H 'Origin: https://evil.example' --data-urlencode 'resolved=1' "$B/doc/1/comment/1/resolve"
+
+echo "=== delete removes the row for good ==="
+before=$(sqlite3 "$T/index.db" "SELECT COUNT(*) FROM comments;")
+printf '  delete           -> '; curl -s -o /dev/null -w '%{http_code} (expect 200)\n' -X POST \
+  "$B/doc/1/comment/2/delete"
+after=$(sqlite3 "$T/index.db" "SELECT COUNT(*) FROM comments;")
+printf '  rows %s -> %s\n' "$before" "$after"
+printf '  gone from page:  '
+curl -s "$B/doc/1" | rg -qF 'Anchored note.' && echo STILL-THERE || echo gone
+printf '  second delete    -> '; curl -s -o /dev/null -w '%{http_code} (expect 400)\n' -X POST \
+  "$B/doc/1/comment/2/delete"
+printf '  wrong doc        -> '; curl -s -o /dev/null -w '%{http_code} (expect 400)\n' -X POST \
+  "$B/doc/999/comment/1/delete"
+printf '  cross-origin     -> '; curl -s -o /dev/null -w '%{http_code} (expect 403)\n' -X POST \
+  -H 'Origin: https://evil.example' "$B/doc/1/comment/1/delete"
+printf '  bad verb         -> '; curl -s -o /dev/null -w '%{http_code} (expect 404)\n' -X POST \
+  "$B/doc/1/comment/1/nuke"
+
 echo "=== comments survive a new version, tagged with the version they were made on ==="
 python3 - "$W/probe.html" <<'PY'
 import sys
