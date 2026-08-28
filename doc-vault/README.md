@@ -225,6 +225,25 @@ do not apply. The real pitfall is lenient padding parsing, which forgery attacks
 nothing to parse leniently. `alg` is pinned to RS256 rather than read from the token, which is the
 other classic hole.
 
+## Tests
+
+`task docvault:test` runs all four suites in order and stops on the first non-zero exit.
+
+| Suite | Needs | Covers |
+| --- | --- | --- |
+| `tests/test_access_guard.py` | stdlib | Access misconfig refusals, the `email_allowed` matcher |
+| `tests/test_versioning.sh` | stdlib | deposit / duplicate / version / revert |
+| `tests/test_comments.sh` | stdlib | the comment, position, resolve and delete endpoints |
+| `tests/test_anchor_browser.py` | playwright + Chromium | whether a quote actually anchors |
+
+Only the last one has a DOM, so it is the only place anchoring can be asserted. It drives real
+Chromium and checks every swipe against the browser's own `find()` rather than against
+`findRange`, so a bug in the lookup cannot make its own test pass. Run it with
+`uv run --with playwright python tests/test_anchor_browser.py`; if no browser is installed it
+prints `SKIP` and exits 0, so the other suites stay runnable on a box without one. Install one
+with `uv run --with playwright playwright install chromium`, or point `DOCVAULT_CHROMIUM` at an
+existing binary. `DOCVAULT_TEST_HEADED=1` watches it run.
+
 ## What counts as a doc
 
 The hard part. This machine has roughly two non-documents for every document: committed Jinja

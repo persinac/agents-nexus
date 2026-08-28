@@ -432,6 +432,15 @@ tasks:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
 
+  docvault:test:
+    desc: "Run every doc-vault suite (the anchor suite skips when no Chromium is installed)"
+    dir: doc-vault
+    cmds:
+      - python3 tests/test_access_guard.py
+      - ./tests/test_versioning.sh
+      - ./tests/test_comments.sh
+      - uv run --with playwright python tests/test_anchor_browser.py
+
   launchd:install:doc-vault:
     desc: Install launchd agent for the doc-vault server (KeepAlive; serves 8310, watches crawl roots)
     vars:
