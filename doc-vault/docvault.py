@@ -1887,7 +1887,7 @@ COMMENT_JS = """
       marks.appendChild(svg('path',{
         d:'M'+b.left+','+(y+jitter(seed+i,1.4))+' L'+b.right+','+(y+jitter(seed+i+3,1.4)),
         stroke:colour, 'stroke-width':h, 'stroke-linecap':'round',
-        fill:'none', opacity:'.55'}));
+        fill:'none', opacity:'.55', 'data-c':seed}));
     }
   }
 
@@ -1905,9 +1905,9 @@ COMMENT_JS = """
       lines.appendChild(svg('path',{
         d:'M'+ax+','+ay+' Q'+cx+','+cy+' '+nx+','+ny,
         fill:'none', stroke:'var(--note-edge)', 'stroke-width':'1.5',
-        'stroke-linecap':'round', opacity:'.7'}));
+        'stroke-linecap':'round', opacity:'.7', 'data-c':c.id}));
       lines.appendChild(svg('circle',{cx:ax, cy:ay, r:'2.6',
-        fill:'var(--note-edge)', opacity:'.8'}));
+        fill:'var(--note-edge)', opacity:'.8', 'data-c':c.id}));
     });
   }
 
