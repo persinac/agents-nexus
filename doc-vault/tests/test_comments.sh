@@ -5,9 +5,13 @@ cd "$(dirname "$0")/.."
 export DOCVAULT_HOME="$T"
 SRV=""
 cleanup() {
-  [ -n "$SRV" ] && kill "$SRV" 2>/dev/null && wait "$SRV" 2>/dev/null
+  # Exit with the status the script had, not the SIGTERMed server's 143 — which
+  # this suite reported for a day while every assertion above it passed.
+  local rc=$?
+  [ -n "$SRV" ] && kill "$SRV" 2>/dev/null
+  wait "$SRV" 2>/dev/null || true
   rm -rf "$T" "$W"
-  return 0
+  exit "$rc"
 }
 trap cleanup EXIT
 python3 docvault.py init >/dev/null
@@ -83,9 +87,8 @@ printf '  cross-origin     -> '; curl -s -o /dev/null -w '%{http_code} (expect 4
   -H 'Origin: https://evil.example' --data-urlencode 'x=1' --data-urlencode 'y=1' \
   "$B/doc/1/comment/1/pos"
 
-# Canary, not a test: whether a quote actually anchors is decided in the browser
-# and this suite has no DOM. It only catches a literal return of the per-text-node
-# lookup, which failed on any quote crossing inline markup or a source line break.
+# Cheap canary only. Whether a quote anchors is asserted for real, against the
+# browser's own find(), in tests/test_anchor_browser.py.
 printf '=== anchor lookup canary: '
 rg -q 'n.nodeValue.indexOf' docvault.py && echo "REGRESSED to per-node lookup" \
   || echo "still index-based"
