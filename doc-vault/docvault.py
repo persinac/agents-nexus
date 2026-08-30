@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -43,6 +44,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from datetime import datetime
 from fnmatch import fnmatch
 from html import escape
@@ -423,7 +425,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
 """
 
 
-def db() -> sqlite3.Connection:
+def connect() -> sqlite3.Connection:
     # sqlite reports a missing dir as "unable to open database file", which
     # reads like corruption rather than a wrong DOCVAULT_HOME.
     if not VAULT.is_dir():
@@ -434,6 +436,17 @@ def db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+@contextlib.contextmanager
+def db() -> Iterator[sqlite3.Connection]:
+    """Commit/rollback like Connection.__exit__, then close — bare `with` leaks the fd."""
+    conn = connect()
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def ensure_vault() -> None:
@@ -861,7 +874,7 @@ def deposit(path: Path, cfg: dict, *, source: str = "crawl",
     all_tags = sorted(set(derive_tags(path, meta, doc_title, mtime) + list(tags or [])))
 
     own_conn = conn is None
-    conn = conn or db()
+    conn = conn or connect()
     try:
         # Path is checked before content hash: order is what distinguishes a
         # rewrite (new version) from the same file copied elsewhere (duplicate).

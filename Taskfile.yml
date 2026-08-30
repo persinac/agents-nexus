@@ -439,6 +439,7 @@ tasks:
       - python3 tests/test_access_guard.py
       - ./tests/test_versioning.sh
       - ./tests/test_comments.sh
+      - ./tests/test_fd_leak.sh
       - uv run --with playwright python tests/test_anchor_browser.py
 
   launchd:install:doc-vault:
