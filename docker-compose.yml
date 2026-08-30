@@ -131,8 +131,33 @@ services:
       NEXUS_SESSION_CEILING_USD: ${NEXUS_SESSION_CEILING_USD:-2000}
       NEXUS_SESSION_CEILING_USD_WORK: ${NEXUS_SESSION_CEILING_USD_WORK:-2000}
       NEXUS_PRICES_PATH: ${NEXUS_PRICES_PATH:-}
+      # DeepSeek cost leg (docs/deepseek-routing.md). Session-class routed, not
+      # a routing.py pool entry — a session whose id starts with
+      # DEEPSEEK_SESSION_PREFIX forces served_model=DEEPSEEK_MODEL and goes to
+      # the litellm sidecar instead of Anthropic. Off by default; no fallback
+      # to Anthropic on litellm failure (see docs/deepseek-routing.md).
+      DEEPSEEK_ENABLED: ${DEEPSEEK_ENABLED:-0}
+      DEEPSEEK_SESSION_PREFIX: ${DEEPSEEK_SESSION_PREFIX:-ds-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-cheap}
+      LITELLM_UPSTREAM: ${LITELLM_UPSTREAM:-http://litellm:4000}
     ports:
       - "${PROXY_PORT:-4000}:4000"
+
+  # DeepSeek/vendor translation sidecar for the cost leg above. Internal-only —
+  # holds DEEPSEEK_API_KEY itself; nexus-proxy strips any forwarded Anthropic
+  # auth before reaching it, so a live sk-ant-… key is never sent here.
+  litellm:
+    profiles: ["proxy"]
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: nexus-litellm
+    restart: always
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_API_BASE: ${ANTHROPIC_API_BASE:?Set ANTHROPIC_API_BASE in .env}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
 
   # ── Langfuse (optional observability) ────────────────────────────────────
   # Only starts with the "langfuse" profile — plain `task up` won't touch these.

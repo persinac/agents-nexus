@@ -32,6 +32,14 @@ HOME = os.path.expanduser("~")
 REPO_ROOT = os.environ.get("CONDUCTOR_REPO_ROOT") or os.path.dirname(REPO)
 PROXY = "http://localhost:4000"
 HOST = socket.gethostname().split(".")[0]
+# DeepSeek cost leg opt-in (docs/deepseek-routing.md). Off by default. When set,
+# _set_sess prefixes every mission session so nexus-proxy routes it to the
+# litellm sidecar instead of Anthropic. Deliberately blunt (all missions, not
+# per-role) for a first cut — same "start blunt, tune from data" precedent as
+# ROUTE_DOWNGRADE_TIERS/BG_CEILING_ENABLED. Read the prefix from env, not
+# hardcoded, so it stays in sync with whatever nexus-proxy is actually keying on.
+CONDUCTOR_DEEPSEEK = os.environ.get("CONDUCTOR_DEEPSEEK", "0") == "1"
+DEEPSEEK_SESSION_PREFIX = os.environ.get("DEEPSEEK_SESSION_PREFIX", "ds-")
 
 CFG = yaml.safe_load(open(os.path.join(HOME, ".tmux", "conductor.yaml")))
 POLICY = CFG["policy"]
@@ -216,7 +224,12 @@ _WORKER_BRANCH_RULE = (" You are already on the correct git branch in this workt
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 def _set_sess(name: str):
-    """Route model traffic through the proxy under a mission-scoped session (traced)."""
+    """Route model traffic through the proxy under a mission-scoped session
+    (traced). When CONDUCTOR_DEEPSEEK=1, prefixes the session so nexus-proxy
+    routes it to the DeepSeek cost leg instead of Anthropic — see the module-
+    level comment above CONDUCTOR_DEEPSEEK for why this is blunt by design."""
+    if CONDUCTOR_DEEPSEEK and not name.startswith(DEEPSEEK_SESSION_PREFIX):
+        name = f"{DEEPSEEK_SESSION_PREFIX}{name}"
     if os.popen(f"curl -sf -m 0.4 {PROXY}/health/liveliness >/dev/null 2>&1 && echo up").read().strip() == "up":
         os.environ["ANTHROPIC_BASE_URL"] = f"{PROXY}/sess/{name}"
 
