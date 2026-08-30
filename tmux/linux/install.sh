@@ -190,6 +190,13 @@ systemctl --user daemon-reload 2>/dev/null || echo "  WARNING: 'systemctl --user
 # mid-session runs by an uptime check), so it is intentionally not started here.
 systemctl --user restart crash-breadcrumb.service 2>/dev/null || true
 
+# automode-watchdog is also a long-running daemon (the unit loop above only
+# *enables* it) — start it now rather than waiting for a reboot. Restarting is
+# safe on a re-run: it rebuilds its state file from a clean slate and never
+# replays old transcript history (see the script's own docstring).
+systemctl --user restart automode-watchdog.service 2>/dev/null || true
+echo "  Started automode-watchdog.service"
+
 # Slack bridge — install deps + start the long-running service now (the loop
 # above only enables .service units; timers it starts). If SLACK_* tokens are
 # unset in .env the bridge boot-guards to exit 0, so starting it is harmless.
