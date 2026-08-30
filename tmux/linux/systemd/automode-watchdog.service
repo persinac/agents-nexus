@@ -1,0 +1,40 @@
+[Unit]
+# automode-watchdog — host-side backstop for Claude Code's fail-closed auto-mode
+# permission classifier (see docs/model-routing.md and the script's own docstring
+# in tmux/mac/tmux-scripts/automode-watchdog.py). Detects a fail-closed denial
+# (toolDenialKind: automode-unavailable / automode-parsing-error) and self-heals
+# by cycling the stuck pane to Manual permission mode, then reverts once it goes
+# idle. The PermissionDenied hook (registered via claude-settings.json, merged
+# into ~/.claude/settings.json by this installer) is the fast-path detector;
+# this poll loop is the backstop — it is also the ONLY thing that catches the
+# untagged slash-command bash-substitution failure surface, which raises no
+# hook event at all (see the script's "third, untagged failure surface"
+# section).
+#
+# Mirrors launchd/com.agents-nexus.automode-watchdog.plist (macOS), as a --user
+# unit like this repo's other long-running services (slack-bridge,
+# crash-breadcrumb, substrated, agents-nexus-stack).
+Description=automode-watchdog — auto-mode fail-closed denial backstop
+Documentation=https://github.com/persinac/agents-nexus/blob/main/docs/model-routing.md
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__AGENTS_NEXUS_DIR__
+Environment=HOME=__HOME__
+Environment=NEXUS_TMUX_DIR=__HOME__/.tmux
+Environment=AGENTS_NEXUS_DIR=__AGENTS_NEXUS_DIR__
+# herdr must be on PATH for substrate.sh's herdr backend calls (see the mac plist).
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
+# -u: unbuffered stdout/stderr, or the startup banner and any [automode-watchdog]
+# lines sit in Python's buffer and never reach the journal during quiet operation
+# (stdout isn't a TTY under systemd, same reason the plist needs it).
+ExecStart=/usr/bin/env python3 -u __AGENTS_NEXUS_DIR__/tmux/mac/tmux-scripts/automode-watchdog.py
+# Restart on crash only (non-zero exit / signal) -- NOT on a clean exit, which is
+# what main() does deliberately when AUTOMODE_WATCHDOG_ENABLED=0. Same semantics
+# as the plist's KeepAlive/SuccessfulExit=false.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
