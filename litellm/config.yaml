@@ -1,0 +1,19 @@
+model_list:
+  - model_name: "*"
+    litellm_params:
+      model: "anthropic/*"
+      api_key: os.environ/ANTHROPIC_API_KEY
+      api_base: os.environ/ANTHROPIC_API_BASE
+  # DeepSeek cost leg (docs/deepseek-routing.md). nexus-proxy forces this exact
+  # model_name for any session whose id carries the DEEPSEEK_SESSION_PREFIX —
+  # keep this name in sync with DEEPSEEK_MODEL in .env. LiteLLM translates the
+  # inbound Anthropic /v1/messages shape to DeepSeek's API and back.
+  - model_name: deepseek-cheap
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+litellm_settings:
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+  drop_params: true

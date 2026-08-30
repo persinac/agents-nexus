@@ -299,6 +299,23 @@ BG_SESSION_PREFIX = "bg-"
 BG_CEILING_ENABLED = os.environ.get("BG_CEILING_ENABLED", "0") == "1"
 BG_CEILING_MODEL = os.environ.get("BG_CEILING_MODEL", "claude-sonnet-5")
 
+# ── DeepSeek cost leg ("ds-" sessions) ──────────────────────────────────────
+# docs/deepseek-routing.md. Same session-class-prefix precedent as bg- above,
+# but this changes VENDOR, not just model: a ds- session's traffic goes to the
+# litellm sidecar (Anthropic ⇄ DeepSeek translation), never to Anthropic, and
+# never touches routing.py's pool — that pool is documented + tested as
+# Anthropic-only, and a DeepSeek entry has no business in it. _decide_served
+# forces DEEPSEEK_MODEL unconditionally for these sessions, ahead of the
+# classifier/bg-ceiling/route checks, so the Anthropic pool logic never even
+# sees a ds- session. Deliberately no fallback to Anthropic on litellm failure
+# (see the no-shed guards in _nonstream_response/_stream_response) — a session
+# routed away from Anthropic for cost reasons should not silently spend
+# Anthropic dollars the moment DeepSeek has a bad day.
+DEEPSEEK_SESSION_PREFIX = os.environ.get("DEEPSEEK_SESSION_PREFIX", "ds-")
+DEEPSEEK_ENABLED = os.environ.get("DEEPSEEK_ENABLED", "0") == "1"
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-cheap")
+LITELLM_UPSTREAM = os.environ.get("LITELLM_UPSTREAM", "http://litellm:4000").rstrip("/")
+
 
 @app.get("/admin/ceilings")
 async def get_ceilings():
@@ -328,9 +345,15 @@ def _is_bg(session_id: str | None) -> bool:
     return bool(session_id and session_id.startswith(BG_SESSION_PREFIX))
 
 
+def _is_deepseek(session_id: str | None) -> bool:
+    return bool(DEEPSEEK_ENABLED and session_id and session_id.startswith(DEEPSEEK_SESSION_PREFIX))
+
+
 def _upstream_for(session_id: str | None) -> str:
     """The single upstream this session talks to. No cross-routing/fallback:
-    work → WORK_UPSTREAM, personal → Anthropic direct."""
+    deepseek → LITELLM_UPSTREAM, work → WORK_UPSTREAM, personal → Anthropic direct."""
+    if _is_deepseek(session_id):
+        return LITELLM_UPSTREAM
     return WORK_UPSTREAM if _is_work(session_id) else PERSONAL_UPSTREAM
 
 
@@ -411,7 +434,12 @@ async def proxy(request: Request, path: str):
 
 def _is_classifier_call(is_messages, session_id, body_bytes) -> bool:
     """Whether this request is an auto-mode permission classification the proxy
-    should shield (own its transient failures, keep it off the session model)."""
+    should shield (own its transient failures, keep it off the session model).
+    A ds- session is never treated as one: the classifier carve-out pins calls
+    to a tier in the Anthropic pool, which a deepseek session must never touch
+    (see _decide_served) — so this returns False before that pool is consulted."""
+    if _is_deepseek(session_id):
+        return False
     if not (CLASSIFIER_ROUTE_ENABLED and is_messages):
         return False
     if _is_work(session_id) and not CLASSIFIER_ROUTE_WORK:
@@ -431,11 +459,19 @@ def _decide_served(is_messages, session_id, body, requested_model, is_classifier
     routing is skipped when ROUTE_ENABLED=0, for non-messages, for work sessions,
     or on any classify/select error.
 
-    Classifier calls are decided first and ignore all of those gates except
+    A ds- session is decided FIRST, unconditionally, ahead of even the
+    classifier carve-out: it forces DEEPSEEK_MODEL regardless of ROUTE_ENABLED,
+    is_classifier, or bg- ceiling status, so routing.py's Anthropic-only pool
+    never runs for it at all (not a fail-open path — there is nothing to fail
+    open to; a deepseek session has no in-pool fallback by design).
+
+    Classifier calls are decided next and ignore all of those gates except
     fail-open — they are pinned off the session model whether or not the
     cost-motivated router is enabled. The bg- ceiling is decided next, also
     independent of ROUTE_ENABLED: it is a session-class cap, not a per-turn
     difficulty classification, so classify_difficulty never runs for it."""
+    if _is_deepseek(session_id):
+        return DEEPSEEK_MODEL, "vendor-route"
     if is_classifier and body:
         try:
             served = routing.select_classifier_model(
@@ -516,10 +552,17 @@ async def _nonstream_response(
 ):
     upstream = _upstream_for(session_id)
     is_work = _is_work(session_id)
+    is_deepseek = _is_deepseek(session_id)
+    if is_deepseek:
+        # litellm holds the real DEEPSEEK_API_KEY; never forward a live sk-ant-…
+        # credential to a third-party translation sidecar.
+        headers = {k: v for k, v in headers.items() if k.lower() not in ("authorization", "x-api-key")}
 
     model = served_model
     changed = bool(served_model and served_model != requested_model)
-    action = ("classifier" if is_classifier else "downgrade") if changed else "passthrough"
+    action = "vendor-route" if is_deepseek else (
+        ("classifier" if is_classifier else "downgrade") if changed else "passthrough"
+    )
     max_retries = CLASSIFIER_MAX_RETRIES if is_classifier else ROUTE_MAX_RETRIES
     retries = 0
     reverted = False
@@ -571,8 +614,12 @@ async def _nonstream_response(
             break
         # connect error or retryable-exhausted → shed down-ladder. Work sessions
         # never shed a main-loop turn; a classifier call may, since shedding it
-        # only changes which Anthropic model answers, not the upstream.
-        if is_work and not is_classifier:
+        # only changes which Anthropic model answers, not the upstream. A
+        # deepseek session never sheds either — shed_model only knows the
+        # Anthropic pool (DEEPSEEK_MODEL isn't in it, so this is redundant with
+        # routing.shed_model's own None-on-unknown-model behavior, but explicit
+        # here so the no-vendor-fallback invariant doesn't rely on that).
+        if (is_work or is_deepseek) and not is_classifier:
             break
         # Already back on the requested model — shedding would only return to the
         # cheaper model that just rejected this body.
@@ -616,10 +663,17 @@ async def _stream_response(
     Claude Code's HTTP backoff engages — never a torn 200 stream."""
     upstream = _upstream_for(session_id)
     is_work = _is_work(session_id)
+    is_deepseek = _is_deepseek(session_id)
+    if is_deepseek:
+        # litellm holds the real DEEPSEEK_API_KEY; never forward a live sk-ant-…
+        # credential to a third-party translation sidecar.
+        headers = {k: v for k, v in headers.items() if k.lower() not in ("authorization", "x-api-key")}
 
     model = served_model
     changed = bool(served_model and served_model != requested_model)
-    action = ("classifier" if is_classifier else "downgrade") if changed else "passthrough"
+    action = "vendor-route" if is_deepseek else (
+        ("classifier" if is_classifier else "downgrade") if changed else "passthrough"
+    )
     max_retries = CLASSIFIER_MAX_RETRIES if is_classifier else ROUTE_MAX_RETRIES
     retries = 0
     resp = None
@@ -666,8 +720,8 @@ async def _stream_response(
         if resp is not None and not retryable:
             break  # non-retryable error status → surface verbatim
         # retryable-exhausted (resp holds the last 5xx/429) OR connect-exhausted (resp None)
-        if is_work and not is_classifier:
-            break  # work never sheds — surface the real status (or 502 if resp None)
+        if (is_work or is_deepseek) and not is_classifier:
+            break  # work/deepseek never shed — surface the real status (or 502 if resp None)
         nxt = routing.shed_model(model, _ROUTE_POOL, _COOLDOWNS, time.monotonic())
         if not nxt or nxt == model:
             break  # nothing cheaper — surface what we have
