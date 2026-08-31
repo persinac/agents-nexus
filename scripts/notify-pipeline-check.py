@@ -120,7 +120,7 @@ def collect(window_h: float) -> tuple[list[dict], dict]:
     win_rate = len(asked) / max(window_h, 0.01)
 
     misresolved = {k: v for k, v in (missed_check(window_h).get("by_outcome") or {}).items()
-                   if k != "ok" and v}
+                   if k not in ("ok", "no-coverage") and v}
 
     facts = {
         "window_hours": window_h,

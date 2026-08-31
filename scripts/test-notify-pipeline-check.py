@@ -120,6 +120,11 @@ npc.missed_check = lambda _w: {"by_outcome": {"ok": 9}}
 check("silent when every ask was owed", "gate-misresolved" in ids(), False)
 
 reset()
+npc.missed_check = lambda _w: {"by_outcome": {"ok": 4, "no-coverage": 7}}
+check("silent on subagent calls the transcript cannot see",
+      "gate-misresolved" in ids(), False)
+
+reset()
 npc.missed_check = lambda _w: {}
 check("silent when the sub-check cannot run", "gate-misresolved" in ids(), False)
 

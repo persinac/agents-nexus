@@ -27,7 +27,7 @@ def _pending_at(transcript, epoch):
     """The tool_use awaiting a decision at `epoch` -> (when, id, name, input), anchored on
     the absent-or-later tool_result: a waiting prompt is older than the notifications for it."""
     if not transcript or not os.path.exists(transcript):
-        return None, "no-transcript"
+        return None, "no-transcript", set()
     uses, results = [], {}
     try:
         with open(transcript, errors="replace") as fh:
@@ -58,16 +58,17 @@ def _pending_at(transcript, epoch):
                         if rid and rid not in results:
                             results[rid] = when
     except OSError:
-        return None, "unreadable"
+        return None, "unreadable", set()
     uses.sort()
+    names = {u[2] for u in uses}
     started = [u for u in uses if u[0] <= epoch + JOIN_SLOP]
     if not started:
-        return None, "none-started"
+        return None, "none-started", names
     for u in reversed(started):
         done = results.get(u[1])
         if done is None or done > epoch:
-            return u, "boundary"
-    return started[-1], "no-boundary"
+            return u, "boundary", names
+    return started[-1], "no-boundary", names
 
 
 def main():
@@ -95,7 +96,7 @@ def main():
             if abs(n["epoch"] - epoch) <= JOIN_SLOP:
                 transcript = n["transcript"]
                 break
-        pending, how = _pending_at(transcript, epoch)
+        pending, how, seen_names = _pending_at(transcript, epoch)
         reported = (body.get("tool") or "").strip()
         real_name = pending[2] if pending else ""
         real_inp = pending[3] if pending else {}
@@ -109,6 +110,11 @@ def main():
 
         if not reported:
             outcome = "no-tool"
+        elif real_name and reported != real_name and reported not in seen_names:
+            # A subagent's calls are absent from the parent transcript, so this file is not
+            # evidence about them. Only a reported tool that IS here, already finished, is
+            # the stale-read bug; anything else is outside what the transcript can settle.
+            outcome = "no-coverage"
         elif real_name and reported != real_name:
             outcome = "wrong-tool"
         elif verdict == "read":
@@ -136,7 +142,7 @@ def main():
             "outcome": outcome,
         })
 
-    findings = [r for r in rows if r["outcome"] != "ok"]
+    findings = [r for r in rows if r["outcome"] not in ("ok", "no-coverage")]
 
     if args.json:
         print(json.dumps({
@@ -152,7 +158,7 @@ def main():
     print(f"classifier: {classify_path}")
     print(f"window:     last {args.hours}h   prompts that reached a human: {len(rows)}")
     counts = collections.Counter(r["outcome"] for r in rows)
-    for k in ("ok", "would-clear", "no-tool", "wrong-tool"):
+    for k in ("ok", "no-coverage", "would-clear", "no-tool", "wrong-tool"):
         if counts.get(k):
             print(f"  {k:<12} {counts[k]}")
     if not findings:
