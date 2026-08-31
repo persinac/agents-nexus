@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.request
@@ -29,6 +30,8 @@ LOG_CAPS = {
     ASKED_LOG: 2 * 1024 * 1024,
     PRESENCE_LOG: 1 * 1024 * 1024,
 }
+
+MISSED_PY = Path(__file__).resolve().parent / "notify-missed-check.py"
 
 MIN_SAMPLE = 20
 DEGRADED_PCT = 50.0
@@ -85,6 +88,19 @@ def presence_enabled() -> bool | None:
     return None
 
 
+def missed_check(window_h: float) -> dict:
+    """notify-missed-check.py's JSON, or {} if it cannot run. Never raises: a broken
+    sub-check must not take the health check down with it."""
+    if not MISSED_PY.exists():
+        return {}
+    try:
+        out = subprocess.run([sys.executable, str(MISSED_PY), "--hours", str(window_h),
+                              "--json"], capture_output=True, text=True, timeout=60)
+        return json.loads(out.stdout or "{}")
+    except Exception:
+        return {}
+
+
 def collect(window_h: float) -> tuple[list[dict], dict]:
     now = int(time.time())
     lo = now - int(window_h * 3600)
@@ -103,8 +119,12 @@ def collect(window_h: float) -> tuple[list[dict], dict]:
     base_rate = len(base) / max(1.0, (lo - base_lo) / 3600)
     win_rate = len(asked) / max(window_h, 0.01)
 
+    misresolved = {k: v for k, v in (missed_check(window_h).get("by_outcome") or {}).items()
+                   if k != "ok" and v}
+
     facts = {
         "window_hours": window_h,
+        "misresolved": misresolved or None,
         "auto_approved": len(approved),
         "asked_human": len(asked),
         "repeat_suppressed": len(repeats),
@@ -160,6 +180,15 @@ def collect(window_h: float) -> tuple[list[dict], dict]:
                    "hook-notification.sh's desktop toast",
             "hint": "herdr plugin disable nexus.presence (see PR #86: "
                     "`herdr plugin link` re-enables)",
+        })
+
+    if misresolved:
+        issues.append({
+            "id": "gate-misresolved",
+            "msg": (f"{sum(misresolved.values())} prompt(s) in {window_h:g}h were not owed: "
+                    + ", ".join(f"{v} {k}" for k, v in sorted(misresolved.items()))),
+            "hint": "run scripts/notify-missed-check.py; wrong-tool means the classifier "
+                    "judged a different call than the one blocked",
         })
 
     if (len(asked) >= SPIKE_MIN_ASKS and base_rate > 0

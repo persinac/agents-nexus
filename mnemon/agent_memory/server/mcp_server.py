@@ -58,6 +58,16 @@ def _db_url() -> str:
     return url
 
 
+def _probe_error() -> str:
+    """The libpq error behind a PoolTimeout, which psycopg_pool only logs."""
+    import psycopg
+    try:
+        psycopg.connect(_db_url(), connect_timeout=3).close()
+        return "pool init timed out, but a direct connect succeeded"
+    except Exception as exc:
+        return str(exc).splitlines()[0]
+
+
 async def _get_store():
     """Return the MemoryStore, connecting to Postgres on first call."""
     global _pool, _store, _pool_lock
@@ -73,7 +83,13 @@ async def _get_store():
             from agent_memory.store import MemoryStore
 
             _pool = psycopg_pool.AsyncConnectionPool(_db_url(), min_size=1, max_size=5, open=False)
-            await _pool.open()
+            try:
+                await _pool.open(wait=True, timeout=5)
+            except Exception:
+                await _pool.close()
+                _pool = None
+                raise RuntimeError(
+                    f"agent-memory cannot reach Postgres: {_probe_error()}") from None
             _store = MemoryStore(PostgresMemoryBackend(pool=_pool))
             logger.info("agent-memory: connected to Postgres")
     return _store
@@ -561,6 +577,25 @@ async def query_session(
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
+def _load_env_file() -> Path | None:
+    """Load the first env file found, package root then repo root, and return it. Never
+    overrides an already-exported var, so an explicit DATABASE_URL still wins."""
+    here = Path(__file__).resolve()
+    for depth in (2, 3):
+        if depth >= len(here.parents):
+            continue
+        candidate = here.parents[depth] / ".env"
+        if not candidate.exists():
+            continue
+        try:
+            from dotenv import load_dotenv
+        except ImportError:
+            return None
+        load_dotenv(candidate)
+        return candidate
+    return None
+
+
 def main():
     """Start the MCP server.
 
@@ -570,14 +605,7 @@ def main():
 
     SSE mode reads MCP_HOST (default 0.0.0.0) and MCP_PORT (default 8330).
     """
-    # Load .env from project root if present
-    _env_path = Path(__file__).parent.parent.parent / ".env"
-    if _env_path.exists():
-        try:
-            from dotenv import load_dotenv
-            load_dotenv(_env_path)
-        except ImportError:
-            pass  # python-dotenv optional — fall back to env vars already set
+    _load_env_file()
 
     logging.basicConfig(level=logging.WARNING)
 
