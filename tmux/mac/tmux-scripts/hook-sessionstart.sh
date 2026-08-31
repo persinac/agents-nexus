@@ -23,6 +23,11 @@ INPUT=$(cat 2>/dev/null)   # consume stdin (SessionStart JSON); we emit no added
 # session id. Emits nothing on stdout — SessionStart stdout becomes added context.
 printf '%s' "$INPUT" | "$HOME/.tmux/record-transcript.sh" >/dev/null 2>&1
 
+# Self-heal Orbit for THIS repo, so a freshly cloned GitLab checkout is covered without
+# anyone remembering to run setup. Runs before the pane guard below — it is about the
+# repo, not the pane, and a no-pane session still benefits. No-op once installed.
+"$HOME/.tmux/orbit-ensure.sh" >/dev/null 2>&1 &
+
 TMUX_PANE="${TMUX_PANE:-${HERDR_PANE_ID:-}}"
 PANE="$TMUX_PANE"
 [ -n "$PANE" ] || exit 0
