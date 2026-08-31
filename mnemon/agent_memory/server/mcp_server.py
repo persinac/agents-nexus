@@ -577,6 +577,25 @@ async def query_session(
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
+def _load_env_file() -> Path | None:
+    """Load the first env file found, package root then repo root, and return it. Never
+    overrides an already-exported var, so an explicit DATABASE_URL still wins."""
+    here = Path(__file__).resolve()
+    for depth in (2, 3):
+        if depth >= len(here.parents):
+            continue
+        candidate = here.parents[depth] / ".env"
+        if not candidate.exists():
+            continue
+        try:
+            from dotenv import load_dotenv
+        except ImportError:
+            return None
+        load_dotenv(candidate)
+        return candidate
+    return None
+
+
 def main():
     """Start the MCP server.
 
@@ -586,14 +605,7 @@ def main():
 
     SSE mode reads MCP_HOST (default 0.0.0.0) and MCP_PORT (default 8330).
     """
-    # Load .env from project root if present
-    _env_path = Path(__file__).parent.parent.parent / ".env"
-    if _env_path.exists():
-        try:
-            from dotenv import load_dotenv
-            load_dotenv(_env_path)
-        except ImportError:
-            pass  # python-dotenv optional — fall back to env vars already set
+    _load_env_file()
 
     logging.basicConfig(level=logging.WARNING)
 
