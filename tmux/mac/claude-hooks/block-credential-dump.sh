@@ -21,6 +21,9 @@
 # without naming a path -- git remote -v, git config --list, bare env, kubectl get secret
 # -o yaml. These match on command shape alone, because there is no path to match on.
 #
+# It ALSO opens the file (SECRET_SHAPES) for broad Bash readers and the Read tool: a secret
+# pasted into an ordinary notes file is invisible to every path pattern by construction.
+#
 # Fails OPEN on internal error (never wedge the session on a guard bug), but fails CLOSED on
 # a match. Exit 2 + stderr is the documented PreToolUse blocking contract.
 
@@ -30,18 +33,20 @@ payload="$(cat 2>/dev/null || true)"
 [ -z "$payload" ] && exit 0
 
 read -r -d '' PY <<'PYEOF'
-import json, re, sys
+import json, os, re, shlex, sys
 
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)                      # unparseable -> fail open
 
-if d.get("tool_name") != "Bash":
+tool = d.get("tool_name")
+if tool not in ("Bash", "Read"):
     sys.exit(0)
 
-cmd = (d.get("tool_input") or {}).get("command") or ""
-if not cmd:
+tool_input = d.get("tool_input") or {}
+cmd = tool_input.get("command") or ""
+if tool == "Bash" and not cmd:
     sys.exit(0)
 
 # A heredoc body is DATA, not commands. A commit message or a doc that merely MENTIONS
@@ -307,49 +312,121 @@ SELF_DUMPING = [
      "docker inspect (prints the container's resolved Config.Env)"),
 ]
 
+# WHY (2026-08-31): `grep -B3 -A12 <pat> "vault/Daily Notes/_common_commands.md"` printed a
+# live cloudflared tunnel token. BROAD matched twice; CRED matched nothing, because the file
+# is an ordinary note -- so the guard exited at the CRED miss before BROAD was evaluated.
+SECRET_SHAPES = [
+    (r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----", "a PEM private key block"),
+    (r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "a JWT"),
+    (r"\beyJ[A-Za-z0-9_/+=-]{80,}", "a base64-encoded JSON credential (tunnel-token shape)"),
+    (r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", "an AWS access key id"),
+    (r"\bsk-ant-[A-Za-z0-9_-]{24,}", "an Anthropic API key"),
+    (r"\bgh[pousr]_[A-Za-z0-9]{30,}", "a GitHub token"),
+    (r"\bglpat-[A-Za-z0-9_-]{20,}", "a GitLab PAT"),
+    (r"\bxox[baprs]-[A-Za-z0-9-]{20,}", "a Slack token"),
+    (r"\bAIza[0-9A-Za-z_-]{35}\b", "a Google API key"),
+    (r"--token[=\s]+[A-Za-z0-9_/+=.-]{40,}", "a --token flag carrying a literal value"),
+]
+
+# Generic base64/entropy scoring was rejected: it fires on hashes, diffs and embedded images,
+# and a guard that cries wolf gets switched off, which is strictly worse than this gap.
+MAX_SCAN_BYTES = 2_000_000
+MAX_SCAN_FILES = 8
+
+
+def scan_file(path):
+    """Return (label, line_no) for the first credential shape in `path`, else None."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) > MAX_SCAN_BYTES:
+            return None
+        with open(path, "rb") as fh:
+            raw = fh.read(MAX_SCAN_BYTES)
+        if b"\x00" in raw[:8192]:
+            return None
+        text = raw.decode("utf-8", "replace")
+    except Exception:
+        return None
+    for pat, label in SECRET_SHAPES:
+        m = re.search(pat, text)
+        if m:
+            return label, text.count("\n", 0, m.start()) + 1
+    return None
+
+
+def candidate_paths(text):
+    """Existing files named as bare (non-flag) arguments of `text`."""
+    try:
+        toks = shlex.split(text, comments=False, posix=True)
+    except ValueError:
+        return []
+    out = []
+    for t in toks:
+        if not t or t.startswith("-"):
+            continue
+        p = os.path.expanduser(t)
+        if os.path.isfile(p):
+            out.append(p)
+        if len(out) >= MAX_SCAN_FILES:
+            break
+    return out
+
+
+def first_secret(paths):
+    for p in paths:
+        hit = scan_file(p)
+        if hit:
+            return "{}:{} holds {}".format(os.path.basename(p), hit[1], hit[0])
+    return None
+
+
 # A self-dumping command blocks on its own; otherwise fall through to path-plus-reader.
 self_hit = next((label for pat, label in SELF_DUMPING if re.search(pat, scan)), None)
 
-if self_hit:
+if tool == "Read":
+    content_hit = first_secret([os.path.expanduser(tool_input.get("file_path") or "")])
+    if not content_hit:
+        sys.exit(0)
+    reader, path_note = "Read tool (always a full dump)", content_hit
+elif self_hit:
     reader, path_note = self_hit, "implicit -- the command opens it without naming it"
 else:
     cred_hit = next((p for p in CRED if re.search(p, scan)), None)
-    if not cred_hit:
-        sys.exit(0)
-
     broad_hit = next((label for pat, label in BROAD if re.search(pat, scan)), None)
     if not broad_hit:
-        sys.exit(0)                  # targeted read against a cred path -> allow
+        sys.exit(0)                  # targeted read -> allow, cred path or not
 
-    reader, path_note = broad_hit, f"matched /{cred_hit}/"
+    if cred_hit:
+        reader, path_note = broad_hit, f"matched /{cred_hit}/"
+    else:
+        content_hit = first_secret(candidate_paths(scan))
+        if not content_hit:
+            sys.exit(0)
+        reader, path_note = broad_hit, content_hit
 
 # Record the block. Until 2026-08-19 neither PreToolUse guard logged anything, so a
 # refusal existed only as stderr in one transcript. Deliberately does NOT write the
 # command text: this guard exists precisely because such text can carry a credential,
 # and moving that hazard from the transcript into a log file would not fix it. Format
 # matches notify-classify.py's _log_decision so one awk reads both files.
+_ident = cmd or tool_input.get("file_path") or "-"
 try:
-    # `os` is NOT among this script's top-level imports (json, re, sys only), so it is
-    # imported here. Without it every write raised NameError inside this try/except and
-    # the guard logged nothing at all — silently, which is the failure mode this whole
-    # logging change exists to eliminate.
-    import hashlib, os, time
+    import hashlib, time
     _log = os.path.join(os.environ.get("NEXUS_TMUX_DIR") or
                         os.path.expanduser("~/.tmux"), "gate-decisions.log")
     if os.path.exists(_log) and os.path.getsize(_log) > 5 * 1024 * 1024:
         os.replace(_log, _log + ".1")
-    _head = re.sub(r"[^\w.:-]", "", os.path.basename((cmd.split() or ["-"])[0]))[:32] or "-"
+    _head = re.sub(r"[^\w.:-]", "", os.path.basename((_ident.split() or ["-"])[0]))[:32] or "-"
     with open(_log, "a", encoding="utf-8") as _fh:
         _fh.write("{} block credential-guard {} {} {}\n".format(
             int(time.time()), os.environ.get("PANE") or "-", _head,
-            hashlib.sha256(cmd.encode("utf-8", "replace")).hexdigest()[:12]))
+            hashlib.sha256(_ident.encode("utf-8", "replace")).hexdigest()[:12]))
 except Exception:
     pass                                     # logging must never wedge the guard
 
 sys.stderr.write(
     "BLOCKED by block-credential-dump.sh\n\n"
-    f"  reader:          {reader}\n"
-    f"  credential path: {path_note}\n\n"
+    f"  reader:  {reader}\n"
+    f"  because: {path_note}\n\n"
     "This command would print a credential-bearing file into the transcript, which is\n"
     "durable and is also sent to the model API. On 2026-07-26 exactly this pattern\n"
     "(grep -A6 on talos-config/controlplane.yaml) leaked the k8s bootstrap token and the\n"
@@ -365,6 +442,10 @@ sys.stderr.write(
     "  into a transcript. An unrestricted interpreter dumps a file exactly as\n"
     "  completely as cat; the advice assumed targeted extraction and nothing enforced\n"
     "  it. Use the greps above -- they cannot return a value by construction.\n\n"
+    "If `because:` names a file and a line, the secret is IN THAT FILE, whatever the\n"
+    "path looks like. To edit the file without reading the value:\n"
+    "  grep -n 'anchor' FILE                # locate, no value printed\n"
+    "  sed -i '' 'NNNs|.*|<redacted>|' FILE # replace line NNN in place\n\n"
     "If you genuinely must see raw content, do it in a shell the user controls\n"
     "(prefix the command with ! in the prompt) so it never enters the transcript.\n"
 )

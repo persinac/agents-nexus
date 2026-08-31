@@ -5,7 +5,7 @@ Run from a file, not inline: the guard (correctly) refuses a Bash command that m
 CONTAINS a dangerous-looking string, so the cases cannot be passed as shell arguments.
 Nothing here reads a credential -- these are command STRINGS handed to the hook's stdin.
 """
-import json, subprocess, os, tempfile
+import base64, json, subprocess, os, tempfile
 
 # Grade the guard SITTING NEXT TO THIS SUITE, not the deployed one. Until 2026-08-20
 # this was hardcoded to ~/.claude/hooks/block-credential-dump.sh -- a symlink into the
@@ -212,6 +212,32 @@ MUST_BLOCK_BECAUSE = [
 # window were suite runs rather than real commands.
 _LOGDIR = tempfile.mkdtemp(prefix="gate-test-")
 
+# Content-side fixtures. Synthetic values only -- no real credential is used here.
+_FX = tempfile.mkdtemp(prefix="gate-fx-")
+_BLOB = base64.b64encode(
+    json.dumps({"a": "0" * 32, "t": "1" * 36, "s": "2" * 64}).encode()
+).decode().rstrip("=")
+
+
+def _fx(name, text):
+    p = os.path.join(_FX, name)
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return p
+
+
+# Assembled at runtime, never written as literals: a fixture spelled out in full would make
+# THIS FILE match SECRET_SHAPES, and the guard would then refuse to let anyone read its own
+# test suite. Confirmed the hard way on 2026-08-31.
+_PEM = "-----BEGIN RSA PRIV" + "ATE KEY-----"
+_AKIA = "AK" + "IA" + "Z" * 4 + "Q" * 4 + "W" * 4 + "E" * 4
+
+NOTE_TOKEN = _fx("notes.md", f"# Commands\n\ntail -f x.log\n\ncloudflared tunnel run --token {_BLOB}\n")
+NOTE_PEM = _fx("backup.md", f"# B\n\n{_PEM}\nQUJD\n-----END RSA PRIVATE KEY-----\n")
+NOTE_AWS = _fx("scratch.md", f"# S\n\nexport AWS_ACCESS_KEY_ID={_AKIA}\n")
+NOTE_CLEAN = _fx("clean.md", "# Notes\n\nWe discussed cloudflared and rotating the token.\n")
+NOTE_HASHES = _fx("hashes.md", "# H\n\nsha256 098519bd and digest " + "a" * 60 + "\n")
+
 
 def run_full(cmd):
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
@@ -250,15 +276,53 @@ for c, want, forbid in MUST_BLOCK_BECAUSE:
     )
     print(f"    {'ok  ' if ok else 'MISS'}  {c[:44]:<44} [{want}]{why}")
 
-# non-Bash tools must pass straight through
-rc = run.__self__ if False else subprocess.run(
-    [HOOK],
-    input=json.dumps({"tool_name": "Read", "tool_input": {"file_path": "talos-config/kubeconfig"}}),
+# 2026-08-31: a broad read of a path CRED does not list, whose CONTENT is a credential.
+# The leak was `grep -B3 -A12 <pat> "<vault>/Daily Notes/_common_commands.md" | head -60`:
+# BROAD matched twice, CRED matched nothing, so the guard allowed it.
+CONTENT_CASES = [
+    (2, f"grep -n -B3 -A12 cloudflared {NOTE_TOKEN} | head -60", "tunnel-token note, the 2026-08-31 shape"),
+    (2, f"cat {NOTE_TOKEN}", "cat the tunnel-token note"),
+    (2, f"cat {NOTE_PEM}", "note holding a PEM private key"),
+    (2, f"cat {NOTE_AWS}", "note holding an AWS key id"),
+    (0, f"grep -c cloudflared {NOTE_TOKEN}", "targeted grep -c on that note"),
+    (0, f"cat {NOTE_CLEAN}", "clean note that merely names tokens"),
+    (0, f"cat {NOTE_HASHES}", "hashes and long non-credential runs"),
+    (0, f"cat {_FX}/absent.md", "path that does not exist"),
+]
+print("  CONTENT-SIDE (path patterns cannot see these):")
+for want, cmd, label in CONTENT_CASES:
+    rc = run(cmd)
+    ok = rc == want
+    fails += not ok
+    print(f"    {'ok  ' if ok else 'MISS'}  {label:<48} want {want} got {rc}")
+
+# Read is a full dump by definition, so it is gated on content alone. Until 2026-08-31 the
+# guard exited on any non-Bash tool, which left Read as an unguarded path to the same leak.
+READ_CASES = [
+    (2, NOTE_TOKEN, "Read the tunnel-token note"),
+    (0, NOTE_CLEAN, "Read a clean note"),
+    (0, HOOK, "Read the guard's own source"),
+    (0, "talos-config/kubeconfig", "Read a path that does not exist"),
+]
+print("  READ TOOL:")
+for want, path, label in READ_CASES:
+    rc = subprocess.run(
+        [HOOK],
+        input=json.dumps({"tool_name": "Read", "tool_input": {"file_path": path}}),
+        capture_output=True, text=True,
+        env={**os.environ, "NEXUS_TMUX_DIR": _LOGDIR}).returncode
+    ok = rc == want
+    fails += not ok
+    print(f"    {'ok  ' if ok else 'MISS'}  {label:<48} want {want} got {rc}")
+
+rc = subprocess.run(
+    [HOOK], input=json.dumps({"tool_name": "Glob", "tool_input": {"pattern": "**/*.env"}}),
     capture_output=True, text=True).returncode
-print(f"  passthrough (non-Bash tool): {'ok' if rc == 0 else 'FAIL'}")
+print(f"  passthrough (tool the guard does not gate): {'ok' if rc == 0 else 'FAIL'}")
 fails += rc != 0
 
 print(f"\n  RESULT: {'ALL PASS' if fails == 0 else str(fails) + ' FAILURES'}"
       f"  ({len(MUST_BLOCK)} block + {len(MUST_ALLOW)} allow"
-      f" + {len(MUST_BLOCK_BECAUSE)} attribution + 1 passthrough)")
+      f" + {len(MUST_BLOCK_BECAUSE)} attribution + {len(CONTENT_CASES)} content"
+      f" + {len(READ_CASES)} read + 1 passthrough)")
 raise SystemExit(1 if fails else 0)

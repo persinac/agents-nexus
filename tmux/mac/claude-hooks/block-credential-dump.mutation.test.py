@@ -94,6 +94,18 @@ MUTATIONS = [
         "BROAD emptied -> unbounded readers unrecognised",
         neutralise_list("BROAD"),
     ),
+    (
+        "SECRET_SHAPES emptied -> a secret in an unlisted path is unrecognised",
+        neutralise_list("SECRET_SHAPES"),
+    ),
+    (
+        "scan_file always returns None -> the content half never fires",
+        replace_once("def scan_file(path):", "def scan_file(path):\n    return None"),
+    ),
+    (
+        "Read falls through -> the tool bypasses the guard again",
+        replace_once('if tool == "Read":', 'if False:'),
+    ),
 ]
 
 
