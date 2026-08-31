@@ -180,7 +180,9 @@ printf '%s %s %s %s\n' "$NOW" "$TMUX_PANE" "$NTYPE" "$ASKED_BODY" >> "$ASKED_LOG
 # NEXUS_NOTIFY_SOUND is empty by default: the ding is the part that interrupts.
 SOUND_CLAUSE=""
 [ -n "${NEXUS_NOTIFY_SOUND:-}" ] && SOUND_CLAUSE=" sound name \"$NEXUS_NOTIFY_SOUND\""
-if [ "${NEXUS_NOTIFY_DESKTOP:-1}" = "1" ]; then
+# A FILE, not just the env var: already-running panes inherited their environment at
+# launch, so a flag file is the only mute that takes effect without restarting the fleet.
+if [ "${NEXUS_NOTIFY_DESKTOP:-1}" = "1" ] && [ ! -e "$HOME/.tmux/notify-mute" ]; then
   case "$OSTYPE" in
     darwin*)
       osascript -e "display notification \"Agent ${WNAME:-?} needs input ($NTYPE)\" with title \"Claude Code\"$SOUND_CLAUSE" 2>/dev/null & ;;
