@@ -70,16 +70,9 @@ NTYPE=$(echo "$INPUT" | sed -n 's/.*"notification_type" *: *"\([^"]*\)".*/\1/p' 
 # keypress. auto-approve.log holds entries at 14:18:51 and 14:34:44 local but
 # NOT 14:38:04, confirming the hook did not answer that one.
 #
-# CORRECTION: an earlier version of this comment guessed notify-classify.py had
-# failed because the gate fires at PARSE time, before the tool_use its
-# _last_tool_use() looks for exists in the transcript. The ordering above
-# disproves that outright — the tool_use was already on disk 7 seconds before
-# the notification. The two real causes were both inside notify-classify.py and
-# are now fixed: it had no concept of shell control flow, so `for`/`do`/`done`
-# segments failed on an unrecognized command head and fell through to the LLM;
-# and that LLM tier was itself dead, from an inherited ANTHROPIC_API_BASE
-# naming a container-only host that cannot resolve here. A read-only loop now
-# auto-approves deterministically, with no model call at all.
+# CORRECTION (2026-08-31): reading the ordering above as disproving transcript
+# staleness was one lucky capture — w4:p1 then classified a WebFetch that had already
+# finished. record-pending.sh pins the pending call from PreToolUse instead.
 #
 # Also worth knowing, from the same session: a for/case/function_definition/
 # command_substitution command is NOT reliably gated on 2.1.234 — most ran clean
@@ -184,14 +177,19 @@ printf '%s %s %s %s\n' "$NOW" "$TMUX_PANE" "$NTYPE" "$ASKED_BODY" >> "$ASKED_LOG
 #            `command -v`, NOT whether a console session is attached — an earlier version of
 #            this comment claimed the latter), plus a bell (\a) that iTerm2 / Windows
 #            Terminal turn into a system notification for SSH clients.
-case "$OSTYPE" in
-  darwin*)
-    osascript -e "display notification \"Agent ${WNAME:-?} needs input ($NTYPE)\" with title \"Claude Code\" sound name \"Glass\"" 2>/dev/null & ;;
-  *)
-    command -v notify-send >/dev/null 2>&1 && \
-      notify-send "Claude Code" "Agent ${WNAME:-?} needs input ($NTYPE)" 2>/dev/null &
-    printf '\a' ;;
-esac
+# NEXUS_NOTIFY_SOUND is empty by default: the ding is the part that interrupts.
+SOUND_CLAUSE=""
+[ -n "${NEXUS_NOTIFY_SOUND:-}" ] && SOUND_CLAUSE=" sound name \"$NEXUS_NOTIFY_SOUND\""
+if [ "${NEXUS_NOTIFY_DESKTOP:-1}" = "1" ]; then
+  case "$OSTYPE" in
+    darwin*)
+      osascript -e "display notification \"Agent ${WNAME:-?} needs input ($NTYPE)\" with title \"Claude Code\"$SOUND_CLAUSE" 2>/dev/null & ;;
+    *)
+      command -v notify-send >/dev/null 2>&1 && \
+        notify-send "Claude Code" "Agent ${WNAME:-?} needs input ($NTYPE)" 2>/dev/null &
+      [ -n "${NEXUS_NOTIFY_SOUND:-}" ] && printf '\a' ;;
+  esac
+fi
 
 # Slack round-trip — backgrounded; curl no-ops if the bridge is down.
 (

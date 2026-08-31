@@ -46,6 +46,7 @@ def reset(**over) -> None:
         "plugins.json",
         [json.dumps([{"plugin_id": "nexus.presence", "enabled": False}])])
     npc.LOG_CAPS = {}
+    npc.missed_check = lambda _w: {}
     for k, v in over.items():
         setattr(npc, k, v)
 
@@ -108,6 +109,19 @@ npc.HERDR_PLUGINS = write(
     "plugins.json",
     [json.dumps([{"plugin_id": "nexus.presence", "enabled": True}])])
 check("fires when the plugin comes back", "presence-reenabled" in ids(), True)
+
+print("== gate-misresolved ==")
+reset()
+npc.missed_check = lambda _w: {"by_outcome": {"ok": 3, "wrong-tool": 1, "no-tool": 2}}
+check("fires on a misresolved pending call", "gate-misresolved" in ids(), True)
+
+reset()
+npc.missed_check = lambda _w: {"by_outcome": {"ok": 9}}
+check("silent when every ask was owed", "gate-misresolved" in ids(), False)
+
+reset()
+npc.missed_check = lambda _w: {}
+check("silent when the sub-check cannot run", "gate-misresolved" in ids(), False)
 
 print("== ask-spike ==")
 reset()

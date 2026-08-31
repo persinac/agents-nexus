@@ -1724,6 +1724,35 @@ def _last_tool_use(transcript_path):
     return None
 
 
+_PENDING_DIR = (os.environ.get("NOTIFY_PENDING_DIR")
+                or os.path.join(os.path.expanduser("~"), ".tmux", "pending"))
+
+
+def _pending_sidecar(data):
+    """The pending call from record-pending.sh -> (name, input, id), or None. Preferred over
+    _last_tool_use: a blocking prompt's tool_use can be absent from the transcript for
+    minutes, and PreToolUse has already fired by the time the prompt exists."""
+    pane = os.environ.get("PANE", "")
+    if not pane:
+        return None
+    path = os.path.join(_PENDING_DIR, re.sub(r"[:/]", "_", pane) + ".json")
+    try:
+        with open(path, errors="replace") as fh:
+            obj = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    sid, own = data.get("session_id"), obj.get("session_id")
+    if sid and own and sid != own:
+        return None
+    name = obj.get("tool_name") or ""
+    if not name:
+        return None
+    inp = obj.get("tool_input")
+    return (name, inp if isinstance(inp, dict) else {}, obj.get("tool_use_id") or "")
+
+
 def classify(name, inp):
     """Classify a pending tool call. Returns (decision, category, summary) where
     decision is 'read' (safe to auto-approve) or 'modify' (needs a human). This is
@@ -1842,7 +1871,7 @@ def main():
         data = json.load(sys.stdin) or {}
     except Exception:
         data = {}
-    tool = _last_tool_use(data.get("transcript_path", ""))
+    tool = _pending_sidecar(data) or _last_tool_use(data.get("transcript_path", ""))
     if not tool:
         _emit_modify("needs review", os.environ.get("FB", "needs input"))
     name, inp, tool_id = tool

@@ -38,6 +38,10 @@ export SENDMESSAGE_BUS_ENABLED="${SENDMESSAGE_BUS_ENABLED:-1}"
 export SLACK_BUS_ENABLED="${SLACK_BUS_ENABLED:-0}"
 export SLACK_A2A_SAMEHOST="${SLACK_A2A_SAMEHOST:-local}"
 
+# ── Needs-input alerting (hook-notification.sh) ──────────────────────────────
+export NEXUS_NOTIFY_DESKTOP="${NEXUS_NOTIFY_DESKTOP:-1}"   # 0 = no toast at all (pane flag + Slack still fire)
+export NEXUS_NOTIFY_SOUND="${NEXUS_NOTIFY_SOUND:-}"        # empty = silent; a macOS sound name (Glass, Ping) re-arms the ding
+
 # ── Agent spawn context (open-claude.sh opening-prompt injection) ────────────
 # open-claude.sh assembles a new agent's opening prompt from several context
 # blocks. These knobs control which blocks load and how big they are — trim them

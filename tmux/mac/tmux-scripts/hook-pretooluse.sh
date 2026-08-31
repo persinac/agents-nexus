@@ -13,6 +13,10 @@ echo "$INPUT" | "$SCRIPT_DIR/hook-memory.sh" tool_use 2>/dev/null
 # exists before one can land. Self-skips the write when unchanged.
 echo "$INPUT" | "$SCRIPT_DIR/record-transcript.sh" 2>/dev/null
 
+# Pin the pending call too: the transcript lags a blocking prompt, so notify-classify.py
+# reading it can classify an already-finished call (measured 2026-08-31, both directions).
+echo "$INPUT" | "$SCRIPT_DIR/record-pending.sh" 2>/dev/null
+
 # tmux sets TMUX_PANE; herdr sets HERDR_PANE_ID. Fold herdr's in so the guard + the
 # substrate calls (backend=herdr) just work. No-op for tmux agents (TMUX_PANE set).
 TMUX_PANE="${TMUX_PANE:-${HERDR_PANE_ID:-}}"
