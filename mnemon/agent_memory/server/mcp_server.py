@@ -58,6 +58,16 @@ def _db_url() -> str:
     return url
 
 
+def _probe_error() -> str:
+    """The libpq error behind a PoolTimeout, which psycopg_pool only logs."""
+    import psycopg
+    try:
+        psycopg.connect(_db_url(), connect_timeout=3).close()
+        return "pool init timed out, but a direct connect succeeded"
+    except Exception as exc:
+        return str(exc).splitlines()[0]
+
+
 async def _get_store():
     """Return the MemoryStore, connecting to Postgres on first call."""
     global _pool, _store, _pool_lock
@@ -73,7 +83,13 @@ async def _get_store():
             from agent_memory.store import MemoryStore
 
             _pool = psycopg_pool.AsyncConnectionPool(_db_url(), min_size=1, max_size=5, open=False)
-            await _pool.open()
+            try:
+                await _pool.open(wait=True, timeout=5)
+            except Exception:
+                await _pool.close()
+                _pool = None
+                raise RuntimeError(
+                    f"agent-memory cannot reach Postgres: {_probe_error()}") from None
             _store = MemoryStore(PostgresMemoryBackend(pool=_pool))
             logger.info("agent-memory: connected to Postgres")
     return _store
