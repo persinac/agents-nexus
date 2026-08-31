@@ -1,7 +1,7 @@
 id = "nexus.mission"
 name = "Nexus Mission"
 version = "0.1.0"
-min_herdr_version = "0.7.3"
+min_herdr_version = "0.8.0"
 description = "Launch autonomous Conductor missions from herdr: fan-out (--distribute) or an external SDLC pipeline (--sdlc). A launcher pane picks the mode + goal and kicks the Conductor; --distribute runs detached in its own tiled mission/<slug> bucket."
 platforms = ["macos", "linux"]
 

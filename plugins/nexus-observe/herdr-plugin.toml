@@ -1,7 +1,7 @@
 id = "nexus.observe"
 name = "Nexus Observe"
 version = "0.1.0"
-min_herdr_version = "0.7.3"
+min_herdr_version = "0.8.0"
 description = "agents-nexus observability panels for herdr: a live memory-system health panel, an APM/fleet-stats panel, and a keyword memory-notes search panel, opened as split-alongside dashboards."
 platforms = ["macos", "linux"]
 

@@ -122,8 +122,10 @@ The organization model above is now implemented behind the substrate seam (commi
 `f838b95`→). A **workspace = a labeled herdr bucket**; agents carry a `WORKSPACE=` field.
 
 - **Spawn into a bucket:** `substrate spawn <name> <cwd> <cmd> --workspace <label> [--split
-  right|down]` — resolve-or-creates the labeled bucket, then `herdr agent start --workspace
-  <id>`. tmux degrades gracefully (records the label, keeps flat windows). Verbs:
+  right|down]` — resolve-or-creates the labeled bucket, then `herdr tab create --workspace
+  <id>` (or `pane split` under `--split`) plus `herdr pane run` to launch the command. Since
+  herdr 0.8.0 `agent start` creates no panes and cannot run `open-claude.sh`, so the seam never
+  calls it. tmux degrades gracefully (records the label, keeps flat windows). Verbs:
   `workspace-create` / `workspace-list` / `workspace-close <label|id>` / `workspace-of <pane>`.
 - **Picker asks the bucket:** `ctrl+a N` (herdr) → pick an existing live workspace, `[new
   bucket…]` (category from `config/workspace-categories.txt` — `interactive` is one shared
@@ -134,11 +136,13 @@ The organization model above is now implemented behind the substrate seam (commi
   known-host test so it coexists with the legacy cross-PC `host/name` (`mac/general` still
   routes to the bus; `search/example-service` is a local workspace). Labels may contain `/`
   (`mission/db-migrate/agent7`); match is full-label-or-slug.
-- **herdr enforces globally-unique names only for agents IT starts** (`agent start` rejects a
-  dup) — so bare-name addressing resolves for picker/seam-launched agents. **But the shared
-  `interactive` bucket also collects human-launched Claude Code sessions**, which register via
-  `hook-sessionstart.sh` and bypass that uniqueness gate, so duplicate names (two `general`s)
-  are normal there — NOT impossible. Disambiguate over the bus by **pane handle** (`wN:pN`),
+- **Nothing enforces globally-unique agent names.** This used to be partly true — herdr's
+  `agent start` rejected a dup — but since 0.8.0 the seam no longer calls `agent start`, so no
+  spawn path takes a uniqueness gate. Bare-name addressing resolves off the registry `NAME=`
+  field, which was never uniqueness-checked either (the old suffixing touched only the herdr
+  agent id, never the registry name), so duplicate names (two `general`s) are normal
+  everywhere — not just in the shared `interactive` bucket that also collects human-launched
+  Claude Code sessions via `hook-sessionstart.sh`. Disambiguate over the bus by **pane handle** (`wN:pN`),
   which is instance-exact (`agent-send.sh --via-slack wQ:pF …`); the FQDN
   (`[host/][workspace/]name`) is organizational + cross-PC scoping, not the collision-resolver.
   See `docs/agent-bus-instance-addressing.md` for the handle-addressing fix.

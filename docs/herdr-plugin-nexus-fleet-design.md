@@ -165,7 +165,7 @@ prefix+shift+n
             --plugin nexus.fleet --entrypoint picker
               └─ [[panes]] picker (popup, real TTY): bin/pick.sh
                    └─ exec $NEXUS_TMUX_DIR/launch-claude.sh   (fzf repo/worktree UI)
-                        └─ substrate.sh (NEXUS_SUBSTRATE=herdr) → herdr agent start
+                        └─ substrate.sh (NEXUS_SUBSTRATE=herdr) → herdr tab create + pane run
                              └─ open-claude.sh (checkpoint/memory/context inject)
    popup closes when launch-claude.sh returns
 ```
@@ -200,7 +200,7 @@ override it without editing the plugin.
 id = "nexus.fleet"
 name = "Nexus Fleet"
 version = "0.1.0"
-min_herdr_version = "0.7.3"
+min_herdr_version = "0.8.0"
 description = "agents-nexus fleet UX for herdr: fuzzy repo picker + workspace buckets, spawning through the nexus substrate seam (checkpoint/memory/context injected)."
 platforms = ["macos", "linux"]
 

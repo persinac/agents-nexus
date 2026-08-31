@@ -105,13 +105,12 @@ So there is **no bus address that resolves to exactly one of the two `general`s.
 name-keyed bus has no per-instance address, and the one discriminator that *is* unique
 (the pane handle) is exactly what Layer 1 breaks.
 
-> **This contradicts a stated invariant.** `docs/herdr-workflow.md:137` claims "herdr
-> enforces GLOBALLY-UNIQUE agent names … real collisions can't happen among herdr
-> agents." That holds for agents started via `herdr agent start`, but the shared
-> `interactive` bucket collects **human-launched** Claude Code sessions that register
-> through `hook-sessionstart.sh`, bypassing the uniqueness gate. Duplicate `interactive`
-> names are therefore normal, not exceptional. `herdr-workflow.md` should be corrected
-> (see [Docs to correct](#docs-to-correct)).
+> **This contradicted a stated invariant, now corrected.** `docs/herdr-workflow.md` used to
+> claim herdr enforces globally-unique agent names. It held only for agents started via
+> `herdr agent start`, and not even that since herdr 0.8.0 removed pane creation from
+> `agent start` — the seam stopped calling it, so no spawn path takes a uniqueness gate.
+> Bare names resolve off the registry `NAME=` field, which was never uniqueness-checked.
+> Duplicate names are normal everywhere, so pane-handle addressing is the only exact form.
 
 ## Design principles (carried from the existing bus design)
 
@@ -270,10 +269,10 @@ Guardrails at ship time:
 
 ## Docs to correct
 
-- `docs/herdr-workflow.md:137-142` — soften the "real collisions can't happen" claim:
-  the `interactive` shared bucket admits duplicate human-session names (they register
-  via `hook-sessionstart.sh`, not `herdr agent start`), and **pane-handle addressing** is
-  the supported way to disambiguate them over the bus.
+- ~~`docs/herdr-workflow.md:137-142`~~ — **done.** The "real collisions can't happen" claim
+  is retracted: no spawn path enforces name uniqueness (herdr 0.8.0 removed pane creation
+  from `agent start`, so the seam stopped calling it), and **pane-handle addressing** is the
+  supported way to disambiguate over the bus.
 - `docs/slack-bridge.md` — document the address grammar precisely: delimiter is
   colon-**space**; a token may be a `name`, `[host/][workspace/]name`, a pane handle
   `wN:pN`, or a slot number; note the `name:hi` (no-space) regression.

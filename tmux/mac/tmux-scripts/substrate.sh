@@ -13,6 +13,7 @@
 # Verbs:
 #   spawn <name> <cwd> <cmd...> [--print] [--workspace <label>] [--split right|down] [--tab <id>] [--focus]
 #     --focus: switch the client to the new agent (interactive picker); default no-focus (fan-out)
+#     --print echoes pane_id (herdr) / pane_id<TAB>window_index (tmux) · --tab: ignored on herdr
 #   send  <dest> <text>                      deliver a line (literal + Enter; bare digit = no Enter)
 #   send-keys <dest> <enter|escape|literal>  raw key(s) — permission/elicitation responses
 #   report-state <pane> <working|idle> | needs-input <pane> <wait_type>
@@ -136,6 +137,50 @@ for w in d.get("result", {}).get("workspaces", []):
 ' "$1" || true
 }
 
+# ── herdr 0.8 spawn primitives ───────────────────────────────────────────────
+# Do NOT reintroduce `herdr agent start`: since 0.8.0 it runs the canonical `claude` binary,
+# silently bypassing open-claude.sh and losing the checkpoint/memory/context injection.
+_herdr_pane_of_json() {  # stdin=json, args=result keys to try → pane_id
+  python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+r = d.get("result", {})
+for k in sys.argv[1:]:
+    p = r.get(k) or {}
+    if p.get("pane_id"): print(p["pane_id"]); break
+' "$@" || true
+}
+
+_herdr_ws_target_pane() {  # <workspace_id> → a pane in that bucket to split (focused first)
+  herdr pane list 2>/dev/null | python3 -c '
+import sys, json
+want = sys.argv[1]
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+ps = [p for p in d.get("result", {}).get("panes", []) if p.get("workspace_id") == want]
+ps.sort(key=lambda p: not p.get("focused"))
+if ps: print(ps[0].get("pane_id", ""))
+' "$1" || true
+}
+
+# `pane run` sends a command LINE + Enter, so it needs the shell at its interactive prompt —
+# a just-created pane is not there yet. At prompt the foreground pgid IS the shell pid.
+_herdr_wait_prompt() {  # <pane_id> → 0 once the shell is idle at its prompt
+  local i=0
+  while [ "$i" -lt 40 ]; do
+    herdr pane process-info --pane "$1" 2>/dev/null | python3 -c '
+import sys, json
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(1)
+i = d.get("result", {}).get("process_info", {})
+sys.exit(0 if i.get("shell_pid") and i.get("foreground_process_group_id") == i.get("shell_pid") else 1)
+' && return 0
+    i=$((i + 1)); sleep 0.25
+  done
+  return 1
+}
+
 # ── verbs ──────────────────────────────────────────────────────────────────
 verb="${1:-}"; shift || true
 case "$verb" in
@@ -155,52 +200,47 @@ spawn)  # spawn <name> <cwd> <cmd...> [--print] [--workspace <label>] [--split r
   name="${args[0]:?spawn needs <name>}"; cwd="${args[1]:?spawn needs <cwd>}"
   cmd="${args[*]:2}"
   if [ "$BACKEND" = herdr ]; then
-    # --env PATH inherits the CALLER's PATH (the launchd server's is stripped). Propagate the
-    # backend + workspace label so the agent's OWN sub-processes (hooks, agent-send, registry)
-    # use herdr and record their bucket. Build ONE always-populated arg array — bash 3.2
-    # errors on an empty "${arr[@]}" under set -u, so never leave a conditionally-empty array.
-    # Everything AFTER the name (name is swapped in the uniquify loop below).
-    tailargs=(--cwd "$cwd")
+    # --env PATH inherits the CALLER's PATH (the launchd server's is stripped). Build ONE
+    # always-populated array — bash 3.2 errors on an empty "${arr[@]}" under set -u.
+    envargs=(--env PATH="$PATH" --env HOME="$HOME" --env NEXUS_SUBSTRATE=herdr --env NEXUS_TMUX_DIR="$NEXUS_TMUX_DIR")
+    ws_id=""
     if [ -n "$ws_label" ]; then
       ws_id="$(_herdr_ws_resolve_or_create "$ws_label" "$cwd")"
-      if [ -n "$ws_id" ]; then
-        tailargs+=(--workspace "$ws_id" --split "${split:-down}")
-        [ -n "$tab" ] && tailargs+=(--tab "$tab")
-      fi
-      tailargs+=(--env NEXUS_WORKSPACE="$ws_label")
+      envargs+=(--env NEXUS_WORKSPACE="$ws_label")
     fi
-    # Focus is OPT-IN. Background fan-out (Conductor workers, skill tasks) wants --no-focus so it
-    # doesn't yank the user's view; the INTERACTIVE picker passes --focus because the user chose a
-    # repo to go work in — without it the agent spawns into a workspace the client isn't viewing
-    # and "the window never opens." Into a NEW bucket, `agent start --focus` alone doesn't switch
-    # the client (the bucket was created with --no-focus), so also focus the workspace explicitly.
-    if [ "$focus" = 1 ]; then tailargs+=(--focus); else tailargs+=(--no-focus); fi
-    tailargs+=(--env PATH="$PATH" --env HOME="$HOME" --env NEXUS_SUBSTRATE=herdr --env NEXUS_TMUX_DIR="$NEXUS_TMUX_DIR" --)
-    # herdr agent names are GLOBALLY unique — spawning a repo/`general` whose name is already a
-    # live agent returns `agent_name_taken`, which used to `die` here → the picker aborted with NO
-    # window (the reported "spawned general into interactive/daily, nothing showed up"). Auto-
-    # uniquify: try <name>, <name>-2, <name>-3… so an interactive spawn always lands a window.
-    # (open-claude still sets the friendly registry NAME + pane label; only the herdr id is
-    # suffixed.) Only retry on the name collision — real errors still die.
-    # Run the command through a shell (sh -c) — NOT bare argv. The command string may carry an inline
-    # `env VAR='multi word value' prog` prefix (e.g. SEED_PROMPT); herdr execs the post-`--` argv WITHOUT
-    # a shell, so unquoted `$cmd` word-splits and shatters quoted values — the swarm-bg "dead shell"
-    # bug (env read `SEED_PROMPT='Run` as an assignment, tried to exec the next word, failed → login
-    # shell). `sh -c "$cmd"` makes herdr parse the command line exactly like the tmux branch, whose
-    # `tmux new-window "$cmd"` already runs `/bin/sh -c`. So both backends are now identical.
-    try="$name"; sfx=1; out=""; spawned=0
-    while :; do
-      out=$(herdr agent start "$try" "${tailargs[@]}" sh -c "$cmd" 2>&1) && { spawned=1; break; }
-      case "$out" in
-        *agent_name_taken*) sfx=$((sfx + 1)); [ "$sfx" -gt 20 ] && break; try="$name-$sfx" ;;
-        *) break ;;
-      esac
-    done
-    [ "$spawned" = 1 ] || die "herdr spawn: $out"
-    if [ "$focus" = 1 ] && [ -n "${ws_id:-}" ]; then herdr workspace focus "$ws_id" >/dev/null 2>&1 || true; fi
+    # Focus is OPT-IN: background fan-out (Conductor workers, skill tasks) must not yank the
+    # user's view, but the interactive picker without it lands in an unviewed bucket and the
+    # user reports "the window never opens."
+    if [ "$focus" = 1 ]; then envargs+=(--focus); else envargs+=(--no-focus); fi
+
+    # A herdr tab is the analog of a tmux window (workspace≈session), so `tab create` is the
+    # default; --split tiles siblings into one tab instead (Conductor mission workers).
+    pid=""; out=""
+    if [ -n "$ws_id" ] && [ -n "$split" ]; then
+      tgt="$(_herdr_ws_target_pane "$ws_id")"
+      if [ -n "$tgt" ]; then
+        out=$(herdr pane split --pane "$tgt" --direction "$split" --cwd "$cwd" "${envargs[@]}" 2>&1) \
+          && pid="$(printf '%s' "$out" | _herdr_pane_of_json pane)"
+      fi
+    fi
+    if [ -z "$pid" ]; then
+      tabargs=(--cwd "$cwd" --label "$name")
+      [ -n "$ws_id" ] && tabargs+=(--workspace "$ws_id")
+      out=$(herdr tab create "${tabargs[@]}" "${envargs[@]}" 2>&1) \
+        && pid="$(printf '%s' "$out" | _herdr_pane_of_json root_pane pane)"
+    fi
+    [ -n "$pid" ] || die "herdr spawn: $out"
+
+    # Send the command LINE, not argv: an inline `env VAR='multi word value' prog` prefix
+    # (SEED_PROMPT) word-splits under argv exec — the swarm-bg "dead shell" bug where
+    # `SEED_PROMPT='Run` parsed as an assignment. The pane's shell parses it, as tmux does.
+    _herdr_wait_prompt "$pid" || die "herdr spawn: pane $pid never reached a shell prompt"
+    herdr pane run "$pid" "$cmd" >/dev/null 2>&1 || die "herdr spawn: pane run failed on $pid"
+    herdr pane rename "$pid" "$name" >/dev/null 2>&1 || true
+    if [ "$focus" = 1 ] && [ -n "$ws_id" ]; then herdr workspace focus "$ws_id" >/dev/null 2>&1 || true; fi
     # NB: `[ x = y ] && echo` as the LAST statement leaks a non-zero exit when false — which
     # made non-`--print` spawns return 1 despite succeeding (callers double-spawned). Use `if`.
-    if [ "$print" = 1 ]; then echo "$out"; fi
+    if [ "$print" = 1 ]; then echo "$pid"; fi
   else
     # tmux has no workspaces: record the label via a NEXUS_WORKSPACE env prefix (the registry
     # still carries the bucket) and keep flat windows. Byte-identical when --workspace absent.

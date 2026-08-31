@@ -23,7 +23,7 @@ This is the frozen op-map — the contract the `substrate` CLI shim and `substra
 | Substrate verb | herdr method | CLI (verified) | Notes |
 |---|---|---|---|
 | spawn workspace/first pane | `workspace.create` | `herdr workspace create --cwd P --label L --no-focus` | → `result.root_pane.pane_id` (`w1:p1`), `tab_id`, `workspace_id` |
-| spawn agent | `agent.start` | `herdr agent start <name> --workspace w1 --split down --cwd P --no-focus -- <argv…>` | → `agent_started`; auto-registers the agent by name |
+| spawn agent | `tab.create` + `pane.run` | `herdr tab create [--workspace w1] --cwd P --label L --no-focus` then `herdr pane run <root_pane> "<cmd>"` | **Changed in 0.8.0.** `agent start` no longer creates panes: it attaches to an existing one (`--kind`/`--pane`) and runs the canonical agent binary, so it cannot launch `open-claude.sh`. Detection is automatic — no `agent start` needed. |
 | split pane | `pane.split` | `herdr pane split <pane> --direction right\|down [--ratio] [--cwd] [--env K=V]` | needs an existing source pane |
 | run command (cmd+Enter) | `pane.run` | `herdr pane run <pane> "<cmd>"` | executes in the PTY |
 | **deliver: literal text** | `pane.send_text` | `herdr pane send-text <pane> "<text>"` | **headless-verified** |

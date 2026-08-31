@@ -76,8 +76,8 @@ needs **outbound to Slack** — it does not connect to nexus at all.
 ### 2. Register one agent
 
 Open a Claude Code session on the laptop under the substrate so `hook-sessionstart.sh`
-writes a registry entry (`~/.tmux/registry/…`) and presence advertises it. (A bare
-`herdr agent start` or a hooked tmux pane both work.)
+writes a registry entry (`~/.tmux/registry/…`) and presence advertises it. (A herdr pane
+running `claude` or a hooked tmux pane both work; `herdr agent start` no longer creates panes.)
 
 ### 3. Validate cross-host delivery (the actual test)
 

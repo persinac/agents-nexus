@@ -1,7 +1,7 @@
 id = "nexus.fleet"
 name = "Nexus Fleet"
 version = "0.1.0"
-min_herdr_version = "0.7.3"
+min_herdr_version = "0.8.0"
 description = "agents-nexus fleet UX for herdr: fuzzy repo picker + workspace buckets, spawning through the nexus substrate seam (checkpoint/memory/context injected)."
 platforms = ["macos", "linux"]
 

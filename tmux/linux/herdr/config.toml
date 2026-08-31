@@ -92,14 +92,12 @@ type = "shell"
 command = "__HERDR_BIN__ pane swap --direction down --current"
 
 # ctrl+a + shift+c -> prompt for a goal (in-pane) and run a Conductor mission.
-# Migrated from the old tmux `bind C` when herdr became the default backend
-# (NEXUS_SUBSTRATE=herdr): the shell binding opens a focused pane, the inline bash
-# prompts for the goal where there's a real TTY, then execs conductor-run.sh
-# (left untouched — it already gates LIVE on hostname `nexus`).
+# Routed through substrate.sh rather than `herdr agent start`, which stopped creating
+# panes in herdr 0.8.0 (it now needs --kind/--pane and rejects a command argv).
 [[keys.command]]
 key = "prefix+shift+c"
 type = "shell"
-command = "__HERDR_BIN__ agent start conductor --focus -- bash -lc 'read -r -p \"conductor goal: \" g; exec \"$HOME/.tmux/conductor-run.sh\" \"$g\"'"
+command = "$HOME/.tmux/substrate.sh spawn conductor \"$HOME\" \"$HOME/.tmux/conductor-prompt.sh\" --focus"
 
 # ctrl+a x -> DEREGISTER-then-close the focused agent — herdr's missing pane-died hook.
 # herdr emits no pane-died/closed event, so without this a closed agent's stale
