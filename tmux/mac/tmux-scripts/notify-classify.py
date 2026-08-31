@@ -119,12 +119,17 @@ SURFACE_TOOLS = {"askuserquestion"}
 # right inside the flag. `docker run --rm` deletes a finished container and nothing else.
 _CMDPOS = r"(?:^|[;&|(`]\s*|\s)"
 
+# For words dangerous only as a COMMAND. _CMDPOS's `\s` still matches inside a quoted
+# argument, so `grep -rn "shutdown" .` was hard-denied. `sudo` stays bare on purpose and is
+# the backstop for the argument-position shapes this anchor gives up.
+_CMDSTART = r"(?:^|[\n;&|(`]\s*|\bsudo\s+)"
+
 _DENY = re.compile(
-    rf"(\bsudo\b|{_CMDPOS}dd\s|\bmkfs"
+    rf"(\bsudo\b|{_CMDPOS}dd\s|{_CMDSTART}mkfs"
     # `killall` removed 2026-08-19 per Alex: killing a process deletes no data and is
     # ordinary dev cleanup (`killall node`), so it is not in either named destructive
     # category. shutdown/reboot STAY — they would end an unattended overnight run.
-    r"|\bshutdown\b|\breboot\b"
+    rf"|{_CMDSTART}(shutdown|reboot)\b"
     # /dev/null explicitly excluded (2026-08-17): a raw-device write (dd/cat > /dev/sda)
     # is what this guards against; >/dev/null and 2>/dev/null are the standard
     # discard idiom and were being hard-denied by this alone, unconditionally
