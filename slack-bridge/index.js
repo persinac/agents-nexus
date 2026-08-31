@@ -284,14 +284,40 @@ const shortId = () => randomUUID().replace(/-/g, '').slice(0, 12);
 const HUMAN_TYPING_GRACE_MS = parseInt(process.env.SLACK_BUS_HUMAN_GRACE_MS || '2000', 10);  // 0 disables the guard
 const HUMAN_GUARD = BUS_DEFER && HUMAN_TYPING_GRACE_MS > 0;
 
+const SLACK_CONFIGURED = Boolean(BOT_TOKEN && APP_TOKEN);
+
 // Boot guard: on an un-provisioned box this is a clean no-op so launchd doesn't thrash.
-if (!BOT_TOKEN || !APP_TOKEN) {
+// A NATS-transport box is exempt — exiting here would take the bus, presence and /agents
+// down with it, leaving no way to run Slack-free.
+if (!SLACK_CONFIGURED && BUS_TRANSPORT !== 'nats') {
   console.log('[slack-bridge] SLACK_BOT_TOKEN / SLACK_APP_TOKEN not set — nothing to do, exiting 0.');
   process.exit(0);
 }
+if (!SLACK_CONFIGURED) {
+  console.log(`[slack-bridge] no Slack tokens — NATS-only mode (a2a=${A2A_MODE}): bus, presence and /agents up, human notify/reply leg OFF.`);
+}
 
-const web = new WebClient(BOT_TOKEN);
-const socket = new SocketModeClient({ appToken: APP_TOKEN, logLevel: LogLevel.INFO });
+// Resolves rather than throws: some write sites use the result with no try/catch, and an
+// unhandled rejection would kill the bus this mode exists to keep alive.
+const slackOffWarned = new Set();
+const slackOff = (name) => async () => {
+  if (!slackOffWarned.has(name)) {
+    slackOffWarned.add(name);
+    console.warn(`[slack-bridge] ${name} skipped — no Slack tokens (NATS-only mode)`);
+  }
+  return { ok: false };
+};
+const webStub = {
+  chat: { postMessage: slackOff('chat.postMessage'), update: slackOff('chat.update'), delete: slackOff('chat.delete') },
+  views: { open: slackOff('views.open'), update: slackOff('views.update') },
+  reactions: { add: slackOff('reactions.add') },
+  auth: { test: slackOff('auth.test') },
+};
+
+const web = SLACK_CONFIGURED ? new WebClient(BOT_TOKEN) : webStub;
+const socket = SLACK_CONFIGURED
+  ? new SocketModeClient({ appToken: APP_TOKEN, logLevel: LogLevel.INFO })
+  : { on: () => {}, start: async () => {} };
 
 // Track Socket Mode connection state ourselves — @slack/socket-mode v2 fires
 // 'connected'/'disconnected' events but does not expose a stable `.connected`
@@ -2505,14 +2531,16 @@ async function handleNexusSubmit(body, ack) {
 // Startup
 // ---------------------------------------------------------------------------
 (async () => {
-  try {
-    const who = await web.auth.test();
-    selfUserId = who.user_id;
-    selfBotId = who.bot_id;
-    console.log(`[slack-bridge] authenticated as ${who.user} (${selfUserId}) in ${who.team}`);
-  } catch (e) {
-    console.error(`[slack-bridge] auth.test failed — check SLACK_BOT_TOKEN: ${e.message}`);
-    process.exit(1);
+  if (SLACK_CONFIGURED) {
+    try {
+      const who = await web.auth.test();
+      selfUserId = who.user_id;
+      selfBotId = who.bot_id;
+      console.log(`[slack-bridge] authenticated as ${who.user} (${selfUserId}) in ${who.team}`);
+    } catch (e) {
+      console.error(`[slack-bridge] auth.test failed — check SLACK_BOT_TOKEN: ${e.message}`);
+      process.exit(1);
+    }
   }
 
   // Register `/nexus` with Discord (idempotent bulk PUT). Deliberately not awaited and
