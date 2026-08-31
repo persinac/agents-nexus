@@ -56,4 +56,13 @@ fi
 # A copy in tmux-scripts/ therefore searches tmux/*/node_modules and dies with
 # ERR_MODULE_NOT_FOUND no matter what the environment says. Putting it in the tree that
 # owns the dependency is the fix; the wrapper stays here with its siblings.
+#
+# NATS 4222 client of mqtt.flashbackfleet.com -- trust the internal Flashback CA the
+# same way slack-bridge.service's unit file does (true append to Node's default CA
+# store, never a replacement). Unlike the bridge, this is a one-shot process invoked
+# from an operator's own shell, which never has this set on its own -- without it,
+# every run fails "unable to get local issuer certificate" regardless of what the
+# bridge's trust looks like. Only set if the caller hasn't already provided one.
+: "${NODE_EXTRA_CA_CERTS:=$BRIDGE_DIR/certs/flashback-root.crt}"
+export NODE_EXTRA_CA_CERTS
 exec node "$BRIDGE_DIR/nx-kv.mjs" "$@"
