@@ -14,6 +14,7 @@
 #   spawn <name> <cwd> <cmd...> [--print] [--workspace <label>] [--split right|down] [--tab <id>] [--focus]
 #     --focus: switch the client to the new agent (interactive picker); default no-focus (fan-out)
 #     --print echoes pane_id (herdr) / pane_id<TAB>window_index (tmux) · --tab: ignored on herdr
+#     --workspace lands a PANE beside its siblings, or a tab once none clears the min size
 #   send  <dest> <text>                      deliver a line (literal + Enter; bare digit = no Enter)
 #   send-keys <dest> <enter|escape|literal>  raw key(s) — permission/elicitation responses
 #   report-state <pane> <working|idle> | needs-input <pane> <wait_type>
@@ -43,6 +44,11 @@ ENTER_DELAY="${SLACK_A2A_ENTER_DELAY:-0.4}"
 # herdr metadata that has no native home (epochs, orchestration tags) lives in a
 # per-pane sidecar the read daemon also consults. Kept tiny + local.
 HERDR_STATE="${NEXUS_HERDR_STATE:-$HOME/.config/herdr/nexus-state}"
+# Smallest usable claude TUI. A bucketed spawn splits only while BOTH halves would clear
+# these; past that it opens a tab, because a sliver pane is worse than a second tab.
+SPLIT_MIN_COLS="${NEXUS_SPLIT_MIN_COLS:-80}"
+SPLIT_MIN_ROWS="${NEXUS_SPLIT_MIN_ROWS:-20}"
+_NX_WS_FRESH_ROOT=""
 
 die() { echo "substrate: $*" >&2; exit 2; }
 now() { date +%s; }
@@ -113,18 +119,26 @@ for w in d.get("result", {}).get("workspaces", []):
     if w.get("label") == want: print(w.get("workspace_id", "")); break
 ' "$1" || true
 }
-_herdr_ws_resolve_or_create() {  # <label> [cwd] → workspace_id (creates the bucket if absent)
-  local id; id="$(_herdr_ws_id_for_label "$1")"
-  if [ -z "$id" ]; then
-    id="$(herdr workspace create --label "$1" --cwd "${2:-$HOME}" --no-focus 2>/dev/null | python3 -c '
+# Call this DIRECTLY, never in `$(…)` — it reports the fresh root pane through a global, and a
+# command substitution would run it in a subshell and silently drop that.
+_herdr_ws_prepare() {  # <label> [cwd] [extra `workspace create` args…] → sets _NX_WS_ID, _NX_WS_FRESH_ROOT
+  _NX_WS_ID=""; _NX_WS_FRESH_ROOT=""
+  _NX_WS_ID="$(_herdr_ws_id_for_label "$1")"
+  [ -n "$_NX_WS_ID" ] && return 0
+  local out; out="$(herdr workspace create --label "$1" --cwd "${2:-$HOME}" --no-focus "${@:3}" 2>/dev/null || true)"
+  _NX_WS_ID="$(printf '%s' "$out" | python3 -c '
 import sys, json
 try: d = json.load(sys.stdin)
 except Exception: sys.exit(0)
 r = d.get("result", {})
 print((r.get("root_pane") or {}).get("workspace_id", "") or r.get("workspace_id", ""))
 ' || true)"
-  fi
-  printf '%s' "$id"
+  [ -n "$_NX_WS_ID" ] && _NX_WS_FRESH_ROOT="$(printf '%s' "$out" | _herdr_pane_of_json root_pane)"
+  return 0
+}
+
+_herdr_ws_resolve_or_create() {  # <label> [cwd] [extra args…] → workspace_id
+  _herdr_ws_prepare "$@"; printf '%s' "$_NX_WS_ID"
 }
 _herdr_ws_label_for_id() {  # <workspace_id> → label (empty if unknown)
   herdr workspace list 2>/dev/null | python3 -c '
@@ -150,6 +164,31 @@ for k in sys.argv[1:]:
     p = r.get(k) or {}
     if p.get("pane_id"): print(p["pane_id"]); break
 ' "$@" || true
+}
+
+# Splits the BIGGEST pane on its roomier axis, not the focused one — splitting whatever
+# happens to be focused halves the same pane repeatedly down to slivers.
+_herdr_split_target() {  # <workspace_id> [right|down] → "<pane_id> <direction>", empty if no room
+  local seed; seed="$(_herdr_ws_target_pane "$1")"
+  [ -n "$seed" ] || return 0
+  herdr pane layout --pane "$seed" 2>/dev/null | python3 -c '
+import sys, json
+forced = sys.argv[1].strip()
+min_c, min_r = int(sys.argv[2]), int(sys.argv[3])
+try: panes = json.load(sys.stdin)["result"]["layout"]["panes"]
+except Exception: sys.exit(0)
+best = None
+for p in panes:
+    r = p.get("rect") or {}
+    w, h = r.get("width") or 0, r.get("height") or 0
+    fits = []
+    if forced in ("", "right") and w >= 2 * min_c: fits.append(("right", w))
+    if forced in ("", "down") and h >= 2 * min_r: fits.append(("down", h))
+    if not fits or not p.get("pane_id"): continue
+    d = forced or max(fits, key=lambda f: f[1])[0]
+    if best is None or w * h > best[0]: best = (w * h, p["pane_id"], d)
+if best: print(best[1], best[2])
+' "${2:-}" "$SPLIT_MIN_COLS" "$SPLIT_MIN_ROWS" 2>/dev/null || true
 }
 
 _herdr_ws_target_pane() {  # <workspace_id> → a pane in that bucket to split (focused first)
@@ -202,25 +241,31 @@ spawn)  # spawn <name> <cwd> <cmd...> [--print] [--workspace <label>] [--split r
   if [ "$BACKEND" = herdr ]; then
     # --env PATH inherits the CALLER's PATH (the launchd server's is stripped). Build ONE
     # always-populated array — bash 3.2 errors on an empty "${arr[@]}" under set -u.
-    envargs=(--env PATH="$PATH" --env HOME="$HOME" --env NEXUS_SUBSTRATE=herdr --env NEXUS_TMUX_DIR="$NEXUS_TMUX_DIR")
-    ws_id=""
+    envonly=(--env PATH="$PATH" --env HOME="$HOME" --env NEXUS_SUBSTRATE=herdr --env NEXUS_TMUX_DIR="$NEXUS_TMUX_DIR")
+    [ -n "$ws_label" ] && envonly+=(--env NEXUS_WORKSPACE="$ws_label")
+    ws_id=""; _NX_WS_FRESH_ROOT=""
     if [ -n "$ws_label" ]; then
-      ws_id="$(_herdr_ws_resolve_or_create "$ws_label" "$cwd")"
-      envargs+=(--env NEXUS_WORKSPACE="$ws_label")
+      _herdr_ws_prepare "$ws_label" "$cwd" "${envonly[@]}"
+      ws_id="$_NX_WS_ID"
     fi
+    envargs=("${envonly[@]}")
     # Focus is OPT-IN: background fan-out (Conductor workers, skill tasks) must not yank the
     # user's view, but the interactive picker without it lands in an unviewed bucket and the
     # user reports "the window never opens."
     if [ "$focus" = 1 ]; then envargs+=(--focus); else envargs+=(--no-focus); fi
 
-    # A herdr tab is the analog of a tmux window (workspace≈session), so `tab create` is the
-    # default; --split tiles siblings into one tab instead (Conductor mission workers).
+    # A bucketed spawn wants to live NEXT TO its siblings, so try a pane first and fall back to
+    # a tab only when no pane has room. A flat spawn stays a tab (the tmux new-window analog).
     pid=""; out=""
-    if [ -n "$ws_id" ] && [ -n "$split" ]; then
-      tgt="$(_herdr_ws_target_pane "$ws_id")"
-      if [ -n "$tgt" ]; then
-        out=$(herdr pane split --pane "$tgt" --direction "$split" --cwd "$cwd" "${envargs[@]}" 2>&1) \
-          && pid="$(printf '%s' "$out" | _herdr_pane_of_json pane)"
+    if [ -n "$ws_id" ]; then
+      if [ -n "$_NX_WS_FRESH_ROOT" ]; then
+        pid="$_NX_WS_FRESH_ROOT"
+      else
+        _st="$(_herdr_split_target "$ws_id" "$split")"
+        if [ -n "$_st" ]; then
+          out=$(herdr pane split --pane "${_st%% *}" --direction "${_st##* }" --cwd "$cwd" "${envargs[@]}" 2>&1) \
+            && pid="$(printf '%s' "$out" | _herdr_pane_of_json pane)"
+        fi
       fi
     fi
     if [ -z "$pid" ]; then
