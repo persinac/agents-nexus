@@ -627,6 +627,11 @@ EXPECT_MCP_READ = [
     ("mcp__agent-memory__query_entity", {"name": "x", "project": "p"}),
     ("mcp__agent-memory__recent_events", {"project": "p"}),
     ("mcp__excalidraw__read_checkpoint", {}),
+    # Verbless browser reads: the first two by plural noun, the last two by _MCP_READ_TOOLS.
+    ("mcp__playwright-local__browser_console_messages", {"onlyErrors": True}),
+    ("mcp__playwright-local__browser_network_requests", {}),
+    ("mcp__playwright-local__browser_snapshot", {}),
+    ("mcp__playwright-local__browser_wait_for", {"text": "Ready"}),
 ]
 
 # Must keep asking. A miss here posts, edits, or deletes in an external system with no
@@ -657,6 +662,19 @@ EXPECT_MCP_ASK = [
     ("mcp__example__get_or_create_page", {}),
     # no verb and no declared method — unknown, so it must NOT be auto-approved
     ("mcp__atlassian__atlassianUserInfo", {}),
+    # Arbitrary JS in the page. Hard-vetoed rather than left to the LLM.
+    ("mcp__playwright-local__browser_evaluate", {"function": "() => document.cookie"}),
+    ("mcp__playwright-local__browser_run_code_unsafe", {"code": "x"}),
+    # SINGULAR: it could issue a request, so "requests" must not drag "request" in.
+    ("mcp__playwright-local__browser_network_request", {"url": "https://x"}),
+    ("mcp__playwright-local__browser_click", {"element": "Save"}),
+    ("mcp__playwright-local__browser_type", {"text": "hunter2"}),
+    ("mcp__playwright-local__browser_take_screenshot", {"filename": "shot.png"}),
+    ("mcp__playwright-local__browser_tabs", {"action": "close"}),
+    # A read noun cannot outrank a hard verb, wherever it sits in the name.
+    ("mcp__example__send_messages", {"channel": "C1"}),
+    ("mcp__example__messages_delete", {"id": "1"}),
+    ("mcp__example__console_write", {"text": "x"}),
 ]
 
 # ---------------------------------------------------------------------------

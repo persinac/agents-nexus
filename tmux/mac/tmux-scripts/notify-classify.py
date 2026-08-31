@@ -1293,11 +1293,17 @@ _MCP_WRITE_HARD = frozenset({
     "create", "delete", "remove", "update", "write", "send", "post", "publish",
     "deploy", "drop", "truncate", "purge", "upload", "revoke", "rotate", "destroy",
     "uninstall", "insert", "overwrite", "kill", "terminate", "reset", "drain",
+    # Arbitrary code in someone else's process. Hard rather than soft because HARD is the
+    # only set scanned across every token, so no future read noun can outrank it.
+    "evaluate", "eval", "exec", "unsafe",
 })
 _MCP_READ_VERBS = frozenset({
     "get", "list", "search", "read", "fetch", "query", "describe", "view", "show",
     "lookup", "count", "check", "analyze", "aggregate", "find", "recent", "peek",
     "inspect", "explain", "preview", "diff", "compare", "discover", "stats", "summary",
+    # Plural collection nouns only. The singular is the hazard: `api_request` with no
+    # declared method could be a POST, so "request" stays out while "requests" is in.
+    "messages", "requests", "console",
 })
 # Recognized but mutating: named so the FIRST-verb rule can reach a decision instead of
 # falling through to the LLM. "log" is here on purpose — mcp__agent-memory__log_event
@@ -1313,6 +1319,11 @@ _MCP_WRITE_SOFT = frozenset({
     "unlink", "export", "generate", "load", "log", "mutate", "modify", "prune",
     "rebuild", "resolve",
 })
+# Verbless leaf names that no token rule can reach without loosening it for every server.
+# Matched on the leaf so a server rename (playwright -> playwright-local) does not undo it.
+# browser_tabs is deliberately absent: its `action` param opens and closes tabs.
+_MCP_READ_TOOLS = frozenset({"browser_snapshot", "browser_wait_for"})
+
 _MCP_HTTP_KEYS = ("method", "http_method", "httpMethod", "verb")
 _MCP_READ_METHODS = frozenset({"get", "head", "options"})
 _NAME_TOKENS = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
@@ -1333,6 +1344,8 @@ def _mcp_is_read(name, inp):
     toks = [t.lower() for t in _NAME_TOKENS.findall(leaf)]
     if any(t in _MCP_WRITE_HARD for t in toks):
         return False
+    if leaf in _MCP_READ_TOOLS:
+        return True
     for t in toks:
         if t in _MCP_READ_VERBS:
             return True
