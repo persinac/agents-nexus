@@ -460,20 +460,32 @@ tasks:
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.doc-vault.plist
 
   launchd:install:slack-bridge:
-    desc: Install launchd agent to keep the Slack bridge running (KeepAlive; requires SLACK_* tokens in .env)
+    desc: Install launchd agent to keep the bridge running (KeepAlive; needs SLACK_* tokens, or a NATS transport)
     vars:
       NEXUS_DIR:
         sh: pwd
     cmds:
-      # Gate: only install the supervisor when the bridge is actually enabled — i.e.
-      # SLACK_BOT_TOKEN + SLACK_APP_TOKEN are set (non-empty) in the active .env.
-      # Otherwise the KeepAlive job would just crash-loop a bridge with no tokens.
+      # Gate: skip only when the job could not do anything — no Slack tokens AND no NATS
+      # transport. A NATS box still owns the bus, presence and /agents with no tokens at all.
       - |
         env="{{.NEXUS_DIR}}/.env"
-        if ! grep -Eq '^SLACK_BOT_TOKEN=.+' "$env" 2>/dev/null || ! grep -Eq '^SLACK_APP_TOKEN=.+' "$env" 2>/dev/null; then
-          echo "Skipped — Slack bridge not enabled (SLACK_BOT_TOKEN / SLACK_APP_TOKEN missing in .env)."
-          echo "Set them first:  ./install.sh --finish-slack   then re-run this task."
+        tokens=""
+        if grep -Eq '^SLACK_BOT_TOKEN=.+' "$env" 2>/dev/null && grep -Eq '^SLACK_APP_TOKEN=.+' "$env" 2>/dev/null; then
+          tokens=1
+        fi
+        nats=""
+        if grep -Eiq '^NEXUS_BUS_TRANSPORT=.*nats' "$env" 2>/dev/null \
+           || grep -Eiq '^NEXUS_A2A_MODE=.*single-host' "$env" 2>/dev/null; then
+          nats=1
+        fi
+        if [ -z "$tokens" ] && [ -z "$nats" ]; then
+          echo "Skipped — no Slack tokens and no NATS transport, so the bridge has nothing to run."
+          echo "Either:  ./install.sh --finish-slack"
+          echo "    or:  set NEXUS_A2A_MODE=single-host (or NEXUS_BUS_TRANSPORT=nats) in .env"
           exit 0
+        fi
+        if [ -z "$tokens" ]; then
+          echo "No Slack tokens — installing for NATS-only mode (bus + presence up, human notify/reply leg off)."
         fi
         sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.slack-bridge.plist > ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
         launchctl load ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
