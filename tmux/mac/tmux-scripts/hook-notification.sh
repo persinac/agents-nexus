@@ -193,7 +193,10 @@ if [ "${NEXUS_NOTIFY_DESKTOP:-1}" = "1" ] && [ ! -e "$HOME/.tmux/notify-mute" ];
   esac
 fi
 
-# Slack round-trip — backgrounded; curl no-ops if the bridge is down.
+# Slack round-trip — backgrounded; curl no-ops if the bridge is down. Muted SEPARATELY from the
+# desktop bubble: silencing your laptop should not also silence your phone. File, not just env,
+# for the same reason as NEXUS_NOTIFY_DESKTOP — running panes captured their env at launch.
+if [ "${NEXUS_NOTIFY_SLACK:-1}" = "1" ] && [ ! -e "$HOME/.tmux/notify-mute-slack" ]; then
 (
   # The brain set BODY for a modify decision; otherwise (elicitation, or no classifier
   # venv) fall back to the deterministic payload helper.
@@ -204,6 +207,7 @@ fi
   printf '%s' "$BODY" \
     | curl -m 2 -s -o /dev/null -X POST "http://127.0.0.1:${SLACK_BRIDGE_PORT:-8788}/notify" -H 'Content-Type: application/json' --data @- 2>/dev/null
 ) &
+fi
 
 echo "$NOW wait $TMUX_PANE" >> "$HOME/.tmux/apm.log" 2>/dev/null
 
