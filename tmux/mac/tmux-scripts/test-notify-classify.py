@@ -33,6 +33,16 @@ _spec.loader.exec_module(nc)
 
 # Must auto-approve with no model call at all.
 EXPECT_READ = [
+    # --- a denylist WORD inside a read's quoted argument (2026-08-31, pane wH:p1) ---
+    # Grepping a FastAPI service for its shutdown handlers was hard-denied, and _DENY runs
+    # before this allowlist, so nothing downstream could clear it.
+    'grep -rn "shutdown" .',
+    'echo "drain / lifespan / shutdown machinery"',
+    'grep -rn "on_shutdown\\|add_event_handler" --include="*.py" api',
+    'rg -n "reboot" docs/',
+    'grep -c mkfs README.md',
+    'cat notes.md | grep shutdown',
+    'cd /tmp/wt\necho "=== shutdown machinery ==="; grep -rn "on_shutdown" --include="*.py" api',
     # --- shell control flow (added 2026-08-18) ---
     # the exact command that interrupted Alex at 14:38 and prompted the change
     'for i in 1 2; do echo "loop-$i"; done',
@@ -345,6 +355,16 @@ EXPECT_WITHHELD += [
 
 
 EXPECT_BLOCKED = [
+    # --- ending an unattended run: only at a command boundary, see _CMDSTART ---
+    'shutdown -h now',
+    'sudo shutdown -r now',
+    'reboot',
+    'echo done; shutdown -h +5',
+    'make build && reboot',
+    '(shutdown -h now)',
+    'true | reboot',
+    'mkfs.ext4 /dev/sdb1',
+    'sudo mkfs -t ext4 /dev/sdb1',
     # --- deleting production data (Alex's first named category) ---
     'psql -c "DELETE FROM users WHERE id > 0"',
     'psql $DATABASE_URL -c "DROP TABLE orders"',
