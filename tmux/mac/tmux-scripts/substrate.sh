@@ -280,7 +280,17 @@ spawn)  # spawn <name> <cwd> <cmd...> [--print] [--workspace <label>] [--split r
     # (SEED_PROMPT) word-splits under argv exec — the swarm-bg "dead shell" bug where
     # `SEED_PROMPT='Run` parsed as an assignment. The pane's shell parses it, as tmux does.
     _herdr_wait_prompt "$pid" || die "herdr spawn: pane $pid never reached a shell prompt"
-    herdr pane run "$pid" "$cmd" >/dev/null 2>&1 || die "herdr spawn: pane run failed on $pid"
+    # `herdr pane run` TRUNCATES at 1024 bytes, exits 0, and leaves the line UNSUBMITTED — every
+    # caller reports success while the pane sits dead. Killed a conductor mission 2026-08-31.
+    # A file keeps the typed line short whatever the payload; short commands take the old path.
+    _run="$cmd"
+    if [ "${#cmd}" -ge 900 ]; then
+      mkdir -p "$HERDR_STATE/spawn-cmd" 2>/dev/null || true
+      _cf="$HERDR_STATE/spawn-cmd/$(printf '%s' "$name" | tr -c 'A-Za-z0-9_.-' '_').sh"
+      printf '#!/bin/bash\nexec %s\n' "$cmd" > "$_cf" || die "herdr spawn: cannot write $_cf"
+      _run="bash $_cf"
+    fi
+    herdr pane run "$pid" "$_run" >/dev/null 2>&1 || die "herdr spawn: pane run failed on $pid"
     herdr pane rename "$pid" "$name" >/dev/null 2>&1 || true
     if [ "$focus" = 1 ] && [ -n "$ws_id" ]; then herdr workspace focus "$ws_id" >/dev/null 2>&1 || true; fi
     # NB: `[ x = y ] && echo` as the LAST statement leaks a non-zero exit when false — which
