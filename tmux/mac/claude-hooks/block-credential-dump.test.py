@@ -289,6 +289,29 @@ CONTENT_CASES = [
     (0, f"cat {NOTE_HASHES}", "hashes and long non-credential runs"),
     (0, f"cat {_FX}/absent.md", "path that does not exist"),
 ]
+# 2026-08-31, second leak of the day: `echo "...${JIRA_API_TOKEN:-NO}"` printed two live
+# tokens. No file was read and no listed self-dumping command ran, so nothing fired.
+ENVVAR_CASES = [
+    (2, 'echo "JIRA_API_TOKEN set: ${JIRA_API_TOKEN:+yes}${JIRA_API_TOKEN:-NO}"', "the exact leaking command"),
+    (2, 'echo "$ANTHROPIC_API_KEY"', "echo a secret-named var"),
+    (2, 'printf "%s" "$GARNER_GMAIL_PASSWORD"', "printf a secret-named var"),
+    (2, 'echo "key=${OP_SERVICE_ACCOUNT_TOKEN}"', "braced expansion"),
+    (2, 'python3 -c "import os; print(os.environ[\'ANTHROPIC_API_KEY\'])"', "interpreter reads env secret"),
+    (2, 'node -e "console.log(process.env.JIRA_API_TOKEN)"', "node reads process.env secret"),
+    (0, 'curl -sH "Authorization: Bearer $JIRA_API_TOKEN" https://x/api', "USING a secret is not printing it"),
+    (0, 'echo "len=${#ANTHROPIC_API_KEY}"', "length, not value"),
+    (0, '[[ -n "$JIRA_API_TOKEN" ]] && echo present', "set-check without expansion into output"),
+    (0, 'echo "put JIRA_API_TOKEN in 1Password"', "prose naming the var, no expansion"),
+    (0, 'echo "$REPO_DIR"', "ordinary non-secret variable"),
+    (0, 'echo "$HOME/.cache"', "$HOME is not secret-named"),
+]
+print("  ENV-VAR EXPANSION (no file, no listed command):")
+for want, cmd, label in ENVVAR_CASES:
+    rc = run(cmd)
+    ok = rc == want
+    fails += not ok
+    print(f"    {'ok  ' if ok else 'MISS'}  {label:<48} want {want} got {rc}")
+
 print("  CONTENT-SIDE (path patterns cannot see these):")
 for want, cmd, label in CONTENT_CASES:
     rc = run(cmd)
@@ -323,6 +346,6 @@ fails += rc != 0
 
 print(f"\n  RESULT: {'ALL PASS' if fails == 0 else str(fails) + ' FAILURES'}"
       f"  ({len(MUST_BLOCK)} block + {len(MUST_ALLOW)} allow"
-      f" + {len(MUST_BLOCK_BECAUSE)} attribution + {len(CONTENT_CASES)} content"
-      f" + {len(READ_CASES)} read + 1 passthrough)")
+      f" + {len(MUST_BLOCK_BECAUSE)} attribution + {len(ENVVAR_CASES)} envvar"
+      f" + {len(CONTENT_CASES)} content + {len(READ_CASES)} read + 1 passthrough)")
 raise SystemExit(1 if fails else 0)

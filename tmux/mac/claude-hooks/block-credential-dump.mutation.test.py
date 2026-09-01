@@ -106,6 +106,14 @@ MUTATIONS = [
         "Read falls through -> the tool bypasses the guard again",
         replace_once('if tool == "Read":', 'if False:'),
     ),
+    (
+        "print heads unrecognised -> echo of a secret-named var is unguarded",
+        replace_once("(?:echo|printf|print|tee)", "(?:__nomatch__)"),
+    ),
+    (
+        "secret-name vocabulary emptied -> $SOME_TOKEN reads as an ordinary var",
+        replace_once("TOKEN|SECRET|PASSWORD|PASSWD|API_KEY", "__NOPE__|SECRET_|PASSWORD_"),
+    ),
 ]
 
 

@@ -310,6 +310,17 @@ SELF_DUMPING = [
      "in env are interpolated into the output even though the YAML holds none)"),
     (r"\bdocker\s+inspect\b",
      "docker inspect (prints the container's resolved Config.Env)"),
+    # WHY (2026-08-31): `echo "...${JIRA_API_TOKEN:-NO}"` printed two live tokens. The author
+    # meant `:-` as the UNSET branch; it yields the VALUE when set. Scoped to print heads so
+    # `curl -H "Bearer $TOKEN"` -- the legitimate use -- still runs. `${#VAR}` is safe by shape.
+    (r"(?:^|[|;&(`]\s*|(?<![-\w]))(?:echo|printf|print|tee)\b[^|;&]{0,400}"
+     r"\$\{?[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIAL|ACCESS_KEY)",
+     "echo/printf expanding a secret-named variable (both $VAR and ${VAR:-x} yield the VALUE; "
+     "use ${#VAR} for a length or -n for a set-check)"),
+    (r"\b(?:python[0-9.]*|node|ruby|perl|deno|bun)\b[^|;&]{0,80}\s-(?:c|e)\b[\s\S]{0,300}?"
+     r"(?:environ|process\.env)[^|;&]{0,24}?[A-Za-z0-9_]*"
+     r"(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY|CREDENTIAL|ACCESS_KEY)",
+     "interpreter reading a secret-named environment variable"),
 ]
 
 # WHY (2026-08-31): `grep -B3 -A12 <pat> "vault/Daily Notes/_common_commands.md"` printed a
