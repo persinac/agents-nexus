@@ -1006,6 +1006,32 @@ def _is_test_runner(toks, seg):
     return head in _TEST_RUNNERS
 
 
+# Reaches only Monitor bodies and CLASSIFY_STRICT=1; the permissive tier already approves
+# every herdr call on the Bash path. `api schema` is absent because it writes the schema to
+# a file when given a path, and every `focus` because it moves the human's view.
+_HERDR_READ = {
+    "pane": {"list", "current", "get", "layout", "process-info", "neighbor", "edges", "read"},
+    "workspace": {"list", "get"},
+    "tab": {"list", "get"},
+    "agent": {"list", "get", "read", "explain", "wait"},
+    "session": {"list"},
+    "worktree": {"list"},
+    "api": {"snapshot"},
+    "config": {"check"},
+    "server": {"agent-manifests"},
+    "channel": {"show"},
+    "integration": {"status"},
+}
+
+
+def _herdr_is_read(toks):
+    """herdr <group> <sub> — read only when that exact pair is in _HERDR_READ."""
+    rest = _strip_leading_flags(toks[1:])
+    if len(rest) < 2:
+        return False
+    return rest[1].lower() in _HERDR_READ.get(rest[0].lower(), ())
+
+
 def _segment_is_read(seg):
     seg = seg.strip()
     if not seg:
@@ -1076,6 +1102,8 @@ def _segment_is_read(seg):
         # Ahead of generic membership, same reason as glab: for gh the GROUP alone
         # ("pr", "api") says nothing about read vs write.
         return _gh_is_read(toks, seg)
+    if cmd == "herdr":
+        return _herdr_is_read(toks)
     if cmd in ("awk", "gawk", "mawk", "nawk"):
         return not _AWK_EXEC.search(seg)
     if cmd == "systemctl":
@@ -1328,6 +1356,12 @@ _MCP_WRITE_SOFT = frozenset({
 # Matched on the leaf so a server rename (playwright -> playwright-local) does not undo it.
 # browser_tabs is deliberately absent: its `action` param opens and closes tabs.
 _MCP_READ_TOOLS = frozenset({"browser_snapshot", "browser_wait_for"})
+
+# Not reads — writes whose whole effect is one local file. Kept OUT of _MCP_READ_TOOLS so
+# _mcp_is_read stays honest, and gated on the same credential-path check `mv` and file
+# edits use, so a screenshot can never land in .ssh/.aws/.env.
+_MCP_BENIGN_WRITE = frozenset({"browser_take_screenshot"})
+_MCP_WRITE_PATH_KEYS = ("filename", "path", "file_path", "output")
 
 _MCP_HTTP_KEYS = ("method", "http_method", "httpMethod", "verb")
 _MCP_READ_METHODS = frozenset({"get", "head", "options"})
@@ -1746,6 +1780,19 @@ _PENDING_DIR = (os.environ.get("NOTIFY_PENDING_DIR")
                 or os.path.join(os.path.expanduser("~"), ".tmux", "pending"))
 
 
+def _mcp_write_permitted(name, inp):
+    """True for an MCP write whose only effect is creating a local, non-credential file."""
+    if not _PERMISSIVE:
+        return False
+    if (name or "").split("__")[-1] not in _MCP_BENIGN_WRITE:
+        return False
+    for key in _MCP_WRITE_PATH_KEYS:
+        val = (inp or {}).get(key)
+        if isinstance(val, str) and val.strip() and _MV_SENSITIVE.search(val):
+            return False
+    return True
+
+
 def _pending_sidecar(data):
     """The pending call from record-pending.sh -> (name, input, id), or None. Preferred over
     _last_tool_use: a blocking prompt's tool_use can be absent from the transcript for
@@ -1875,8 +1922,11 @@ def classify(name, inp):
     #    MCP tools fall through to the LLM exactly as before; permissive mode does not
     #    cover them, because _DESTRUCTIVE only understands shell text and an MCP write's
     #    blast radius is not knowable from here.
-    if (name or "").startswith("mcp__") and _mcp_is_read(name, inp):
-        return "read", "mcp read", det
+    if (name or "").startswith("mcp__"):
+        if _mcp_is_read(name, inp):
+            return "read", "mcp read", det
+        if _mcp_write_permitted(name, inp):
+            return "read", "mcp file write", det
     # 5. Web egress / mutating MCP / unknown -> modify (LLM summarizes).
     llm = _llm(name, inp)
     return "modify", (llm[1] if llm else "needs review"), (llm[2] if llm and llm[2] else det)

@@ -89,13 +89,18 @@ def main():
     for n in notifs:
         by_pane[n["pane"]].append(n)
 
-    rows, seen = [], set()
+    rows, seen, synthetic = [], set(), 0
     for epoch, pane, kind, body in asked:
-        transcript = ""
+        transcript, session = "", ""
         for n in by_pane.get(pane, ()):
             if abs(n["epoch"] - epoch) <= JOIN_SLOP:
-                transcript = n["transcript"]
+                transcript, session = n["transcript"], n.get("session", "")
                 break
+        # A hook fed a hand-made payload, not a real prompt. It has no resolvable tool, so
+        # it would otherwise land as a `no-tool` finding and alert the cron.
+        if transcript in ("/dev/null", "-") or session == "probe":
+            synthetic += 1
+            continue
         pending, how, seen_names = _pending_at(transcript, epoch)
         reported = (body.get("tool") or "").strip()
         real_name = pending[2] if pending else ""
@@ -149,6 +154,7 @@ def main():
             "classifier": classify_path,
             "window_hours": args.hours,
             "asked": len(rows),
+            "synthetic_skipped": synthetic,
             "findings": len(findings),
             "by_outcome": dict(collections.Counter(r["outcome"] for r in rows)),
             "rows": findings,
@@ -156,7 +162,8 @@ def main():
         return 1 if findings else 0
 
     print(f"classifier: {classify_path}")
-    print(f"window:     last {args.hours}h   prompts that reached a human: {len(rows)}")
+    print(f"window:     last {args.hours}h   prompts that reached a human: {len(rows)}"
+          + (f"   ({synthetic} synthetic probe row(s) skipped)" if synthetic else ""))
     counts = collections.Counter(r["outcome"] for r in rows)
     for k in ("ok", "no-coverage", "would-clear", "no-tool", "wrong-tool"):
         if counts.get(k):

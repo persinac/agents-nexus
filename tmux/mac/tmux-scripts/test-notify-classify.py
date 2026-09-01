@@ -33,6 +33,16 @@ _spec.loader.exec_module(nc)
 
 # Must auto-approve with no model call at all.
 EXPECT_READ = [
+    # herdr reads. Only Monitor bodies and CLASSIFY_STRICT reach this — the
+    # permissive tier already approves every herdr call on the Bash path.
+    'herdr pane read w1:p1 --lines 50',
+    'herdr pane list',
+    'herdr workspace list',
+    'herdr agent get sidecar-1',
+    'herdr agent wait sidecar-1 --until idle',
+    'herdr api snapshot',
+    'herdr config check',
+    'herdr pane read w1:p1 | grep -c ready',
     # --- a denylist WORD inside a read's quoted argument (2026-08-31, pane wH:p1) ---
     # Grepping a FastAPI service for its shutdown handlers was hard-denied, and _DENY runs
     # before this allowlist, so nothing downstream could clear it.
@@ -209,6 +219,18 @@ EXPECT_READ = [
 
 # Must NOT auto-approve — either it changes state, or we refuse to vouch for it.
 EXPECT_WITHHELD = [
+    # herdr mutations: positional, so the GROUP alone never vouches for them.
+    'herdr workspace close wN',
+    'herdr pane close w1:p1',
+    'herdr agent start w1:p1 claude',
+    'herdr agent send-keys w1:p1 yes',
+    'herdr session stop main',
+    'herdr server stop',
+    'herdr worktree remove wt-1',
+    'herdr api schema --out /tmp/schema.json',
+    'herdr workspace focus wN',
+    'herdr notification show --title hi',
+    'herdr update',
     # a modifying body inside an otherwise read-shaped loop
     'for f in *; do git commit -am "$f"; done',
     'while read -r l; do curl -X POST http://x -d "$l"; done',
@@ -657,6 +679,10 @@ EXPECT_MCP_READ = [
 # Must keep asking. A miss here posts, edits, or deletes in an external system with no
 # human in the loop — the one direction of this change that is not recoverable.
 EXPECT_MCP_ASK = [
+    # A benign-write allowlist entry must still refuse a credential-ish target.
+    ('mcp__playwright-local__browser_take_screenshot',
+     {'filename': '/Users/x/.aws/credentials.png'}),
+    ('mcp__playwright-local__browser_take_screenshot', {'filename': '~/.ssh/id_rsa'}),
     ("mcp__atlassian__updateConfluencePage", {"pageId": "1", "body": "x"}),
     ("mcp__atlassian__createConfluencePage", {"title": "x"}),
     ("mcp__atlassian__transitionJiraIssue", {"issueIdOrKey": "FC-1"}),
@@ -689,7 +715,6 @@ EXPECT_MCP_ASK = [
     ("mcp__playwright-local__browser_network_request", {"url": "https://x"}),
     ("mcp__playwright-local__browser_click", {"element": "Save"}),
     ("mcp__playwright-local__browser_type", {"text": "hunter2"}),
-    ("mcp__playwright-local__browser_take_screenshot", {"filename": "shot.png"}),
     ("mcp__playwright-local__browser_tabs", {"action": "close"}),
     # A read noun cannot outrank a hard verb, wherever it sits in the name.
     ("mcp__example__send_messages", {"channel": "C1"}),
@@ -823,6 +848,11 @@ MONITOR_ASK = [
 
 # Tool-level read/ask expectations that need no command at all.
 EXPECT_TOOL_READ = [
+    # A screenshot's whole effect is one local file, so it clears via
+    # _mcp_write_permitted — NOT via _mcp_is_read, which stays honest about it.
+    ('mcp__playwright-local__browser_take_screenshot', {'filename': 'shot.png'}),
+    ('mcp__playwright-local__browser_take_screenshot',
+     {'filename': '/tmp/pipeline-doc.png', 'fullPage': True}),
     ("TaskOutput", {"task_id": "bt6gxhzfk", "block": True, "timeout": 30000}),
     ("taskoutput", {"task_id": "bt6gxhzfk", "block": False, "timeout": 0}),
 ]
