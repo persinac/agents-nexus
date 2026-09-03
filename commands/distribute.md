@@ -18,7 +18,9 @@ Run with the **Bash tool** (fire-and-forget — it returns immediately after dis
 ```
 It prints the mission bucket + agent name. The detached conductor runs the full pipeline (classify → plan → fan workers into the `mission/<slug>` bucket → verify → synthesize → report), then on success **closes its own bucket** (ephemeral) and posts a ✅/⚠️ completion ping to the Slack bus. Report the bucket name to the user and that it's running detached — then **RETURN; do not wait or poll**.
 
-Preview without spawning: append `--dry-run`.
+**`--dry-run` is NOT a preview here.** On `--distribute` it only sets the *reporting* mode (`CONDUCTOR_RUN_MODE=dry`, the default): the detached fleet still spawns and branches still get committed — Jira/Confluence/MR/Slack are logged instead of sent. Append `--live` to make reports real. (The read-only preview described below belongs to `--sdlc`, not to `--distribute`.)
+
+There is no no-spawn preview for `--distribute`. To see the plan before a fleet exists, use `/overseer`, which drafts the decomposition in conversation and dispatches only on your approval.
 
 ### DELEGATE (`-bg`) — one durable background agent
 For a self-contained task that doesn't need a fan-out. Spawn ONE headless fleet agent with the goal as its seed prompt, into a `delegate/<slug>` bucket, then return:

@@ -62,6 +62,15 @@ profiles:
     permission: read-only
     verify: { mode: report, checks: [sourcing, reconcile] }
 
+  # Scopes and decomposes; decides what is in and out. Deliberately skill-less — the PM
+  # subtask differs per mission. For "is this worth doing at all", plan a `weigh` subtask
+  # instead; that skill is a full evidence-backed RICE and too heavy to pin here.
+  pm:
+    tools: [Read, Grep, Bash]
+    mcp: [agent-memory, atlassian]
+    permission: read-only           # scoping seat: must never edit the code it is scoping
+    verify: { mode: report, checks: [sourcing, fact-check] }
+
   reviewer:
     skill: swarm-review-mr          # the crew; spawned `policy.reviewer.count` wide
     tools: [Read, Grep, Bash]
