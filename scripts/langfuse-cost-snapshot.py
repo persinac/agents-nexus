@@ -34,6 +34,27 @@ import shutil
 import subprocess
 import sys
 
+def _fill_env_from_repo_dotenv() -> None:
+    """Compose reads the repo env file on its own; launchd inherits nothing."""
+    root = os.environ.get("AGENTS_NEXUS_DIR") or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+    try:
+        with open(os.path.join(root, ".env"), encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                if key and not os.environ.get(key):
+                    os.environ[key] = val.strip().strip("\"'")
+    except OSError:
+        pass
+
+
+_fill_env_from_repo_dotenv()
+
 # ── Config (env-overridable) ─────────────────────────────────────────────────
 LOOKBACK_DAYS = int(os.getenv("LANGFUSE_COST_LOOKBACK_DAYS", "14"))
 CH_CONTAINER = os.getenv("LANGFUSE_CLICKHOUSE_CONTAINER", "langfuse-clickhouse")
