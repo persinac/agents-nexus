@@ -430,6 +430,34 @@ deregister)  # deregister <pane>  → remove the registry entry (idempotent)
   rm -f "$NEXUS_TMUX_DIR/registry/${pane}"
   ;;
 
+sweep)  # sweep  → prune registry entries whose pane is gone (herdr only; idempotent)
+  # Prunable ONLY if the entry was registered under the CURRENT herdr server. An older
+  # entry may be a restart casualty that herdr-recover.sh still has to see, and deleting
+  # it loses that agent silently. Unknown server start, or no live panes → prune nothing.
+  [ "$BACKEND" = herdr ] || exit 0
+  srv_pid="$(pgrep -f '/herdr server' | head -1)"
+  [ -n "$srv_pid" ] || exit 0
+  srv_start="$(ps -o lstart= -p "$srv_pid" 2>/dev/null | python3 -c 'import sys,datetime
+try:
+    print(int(datetime.datetime.strptime(sys.stdin.read().strip(), "%a %b %d %H:%M:%S %Y").timestamp()))
+except Exception: pass' 2>/dev/null || true)"
+  [ -n "$srv_start" ] || exit 0
+  live="$("$0" list-panes)"
+  [ -n "$live" ] || exit 0
+  nl=$'\n'
+  for f in "$NEXUS_TMUX_DIR"/registry/*; do
+    [ -f "$f" ] || continue
+    swp_pane=""; swp_at=""
+    while IFS='=' read -r k v; do
+      case "$k" in PANE_ID) swp_pane="$v" ;; AT) swp_at="$v" ;; esac
+    done < "$f"
+    [ -n "$swp_pane" ] && [ -n "$swp_at" ] || continue
+    case "$nl$live$nl" in *"$nl$swp_pane$nl"*) continue ;; esac
+    [ "$swp_at" -gt "$srv_start" ] 2>/dev/null || continue
+    rm -f "$f"
+  done
+  ;;
+
 kill)  # kill <win>
   win="${1:?}"
   if [ "$(_backend_for "$win")" = herdr ]; then herdr pane close "$win" >/dev/null
