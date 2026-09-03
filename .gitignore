@@ -75,3 +75,9 @@ plugins/catalog.*.toml
 # spark MCP index config — carries github_token / gitlab_token / webhook_secret.
 # Local-only; never commit.
 spark/
+
+# Backup copies written by scripts/migrate-launchd-logs.py before it rewrites a plist.
+*.plist.pre-logmove
+
+# Playwright MCP scratch output (console/page dumps from a browsing session).
+.playwright-mcp/

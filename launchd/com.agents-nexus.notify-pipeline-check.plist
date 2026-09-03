@@ -30,9 +30,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/agents-nexus-notify-pipeline-check.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/notify-pipeline-check.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/agents-nexus-notify-pipeline-check.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/notify-pipeline-check.log</string>
 
     <key>RunAtLoad</key>
     <false/>

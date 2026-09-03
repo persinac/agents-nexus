@@ -382,7 +382,7 @@ tasks:
     cmds:
       - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.permission-suggest.plist > ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist
       - launchctl load ~/Library/LaunchAgents/com.agents-nexus.permission-suggest.plist
-      - echo "Installed — permission suggestions run Sundays at 9am (logs at /tmp/agents-nexus-permission-suggest.log)"
+      - echo "Installed — permission suggestions run Sundays at 9am (logs at ~/Library/Logs/agents-nexus/permission-suggest.log)"
 
   launchd:uninstall:permission-suggest:
     desc: Remove the permission-suggest launchd agent
@@ -408,7 +408,7 @@ tasks:
     cmds:
       - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.notify-pipeline-check.plist > ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist
       - launchctl load ~/Library/LaunchAgents/com.agents-nexus.notify-pipeline-check.plist
-      - echo "Installed — hourly over a 2h window, Slack only on anomaly (6h per-condition cooldown). Logs /tmp/agents-nexus-notify-pipeline-check.log, history ~/.tmux/notify-pipeline-health.log"
+      - echo "Installed — hourly over a 2h window, Slack only on anomaly (6h per-condition cooldown). Logs ~/Library/Logs/agents-nexus/notify-pipeline-check.log, history ~/.tmux/notify-pipeline-health.log"
 
   launchd:uninstall:notify-pipeline-check:
     desc: Remove the notify-pipeline-check launchd agent
@@ -424,7 +424,7 @@ tasks:
     cmds:
       - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.langfuse-cost-snapshot.plist > ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
       - launchctl load ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
-      - echo "Installed — cost snapshot runs daily at 4:17am (logs at /tmp/agents-nexus-langfuse-cost-snapshot.log)"
+      - echo "Installed — cost snapshot runs daily at 4:17am (logs at ~/Library/Logs/agents-nexus/langfuse-cost-snapshot.log)"
 
   launchd:uninstall:langfuse-cost-snapshot:
     desc: Remove the Langfuse cost-snapshot launchd agent
@@ -489,7 +489,7 @@ tasks:
         fi
         sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" -e "s|__NODE_BIN__|$(dirname $(command -v node))|g" launchd/com.agents-nexus.slack-bridge.plist > ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
         launchctl load ~/Library/LaunchAgents/com.agents-nexus.slack-bridge.plist
-        echo "Installed — slack bridge runs under launchd (logs at /tmp/agents-nexus-slack-bridge.log)"
+        echo "Installed — slack bridge runs under launchd (logs at ~/Library/Logs/agents-nexus/slack-bridge.log)"
 
   launchd:uninstall:slack-bridge:
     desc: Remove the Slack bridge launchd agent
@@ -574,7 +574,7 @@ tasks:
     cmds:
       - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" launchd/com.agents-nexus.automode-watchdog.plist > ~/Library/LaunchAgents/com.agents-nexus.automode-watchdog.plist
       - launchctl load ~/Library/LaunchAgents/com.agents-nexus.automode-watchdog.plist
-      - echo "Installed — polls every 4s, reacts on the first fail-closed denial (logs at /tmp/agents-nexus-automode-watchdog.log). AUTOMODE_WATCHDOG_ENABLED=0 in ~/.tmux/env.sh to disable without uninstalling."
+      - echo "Installed — polls every 4s, reacts on the first fail-closed denial (logs at ~/Library/Logs/agents-nexus/automode-watchdog.log). AUTOMODE_WATCHDOG_ENABLED=0 in ~/.tmux/env.sh to disable without uninstalling."
 
   launchd:uninstall:automode-watchdog:
     desc: Remove the automode-watchdog launchd daemon

@@ -32,8 +32,8 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/tmp/agents-nexus-overseer-reap.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/overseer-reap.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/agents-nexus-overseer-reap.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/overseer-reap.log</string>
 </dict>
 </plist>

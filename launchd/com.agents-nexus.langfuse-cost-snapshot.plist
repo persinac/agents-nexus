@@ -30,9 +30,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/agents-nexus-langfuse-cost-snapshot.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/langfuse-cost-snapshot.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/agents-nexus-langfuse-cost-snapshot.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/langfuse-cost-snapshot.log</string>
 
     <key>RunAtLoad</key>
     <false/>

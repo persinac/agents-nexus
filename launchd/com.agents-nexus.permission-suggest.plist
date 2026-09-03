@@ -31,9 +31,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/agents-nexus-permission-suggest.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/permission-suggest.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/agents-nexus-permission-suggest.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/permission-suggest.log</string>
 
     <key>RunAtLoad</key>
     <false/>
