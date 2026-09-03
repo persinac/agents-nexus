@@ -1355,7 +1355,14 @@ function setKeep(pane, onoff) {
 }
 // Live pane/agent handles for liveness filtering (herdr: daemon pane list; tmux: list-panes).
 function liveHandles() {
-  if (NEXUS_SUBSTRATE === 'herdr') return subRead(['list-panes']).split('\n').map((s) => s.trim()).filter(Boolean);
+  if (NEXUS_SUBSTRATE === 'herdr') {
+    // subRead swallows every error and returns '' — indistinguishable from a genuinely
+    // empty fleet. Throwing is what makes callers fail OPEN as documented above; returning
+    // [] would hand them a truthy empty Set and blank the whole fleet on a substrate hiccup.
+    const handles = subRead(['list-panes']).split('\n').map((s) => s.trim()).filter(Boolean);
+    if (!handles.length) throw new Error('substrate list-panes returned nothing');
+    return handles;
+  }
   const out = execFileSync('tmux', ['list-panes', '-a', '-F', '#{pane_id}'], { encoding: 'utf8', timeout: 3000 });
   return out.split('\n').map((s) => s.trim()).filter(Boolean);
 }
@@ -2650,8 +2657,11 @@ async function handleNexusSubmit(body, ack) {
       // Presence: upsert our live local agents into the JetStream KV on a heartbeat so any
       // bridge can build reachability + resolve bare names. TTL ages out reaped agents.
       const pushNatsPresence = async () => {
-        try { await natsTransport.presenceUpsert(loadRegistry()); }
+        // localLiveAgents(), NOT loadRegistry(): a registry file outlives its pane, so the raw
+        // read re-upserts reaped agents every heartbeat (5 min) and the KV's 16-min TTL never fires.
+        try { await natsTransport.presenceUpsert(localLiveAgents()); }
         catch (e) { console.error(`[nats] presence upsert failed: ${e.message}`); }
+        subRead(['sweep']);
         // INGEST peers' presence from the KV into presenceMap so addressing resolves REMOTE
         // targets. Without this, presenceMap (→ knownHosts for parseAddress at :336/:1360/:1539/
         // :1635) is self-only over NATS — the KV is otherwise read only for /agents — so a bare
