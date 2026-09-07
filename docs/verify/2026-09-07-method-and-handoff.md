@@ -430,3 +430,24 @@ zero adoptions.**
    claim is reasonable; relaying a code comment as deployed state is not. The comment that
    said `COGNITO_CLIENT_ID` "is not set today" was false for the deployed task and would have
    stayed false silently.
+
+8. **A type-level construct is not a runtime guarantee** — and this is the most dangerous of
+   the eight, because unlike the others **it looks *right* in a pull request.** From `funnel`
+   → `notif` → `ui-integration-tests`; verified here both ways.
+
+   `funnel` found `store-front/src/lib/amplify-config.ts` declares `identityPoolId` **without**
+   the non-null assertion that `userPoolId` and `userPoolClientId` both carry, and filed three
+   build cards. `notif` caught that **the assertion is erased at compile time**, so "add the
+   missing `!`" would have changed nothing at runtime while reading in a diff as though a
+   silent-drop had been fixed. The cards were amended before anyone picked them up.
+
+   Verified independently, counts only: in that file `userPoolId` and `userPoolClientId` each
+   have `with_bang=1`; `identityPoolId` has **`with_bang=0`**. And compiled with the
+   project's own `tsc`, `const a = src.WITH_BANG!` emits `const a = src.WITH_BANG;` — the
+   asserted and unasserted forms are **byte-identical after emit**.
+
+   The absent `!` is a **marker**, not a cause: it records that `identityPoolId` is *optional
+   in Amplify's own type*, which is why nothing complained when it went unset. Same collapse
+   as rule 5 in a different register — **presence of a syntactic marker read as presence of
+   an enforced property.** When a fix is a type-level token, ask what it emits before
+   believing it changes behaviour.
