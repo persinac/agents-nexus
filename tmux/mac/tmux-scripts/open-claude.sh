@@ -193,6 +193,34 @@ case "$MY_NAME" in
   overseer|orchestrator) "$NEXUS_TMUX_DIR/substrate.sh" tag-orchestrator "$MY_PANE_ID" 2>/dev/null ;;
 esac
 
+# ── Direct-auth carve-out: strip the gateway env for command-post panes ─────
+# See NEXUS_DIRECT_AUTH_AGENTS in env.defaults.sh for the full why. Short form:
+# Remote Control (/remote-control, /rc) refuses to register when an API key or
+# auth token resolves, so a gateway-routed pane cannot be driven from a phone.
+#
+# Matched against BOTH the agent name and the workspace label, because a command
+# post is usually named for its launch dir (e.g. `general`) and is identifiable
+# only by NEXUS_WORKSPACE — matching on name alone would miss it, which is the
+# same blind spot the tag-orchestrator case above still has.
+#
+# This must run AFTER env.sh (which re-forces ANTHROPIC_BASE_URL with a `:-`
+# default) and BEFORE the /sess append below — hence here, not in the env layer.
+# `unset` rather than reassignment is load-bearing: the gate tests for
+# source==="none", and an empty-but-present var still resolves to a source.
+_direct_auth=0
+# shellcheck disable=SC2086  # deliberate word-split: the knob is a space-separated list
+for _da in ${NEXUS_DIRECT_AUTH_AGENTS:-}; do
+  if [ "$_da" = "$MY_NAME" ] || { [ -n "$MY_WORKSPACE" ] && [ "$_da" = "$MY_WORKSPACE" ]; }; then
+    _direct_auth=1
+    break
+  fi
+done
+if [ "$_direct_auth" = "1" ]; then
+  unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+  echo "open-claude: direct-auth pane (${MY_NAME}/${MY_WORKSPACE:-flat}) — gateway env stripped; /remote-control available, NO Langfuse trace for this session" >&2
+fi
+unset _da _direct_auth
+
 # ── Tag LLM traffic so Langfuse names the trace after this window ───────────
 # The proxy reads a `sess/<name>/` path prefix and uses it as the trace name +
 # session id; without it every agent shows up as "claude-code". Slugify to a

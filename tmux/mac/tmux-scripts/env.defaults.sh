@@ -86,6 +86,33 @@ else
   unset ANTHROPIC_BASE_URL
 fi
 
+# ── Direct-auth (proxy-bypass) panes — the Remote Control carve-out ──────────
+# Claude Code's Remote Control (`/remote-control`, alias `/rc`) is gated on
+# claude.ai subscription auth. Its isEnabled() requires BOTH no ANTHROPIC_AUTH_TOKEN
+# and no resolvable API key:
+#     eG() && !Nv() && !Nq()
+#       && zl().source === "none"                     # no ANTHROPIC_AUTH_TOKEN
+#       && Rf({skipRetrievingKeyFromApiKeyHelper:1}).source === "none"   # no API key
+# A pane routed through the LiteLLM gateway carries ANTHROPIC_BASE_URL and an API
+# key, so the command is never REGISTERED — typing it returns a bare "Unknown
+# command" with no hint about why. (Verified against claude 2.1.263.)
+#
+# Panes whose agent NAME or WORKSPACE label appears in this list launch with the
+# proxy env stripped, so they authenticate directly against Anthropic on the
+# claude.ai login and can be driven from a phone / claude.ai/code.
+#
+# The trade is real and one-way for the life of the pane: a direct-auth session
+# emits NO Langfuse trace and bypasses the routing/downgrade lever entirely
+# (see docs/model-routing.md). Keep this to command posts you actually drive by
+# hand — never worker agents, which are where the token spend and the traces are.
+#
+# This file cannot ACT on the list: it is sourced at open-claude.sh:18, ~150 lines
+# before MY_NAME/MY_WORKSPACE resolve, and env.sh is sourced after it and re-forces
+# ANTHROPIC_BASE_URL with a `:-` default. The knob therefore lives here (where you
+# would look for it) and is applied in open-claude.sh once the identity is known.
+# Empty string = carve-out disabled, every pane goes through the gateway.
+export NEXUS_DIRECT_AUTH_AGENTS="${NEXUS_DIRECT_AUTH_AGENTS:-overseer orchestrator}"
+
 # Model default is intentionally NOT set here — unset means claude uses its own
 # current default, which is the right behavior for a fresh install. env.sh pins one.
 
