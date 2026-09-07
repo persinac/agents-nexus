@@ -400,3 +400,14 @@ zero adoptions.**
    prints only `len()`, equality via SHA256 prefixes, and the surrounding facts via counts
    and names (`list-user-pool-clients` gives client count and `ClientId` length with no
    secret read at all). **When a config claim matters, name which of the three you checked.**
+
+6. **Name the layer a test covers before letting it close a question.** I summarised
+   `ui-integration-tests`' `cta_click`/`dismiss` coverage as converting the production zero
+   "from ambiguous to decided", then published that on storefront-api#28. **Too strong, and
+   the phrasing was mine, not theirs.** A server-side test proving the **server accepts**
+   both verbs eliminates "the server drops it" — real progress, since the always-204 makes a
+   rejected write observationally identical to no write. It says nothing about a **client**
+   that loses the click to a navigation race before a request ever exists. The zero is
+   **narrowed, not decided**. Same shape as this fleet's "the table is not the contract":
+   *the layer you tested is not the layer the number came from.* Corrected at
+   storefront-api#28 `issuecomment-5576880626`.
