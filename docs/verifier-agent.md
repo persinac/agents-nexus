@@ -129,3 +129,18 @@ change is not a signal.
 times, with a guard enforcing it over exactly the four DB-querying entry points. The
 verifier's job is to state *what changed in production* — here, the image version and
 nothing else — not to infer intent from an absence.
+
+## `/health` flips BEFORE the rollout completes (2026-09-07)
+
+Correcting this document's own check 1. Waiting for the version to change is **not** waiting
+for the deploy. Measured on `management-api` 0.1.464: **`/health` served the new version for
+roughly six minutes while ECS `rolloutState` was still `IN_PROGRESS`.**
+
+During that window both old and new tasks answer, so a version poll can return the new value
+from a task that is about to be replaced — or return it while the rollout is still capable of
+failing and rolling back.
+
+**Wait for `rolloutState=COMPLETED` with the expected running count, then confirm `/health`.**
+Version flip alone is a leading indicator, not a completion signal. Fourth field this fleet has
+found that looks like the thing and does not move with it, after the ECS taskdef revision, the
+frozen `VERSION` file, and `git diff` on untracked paths.
