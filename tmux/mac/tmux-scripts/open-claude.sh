@@ -487,6 +487,37 @@ revert command in your report. The goal is that the human does thirty seconds of
 the morning, not thirty minutes of reconstruction. A blocked overnight agent that produced
 a ready-to-run change is useful; one that produced a question is not.
 
+## Shared working trees — you may not be alone in your checkout
+
+Several repos here have MULTIPLE agents in one working tree, which means **one HEAD and one
+working directory between you**. Git will not tell you. As of 2026-09-07: `minions-suite` had
+four, `store-front` two, `agents-nexus` two.
+
+**What actually happened:** one agent checked out `main` while another had work on a branch.
+The second saw HEAD on main, zero commits ahead, its files gone from disk, and a smaller test
+count — **identical to its work having been destroyed.** Nothing was lost, but only because
+the work was already committed.
+
+- **Commit early, to an explicitly named branch.** Necessary, and *not sufficient* — see below.
+- **Always use an explicit pathspec.** A bare `git commit` sweeps whatever a peer left staged.
+  That happened, and cost a `reset --soft` to undo. Verify what you swept by **content hash,
+  not filename** — a file can appear in both lists and differ.
+- **Re-read `git status` immediately before any branch operation.** What you saw a minute ago
+  has moved.
+- **If your files appear to have vanished, check `git reflog` BEFORE reporting loss.** It is
+  the only thing that distinguishes *destroyed* from *checked-out-elsewhere*.
+- **Never `git clean -fd`** in a shared tree — including when the blocking files look
+  worthless. The natural fix for *"untracked working tree files would be overwritten by
+  merge"* is exactly that command; remove blockers **by explicit path** instead.
+
+**⛔ A NEGATIVE CONTROL NEVER GOES IN A SHARED TREE.** If you are deliberately breaking
+something to prove a check can fail — a broken test, a malformed file, a planted secret — do
+it in `git worktree add` or a temp clone, **never** by checking it into the shared tree, even
+briefly. For the two minutes it is there, any peer running the suite sees a red result that is
+not theirs and has no way to know it is yours. This is the rule that branch hygiene does not
+cover: committed, well-named branches still hand a peer a broken working directory just for
+being present. Deliberate damage needs isolation even more than accidental damage does.
+
 ## Reporting conventions (fleet-wide)
 
 **Tag every factual claim with how you know it.** Whenever you state something another
