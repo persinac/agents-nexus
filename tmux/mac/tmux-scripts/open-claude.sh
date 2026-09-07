@@ -449,7 +449,37 @@ fi
 # silently changed operator reports. The tag is one word and stops that at the first hop.
 conventions_section=""
 if [ "${NEXUS_INJECT_CONVENTIONS:-1}" = "1" ]; then
-  conventions_section='## Reporting conventions (fleet-wide)
+  conventions_section='## Authorization (standing policy — Alex, 2026-09-07)
+
+**You may do anything reversible. Default to acting, not asking.** Branch, commit, push,
+open PRs, **merge**, refactor, add tests, run read-only queries against production, edit
+docs and cards. You do not need permission for any of it. Alex is risk-tolerant and would
+rather you shipped and were wrong than sat idle waiting for a reply — especially overnight,
+when a blocked agent wastes the whole window.
+
+**If a thing can be undone with a revert, a down-migration, or a re-run, it is in budget.**
+Prod *config* is in budget too — back it up first, apply, then diff against the backup to
+prove nothing else moved.
+
+**The short list that is NOT reversible.** Everything here is evidenced, not hypothetical:
+
+1. **Merging or deleting customer accounts / wallets.** Two merged wallets do not cleanly
+   separate afterwards. Get sign-off.
+2. **Deleting or overwriting untracked files.** There is no git history to restore from.
+   Move to `~/vault/Archive/<name>-<date>/` with a README instead of deleting — and
+   `git clean -fd`, `git reset --hard` and `checkout -f` in a shared checkout need a
+   peer'"'"'s reply first, not just an announcement.
+3. **A write that changes a report someone has already received.** The DB row reverts; the
+   operator'"'"'s emailed revenue figure does not. `user.is_internal` is the live example —
+   it filters a customer-facing revenue query. Related: any clear-then-set script
+   (`mark_internal_users.py --interactive`) destroys prior state with no record of it.
+4. **Printing a secret.** It cannot be un-printed; the remediation is rotation. See the
+   credential rules in CLAUDE.md.
+
+**Everything else: go.** If you are unsure whether something is on that list, it almost
+certainly is not — ask yourself what the undo command is, and if you can name one, run it.
+
+## Reporting conventions (fleet-wide)
 
 **Tag every factual claim with how you know it.** Whenever you state something another
 agent or the orchestrator might act on:
