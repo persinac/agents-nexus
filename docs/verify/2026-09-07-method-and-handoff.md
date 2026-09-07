@@ -264,11 +264,21 @@ any real customer.
 The author said so explicitly: *"Not verified: the jsonb round-trip against real Postgres."*
 It still is not, and **waiting will not help** — nothing is writing to the table.
 
-Measured 2026-09-07 ~19:00Z: 60 rows, **0 non-null `meta` all time**, 0 rows since the merge,
-latest row `2026-09-06 03:27:52Z` (~27h *before* the merge, so PR 28 did not break it).
-Cause: **zero `POST /api/v1/events` in 4,449 log events** — six genuine requests in twelve
-hours. `cta_click` is **0 of 60** impressions, all time; the table has only ever held
-`impression` rows.
+Measured 2026-09-07 ~19:00Z: 60 rows, **0 non-null `meta` all time**, 0 rows since the merge.
+Cause, and this is the load-bearing evidence: **zero `POST /api/v1/events` in 4,449 log
+events** — six genuine requests in twelve hours, against an app that access-logs every
+request. `cta_click` is **0 of 60**; the table has only ever held `impression` rows.
+
+> **Corrected.** An earlier draft led with "the table went quiet ~27h *before* the merge,
+> so PR 28 did not break it." That timing argument is an **over-read and has been dropped**
+> — `storefront-api` measured the baseline and my own data already contained the
+> refutation. 60 rows over an 11-day span but only **9 active days**, mean **6.7 on active
+> days**, and the series holds two interior zero-days (**2026-09-01**, **2026-09-04**)
+> predating all of this. A ~40h gap therefore sits *at the edge of* the observed pattern,
+> not outside it, and at that baseline density "quiet" and "broken" are not separable from
+> the row count at all. The conclusion (PR 28 did not break the write path) still stands —
+> it rests on the log evidence above, and on PR 28 touching only storefront-api, never the
+> client that would emit.
 
 I closed the read-only half: the 6-column INSERT is sufficient (`id`, `occurred_at` are the
 only other NOT NULL columns and both default), `meta` is jsonb/nullable/no-default, and
@@ -340,3 +350,16 @@ one real attempt settles it.
 2. **Silence is only evidence once you have proved the thing would have spoken.** Check that
    the code logs, that your pattern matches the literal string, and that your log stream
    covers the window. Two of my findings depended entirely on getting this right.
+
+3. **A gap in a count is only evidence once you have proved the baseline is dense enough to
+   notice one.** `ui-integration-tests`' generalization of rule 2, and it caught me: I read
+   a ~40h gap in `storefront_event` as a signal against a series averaging 6.7 rows on
+   active days that already contained two interior zero-days. **Establish the active-day
+   rate and the interior zero-days before calling any gap anomalous** — and note that both
+   my raw daily counts and the corrected reading came from the same query. The refutation
+   was already on my screen; I led with the timing argument anyway.
+
+4. **Separate seeded-at-insert from advanced-by-running-code before reading drift as
+   motion.** `user_identity.last_seen_at` shows 162 of 265 rows "drifting" up to 218 days
+   and has in fact never advanced after its own insert. Compare `max(col)` against
+   `max(created_at)` before concluding a column moves.
