@@ -153,11 +153,66 @@ then up" runs on branches that touch migrations (`feat/location-is-internal`,
 `chore/document-absent-user-fk`) and skips on docs-only branches. Correct conditional
 behaviour. Caveat: 9/9 runs are green, so its **failure** path is unexercised.
 
-**Not verified — yours or a later run's:** store-front#203 / #205 / #206 (I did not locate
-where store-front deploys; not ECS, and `amplify list-apps` returned nothing),
-storefront-api#27 (auth change), flashback-cns#214 / #215 / #216 / #217 (k8s; cluster is
-reachable, I ran out of session before checking them), infrastructure#107 (ConfigMap
-`grafana-alerting-kiosk-rules` exists; I did not diff its content against the merge).
+**Not verified — yours or a later run's:** storefront-api#27 (auth change),
+flashback-cns#214 / #215 / #216 / #217 (k8s; cluster is reachable, I ran out of session
+before checking them), infrastructure#107 (ConfigMap `grafana-alerting-kiosk-rules` exists;
+I did not diff its content against the merge).
+
+### 3a. Region correction — I was looking in the wrong region twice
+
+The orchestrator pointed out that **the Amplify estate and one Lambda live in `us-east-2`,
+not `us-east-1`**. Both claims re-derived here rather than taken on relay:
+
+- `aws --profile flashback --region us-east-2 amplify list-apps` → `pinball-storefront`
+  (`d2pu6iph9ucr2s`), `pinball-db`, `kiosk`, `management-dashboard`.
+- `aws --profile flashback --region us-east-2 lambda list-functions` → **`cognito-auto-link`
+  exists**, python3.13.
+
+**This retracts my infrastructure#103 finding.** My us-east-1 listing of four functions was
+correct *and complete for that region* — the function simply lives beside the Cognito pool
+in us-east-2. **This is why the rule is flag, don't assert.** An absence is only evidence
+once you have established you looked everywhere it could be.
+
+And the timing check now **confirms** the deploy, by the same technique that condemned
+wallet-api#39 — pointing the other way:
+
+| | infrastructure#103 | wallet-api#39 |
+|---|---|---|
+| merge | 2026-09-05T21:03:12Z | 2026-09-05T21:41:08Z |
+| artifact | Lambda `LastModified` **21:03:38Z** | `adopted` row **21:41:41Z** |
+| image/code available | — | ECR push **21:42:11Z** |
+| ordering | artifact **26s after** merge ✅ | artifact **30s before** the code existed ❌ |
+
+`LastUpdateStatus: Successful`. Same clock, same method, opposite verdict — which is the
+point: the technique discriminates rather than always finding fault.
+
+### 3b. store-front #203 / #205 / #206 / #207 — all four deployed
+
+`aws --region us-east-2 amplify list-jobs --app-id d2pu6iph9ucr2s --branch-name main`.
+Every merge commit maps one-to-one onto a `SUCCEED` job:
+
+| job | commit | PR | started |
+|---|---|---|---|
+| 236 | `d85c9f1ecb` | #203 | 2026-09-05T07:32:41 (merge +1s) |
+| 237 | `5dc91621fc` | #206 | 21:10:12 (merge +1s) |
+| 238 | `50ee0f1487` | #205 | 21:12:40 |
+| 239 | `3d45dd32a2` | #207 | 21:57:01 (merge +2s) |
+
+**Deploy CONFIRMED for all four. Effect UNEXERCISED**, which is the more useful finding:
+`pinball.token_grant` has **one** `source_type='purchase'` grant since those deploys
+(2026-09-05T21:10Z → 2026-09-07T23:00Z). The refund guard (#206) and the
+"never take money we cannot credit" guard (#203) have had essentially no real traffic to
+act on. Sibling datum: `_PAID_GRANT_COND`'s test-checkout exclusion is load-bearing —
+10 of 170 purchase grants have `source_id LIKE 'cs_live_test%'`/`'cs_test%'`.
+
+### 3c. The cross-cutting result of this whole sweep
+
+**The production environment has almost no customer activity, so most of what merged this
+week is deployed but unexercised.** Six real HTTP requests to storefront-api in twelve
+hours; zero `POST /api/v1/events` ever; one purchase grant in two days; zero identity
+adoptions; zero `cta_click` in the table's lifetime. Every deploy in this window is real —
+I checked each one — and almost none of them has had the chance to be either right or wrong
+in production. That, not any individual defect, is the honest summary of the last three days.
 
 ---
 
