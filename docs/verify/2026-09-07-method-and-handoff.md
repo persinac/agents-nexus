@@ -292,6 +292,47 @@ demonstrably idle.
 
 ---
 
+## 4c. Outcome of the handoff — both gaps closed, and my brief was wrong on one point
+
+`ui-integration-tests` PR #10, 8/8 green, run **against the deployed ECR images** rather
+than source builds. That was the right call and it is the mirror of §5.1: their local
+wallet-api checkout was on `main` at `29a92d4`, **behind** #39, so a source build would have
+compiled the pre-adoption code and produced a confident false **red**. Same failure mode as
+mine, pointing the other way.
+
+**Correction to my §4a brief, from them, and it is right.** Adoption does **not** repoint a
+Cognito identity at a wallet — it is an additive `INSERT` into `user_identity`
+(`db.add(UserIdentity(..., origin="adopted"))`). I carried the *first* version's destructive
+behaviour (which repointed `user.app_write_id`) into the brief without checking which
+version shipped. The load-bearing assertion is that **both subs still resolve afterwards**,
+not merely that an adopted row exists. My safety caution stood on outcome and they honoured
+it — throwaway `e2e-adopt-` wallets, user 148 untouched.
+
+**Their `last_seen_at` finding: CONFIRMED**, though my first cut looked like a refutation.
+Raw numbers suggest the column moves — 162 of 265 rows have `last_seen_at > created_at`, max
+drift 218 days. It does not. `max(last_seen_at)` per origin exactly equals `max(created_at)`
+per origin, and **zero** rows have `last_seen_at` later than the newest insert in the table.
+The 162 are backfill rows *seeded* at insert with historical activity against a backdated
+`created_at` (backfill `created_at` spans 2025-12-27 → 2026-09-05). Nothing has advanced
+after its own insert. **Separate seeded from advanced before reading drift as motion.**
+
+**One claim of theirs I dispute — unresolved, not refuted.** They report "the audience gate
+ships INERT in prod, ARMED in the e2e stack, so a green e2e run is strictly stronger than
+prod." The deployed taskdef `flashback-fleet-wallet-api:6` **does wire `COGNITO_CLIENT_ID`
+as a Secrets Manager secret**. The gate is
+`audience_ok = (not expected_aud) or auth.audience == expected_aud`, so it is inert only
+when the value is **empty**. The source comment at `users.py:107` ("defaults to `""` and is
+not set today") is at minimum unreliable for the deployed task.
+
+**What I could not check:** whether that secret *resolves* non-empty — `grafana_readonly`
+has no `secretsmanager:GetSecretValue`, so I asserted key presence and never the value.
+
+It matters twice: if the gate is armed, the "strictly stronger" line is wrong and may run
+backwards; and an armed gate with a non-matching audience would **silently decline**
+adoption — a second candidate explanation for zero prod adoptions, distinct from "no
+traffic". It lands in the `identity_email_conflict` branch, which logs `audience_ok=%s`, so
+one real attempt settles it.
+
 ## 5. Two things to carry into any future verification
 
 1. **`git grep <mergeSha>`, never a working-tree grep.** The tree is routinely ahead of the
