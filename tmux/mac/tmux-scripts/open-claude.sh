@@ -512,8 +512,45 @@ If you report a passing test, a clean sweep, or "no instances found", state what
 would have looked like and confirm that outcome was actually reachable.'
 fi
 
+# ── Review partner (set NEXUS_REVIEW_PARTNER=<fqdn> at spawn) ──────────────
+# Added 2026-09-07. On the overnight run the highest-value findings all came from
+# agents reviewing each other, and every one of them was ACCIDENTAL — they overlapped
+# on the same code and argued. notif caught funnel shipping a value the API would have
+# 422'd; management-api caught is-internal missing three joins in patron.py; wallet-api
+# and leaderboard each caught a wrong claim from the orchestrator. Pairing formalises
+# what already worked, and does it in PARALLEL — a single reviewer agent would be a
+# serial bottleneck across seven producers, and would lack the domain context that
+# made those specific catches possible.
+pairing_section=""
+if [ -n "${NEXUS_REVIEW_PARTNER:-}" ]; then
+  pairing_section="## Your review partner: \`${NEXUS_REVIEW_PARTNER}\`
+
+Message them with \`$SEND_SCRIPT ${NEXUS_REVIEW_PARTNER} <one-line message>\`.
+
+**Send them your findings before you act on anything that touches shared code, and
+review theirs when they send.** You are not asking permission — the standing
+authorization above still applies and you should keep moving. You are getting a second
+pair of eyes from someone with overlapping context, which is the thing that has caught
+the most real defects in this fleet.
+
+**What a useful review is, based on what actually worked:**
+
+- **Check the claim, not the conclusion.** The catches that mattered were all of the form
+  \"that is true of the table but not of the API\", \"that idiom exists but is not present in
+  these queries\", \"you checked the container, not the content\".
+- **Say which parts you did NOT check.** A review that reads as complete when it was partial
+  is worse than no review.
+- **Disagree in the open.** Do not soften a correction to be collegial. Two agents that
+  agree because neither looked are worth less than one that looked.
+- **\"Your usage is correct\" is a claim like any other** — if a peer tells you your code is
+  fine, verify it yourself before relying on it. That exact sentence preceded the discovery
+  of a live 74-row leak on this fleet.
+
+Reviewing costs you a few minutes and is the highest-yield thing you will do today."
+fi
+
 # ── Launch claude with assembled context ───────────────────────────────────
-if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" ] || [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ] || [ -n "$pointer_section" ] || [ -n "$conventions_section" ]; then
+if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" ] || [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ] || [ -n "$pointer_section" ] || [ -n "$conventions_section" ] || [ -n "$pairing_section" ]; then
   prompt=""
   # Seed first: it is the actual task this agent was launched to do.
   if [ -n "$seed_section" ]; then
@@ -542,6 +579,10 @@ if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" 
   if [ -n "$registry_section" ]; then
     [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
     prompt="${prompt}${registry_section}"
+  fi
+  if [ -n "$pairing_section" ]; then
+    [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
+    prompt="${prompt}${pairing_section}"
   fi
   # Conventions last: they govern how everything above gets reported back, and the
   # closing position is the one an agent re-reads when composing a report.

@@ -20,7 +20,7 @@
 #      carries the expected NEXUS_WORKSPACE. Never trust the exit code.
 #
 # Usage:
-#   agent-spawn.sh <workspace> <cwd> <command...>
+#   agent-spawn.sh [--partner <fqdn>] [--timeout <s>] <workspace> <cwd> <command...>
 #   agent-spawn.sh --timeout 90 notif /path/to/repo "env SEED_PROMPT='…' ~/.tmux/open-claude.sh"
 #
 # Exit 0 only when a live process is confirmed. Exit 1 with a diagnosis otherwise.
@@ -29,10 +29,15 @@ set -uo pipefail
 SUBSTRATE="${NEXUS_TMUX_DIR:-$HOME/.tmux}/substrate.sh"
 TIMEOUT=75
 POLL=3
+PARTNER=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --timeout) TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
+    # --partner <fqdn>: names a review peer. Injected as NEXUS_REVIEW_PARTNER so
+    # open-claude.sh can render the pairing block. substrate spawn only forwards a
+    # fixed env allowlist, so this has to ride inline on the command line.
+    --partner) PARTNER="${2:?--partner needs an agent FQDN}"; shift 2 ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -64,6 +69,14 @@ agent-spawn: REFUSED — the command starts with a bare VAR= assignment.
       env SEED_PROMPT='...' /path/to/open-claude.sh
 EOF
   exit 2
+fi
+
+# ── Inject the review partner, if named ────────────────────────────────────
+if [ -n "$PARTNER" ]; then
+  case "$CMD" in
+    "env "*) CMD="env NEXUS_REVIEW_PARTNER=$PARTNER ${CMD#env }" ;;
+    *)       CMD="env NEXUS_REVIEW_PARTNER=$PARTNER $CMD" ;;
+  esac
 fi
 
 # ── Spawn ──────────────────────────────────────────────────────────────────
