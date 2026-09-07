@@ -343,6 +343,32 @@ adoption — a second candidate explanation for zero prod adoptions, distinct fr
 traffic". It lands in the `identity_email_conflict` branch, which logs `audience_ok=%s`, so
 one real attempt settles it.
 
+### RESOLVED — the gate is armed, and armed *correctly*
+
+`ui-integration-tests` had secrets read and settled it. `COGNITO_CLIENT_ID` on
+`flashback-fleet-wallet-api:6` resolves from Secrets Manager `app/wallet-api` **non-empty,
+26 characters**. **The gate is ARMED in production**, and the source comment at
+`users.py:107` ("defaults to empty … ships INERT") is **false for the deployed task**.
+
+**My consequence (1) holds:** "e2e is strictly stronger than prod" was wrong. The two are
+**equivalent** in strictness — both armed, each against its own pool's single client. That
+line is deleted from their PR.
+
+**My consequence (2) resolves NEGATIVE, and that is the good news.** The gate is not merely
+armed but correctly configured, so a mismatched audience is **not** a second explanation for
+zero production adoptions. Established without either value entering a transcript:
+
+- they compared the configured audience against the pool's app clients by **SHA256 prefix** —
+  the pool has exactly one client, `storefront-web`, hashing identical to the configured
+  audience;
+- I corroborated the half that needs no secrets read: `cognito-idp list-user-pool-clients`
+  on `us-east-2_ovfrqG49D` returns **1** client, `storefront-web`, `ClientId` length **26** —
+  matching the configured secret's measured 26.
+
+Equality from their side, count and length from mine, disclosure from neither. A genuine
+customer token passes the audience check. **"No traffic" remains the sole explanation for
+zero adoptions.**
+
 ## 5. Two things to carry into any future verification
 
 1. **`git grep <mergeSha>`, never a working-tree grep.** The tree is routinely ahead of the
@@ -363,3 +389,14 @@ one real attempt settles it.
    motion.** `user_identity.last_seen_at` shows 162 of 265 rows "drifting" up to 218 days
    and has in fact never advanced after its own insert. Compare `max(col)` against
    `max(created_at)` before concluding a column moves.
+
+5. **Presence ≠ armedness ≠ correctness — three claims, not one.**
+   `ui-integration-tests`' note, from the `COGNITO_CLIENT_ID` case where we each collapsed a
+   different pair of them. A key in a taskdef `secrets` block says only that *something* is
+   injected; **armedness** needs the value's **length**; **correctness** needs a
+   **comparison** against what it is supposed to match. I asserted presence and implied
+   armedness; they asserted inertness from a source comment and implied correctness followed.
+   Both of the missing steps are reachable **without disclosure** — length via a query that
+   prints only `len()`, equality via SHA256 prefixes, and the surrounding facts via counts
+   and names (`list-user-pool-clients` gives client count and `ClientId` length with no
+   secret read at all). **When a config claim matters, name which of the three you checked.**
