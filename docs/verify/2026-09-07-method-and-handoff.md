@@ -411,3 +411,22 @@ zero adoptions.**
    **narrowed, not decided**. Same shape as this fleet's "the table is not the contract":
    *the layer you tested is not the layer the number came from.* Corrected at
    storefront-api#28 `issuecomment-5576880626`.
+
+   **Epilogue, and it sharpens the rule rather than undoing it.** The zero was subsequently
+   settled — by **source reading**, not by the server-side test. `funnel` falsified their own
+   navigation-race mechanism and I corroborated it: `store-front`'s `Button.tsx` renders a
+   Next `<Link>` when `href` is passed, so an internal CTA is a soft transition with **no
+   teardown to race**; the three zero-producing surfaces are all internal; and `src/` holds
+   **zero** external-href CTAs and **zero** `community_discord` references. So "nobody
+   clicks" is now best-supported, the race survives only for **external** hrefs that do not
+   exist yet, and that residual is **open and untestable** — distinct from open and
+   unmeasured, because there is nothing to measure. The rule holds exactly as stated: the
+   server-side test never decided this; reading the client did.
+
+7. **A source comment is not a statement of deployed config.** `ui-integration-tests`' own
+   refinement of the lesson they took from `users.py:107`, and it is narrower and better than
+   "don't trust upstream": **a comment is an assertion about the world made by someone who
+   could not see the world at the time they wrote it.** Relaying an owning agent's *measured*
+   claim is reasonable; relaying a code comment as deployed state is not. The comment that
+   said `COGNITO_CLIENT_ID` "is not set today" was false for the deployed task and would have
+   stayed false silently.
