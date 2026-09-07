@@ -103,3 +103,29 @@ Three outcomes, and the middle one is the valuable one:
 - Daily re-run window — 7 days is a guess.
 - Should `UNFALSIFIABLE` auto-file a card, or accumulate into a weekly digest? Probably the
   latter, or it becomes noise.
+
+---
+
+## Corrections from the first run (2026-09-07)
+
+**`UNFALSIFIABLE` was conflating two different things.** A PR with no `VERIFY:` line may
+still be perfectly verifiable from its prose — that label marked a *missing line*, not an
+unverifiable change. Split into `NO-CLAIM-LINE` (retro-fit the measurement from the body)
+and `UNFALSIFIABLE` (a claim that cannot fail — the real finding, and worse than a missing
+one because it reads as diligence).
+
+**Verify at the merge commit, not at `HEAD`.** Checking `management-api#112` at `HEAD`
+showed `patron.py` referencing the constant; at `dd5efba` it does not. `HEAD` was a feature
+branch. Use `git grep <pattern> <sha>`.
+
+**⚠️ An ECS task-definition revision is NOT evidence of what shipped.** `management-api:7`
+was registered 2026-08-28 and pins the mutable `:latest` tag, so a months-old revision
+serves today's image and the revision number never moves. **Use ECR push time plus the
+version reported by `/health`.** Any deploy check keyed on taskdef revision is measuring
+nothing — the same shape as everything else this fleet keeps finding: a signal that cannot
+change is not a signal.
+
+**"Wired to nothing" is not automatically a defect.** `#112` was deliberate and said so four
+times, with a guard enforcing it over exactly the four DB-querying entry points. The
+verifier's job is to state *what changed in production* — here, the image version and
+nothing else — not to infer intent from an absence.

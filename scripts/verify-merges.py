@@ -8,7 +8,11 @@ then goes and takes the measurement, which needs judgement this script does not 
 See docs/verifier-agent.md. Three outcomes:
 
   HAS-CLAIM      a VERIFY: line exists -> the agent should run the measurement
-  UNFALSIFIABLE  no VERIFY: line, or one that cannot fail -> this is itself a finding
+  NO-CLAIM-LINE  no VERIFY: line. The change may still be perfectly verifiable from
+                 its prose -- this marks a MISSING LINE, not an unverifiable change.
+                 Read the body and retro-fit the measurement.
+  UNFALSIFIABLE  a VERIFY: line that CANNOT FAIL -> the real finding, and worse than
+                 a missing one because it reads as diligence
   TRIVIAL        docs/chore-only diff, nothing to measure
 
 Usage:
@@ -55,7 +59,7 @@ def classify(pr):
         return "HAS-CLAIM", claim
     if TRIVIAL_ONLY.match(pr.get("title") or ""):
         return "TRIVIAL", "docs/chore only"
-    return "UNFALSIFIABLE", "no VERIFY: line"
+    return "NO-CLAIM-LINE", "no VERIFY: line — read the body and retro-fit the measurement"
 
 
 def main():
@@ -102,12 +106,15 @@ def main():
           + ", ".join(f"{v} {k}" for k, v in sorted(counts.items())) + "\n")
 
     for r in rows:
-        mark = {"HAS-CLAIM": "  ", "UNFALSIFIABLE": ">>", "TRIVIAL": "  "}[r["verdict"]]
-        print(f"{mark} [{r['verdict']:<13}] {r['repo']}#{r['num']} — {r['title'][:58]}")
+        mark = {"HAS-CLAIM": "  ", "UNFALSIFIABLE": ">>",
+                "NO-CLAIM-LINE": " ~", "TRIVIAL": "  "}[r["verdict"]]
+        print(f"{mark} [{r['verdict']:<14}] {r['repo']}#{r['num']} — {r['title'][:56]}")
         print(f"     {r['detail'][:96]}")
         print(f"     {r['url']}")
-    print("\nHAS-CLAIM  -> run the measurement, report CONFIRMED or DRIFTED.")
-    print("UNFALSIFIABLE -> a finding. The author did not establish the change works.")
+    print("\nHAS-CLAIM     -> run the measurement, report CONFIRMED or DRIFTED.")
+    print("NO-CLAIM-LINE -> missing line, not a missing proof. Retro-fit the measurement")
+    print("                 from the PR prose before calling anything unverifiable.")
+    print("UNFALSIFIABLE -> the real finding: a claim that cannot fail.")
 
 
 if __name__ == "__main__":
