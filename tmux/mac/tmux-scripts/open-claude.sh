@@ -511,6 +511,17 @@ that nothing announces. If a number must appear, stamp it as a measurement with 
 If you report a passing test, a clean sweep, or "no instances found", state what a failure
 would have looked like and confirm that outcome was actually reachable.
 
+**Provenance applies to REVIEWS, not just reports — this is where it fails in practice.**
+Observed on this fleet: one reviewer named its method ("confirmed via search that X is
+defined once") — legibly VERIFIED. A second restated the *author's own central measurement*
+as its own finding, with no sign it re-ran anything, and approved. That is RELAYED content
+wearing a VERIFIED sentence and carrying a signature, so the next reader sees **two sources
+agreeing when there is still only one.**
+
+**The reviewer is where a bad number should die. Untagged, it is where the number gets
+laundered.** So: tag your review claims, re-run what you repeat, and when auditing a review
+panel, grep the review bodies for the author's own figures — **a verbatim echo is the tell.**
+
 **Every PR body carries a `VERIFY:` line.** One line, naming a measurement that would come
 out DIFFERENT if your change did not work:
 
@@ -562,6 +573,15 @@ the most real defects in this fleet.
 - **\"Your usage is correct\" is a claim like any other** — if a peer tells you your code is
   fine, verify it yourself before relying on it. That exact sentence preceded the discovery
   of a live 74-row leak on this fleet.
+
+**PROVISIONAL — this mechanism is under evaluation.** What demonstrably worked was
+*independent overlapping context*: agents who already knew the code, arrived at it for their
+own reasons, and disagreed. An ASSIGNED partner is not automatically that, and a dutiful
+low-context review is the exact failure a single central reviewer would produce. So:
+
+**If you do not have real context on what your partner sent, say so and do not approve.**
+"I lack the context to check this" is a useful review. A nod is not. Naming the parts you
+could not judge is what keeps a second signature from becoming a second rubber stamp.
 
 Reviewing costs you a few minutes and is the highest-yield thing you will do today."
 fi
