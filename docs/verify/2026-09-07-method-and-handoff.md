@@ -153,11 +153,66 @@ then up" runs on branches that touch migrations (`feat/location-is-internal`,
 `chore/document-absent-user-fk`) and skips on docs-only branches. Correct conditional
 behaviour. Caveat: 9/9 runs are green, so its **failure** path is unexercised.
 
-**Not verified — yours or a later run's:** store-front#203 / #205 / #206 (I did not locate
-where store-front deploys; not ECS, and `amplify list-apps` returned nothing),
-storefront-api#27 (auth change), flashback-cns#214 / #215 / #216 / #217 (k8s; cluster is
-reachable, I ran out of session before checking them), infrastructure#107 (ConfigMap
-`grafana-alerting-kiosk-rules` exists; I did not diff its content against the merge).
+**Not verified — yours or a later run's:** storefront-api#27 (auth change),
+flashback-cns#214 / #215 / #216 / #217 (k8s; cluster is reachable, I ran out of session
+before checking them), infrastructure#107 (ConfigMap `grafana-alerting-kiosk-rules` exists;
+I did not diff its content against the merge).
+
+### 3a. Region correction — I was looking in the wrong region twice
+
+The orchestrator pointed out that **the Amplify estate and one Lambda live in `us-east-2`,
+not `us-east-1`**. Both claims re-derived here rather than taken on relay:
+
+- `aws --profile flashback --region us-east-2 amplify list-apps` → `pinball-storefront`
+  (`d2pu6iph9ucr2s`), `pinball-db`, `kiosk`, `management-dashboard`.
+- `aws --profile flashback --region us-east-2 lambda list-functions` → **`cognito-auto-link`
+  exists**, python3.13.
+
+**This retracts my infrastructure#103 finding.** My us-east-1 listing of four functions was
+correct *and complete for that region* — the function simply lives beside the Cognito pool
+in us-east-2. **This is why the rule is flag, don't assert.** An absence is only evidence
+once you have established you looked everywhere it could be.
+
+And the timing check now **confirms** the deploy, by the same technique that condemned
+wallet-api#39 — pointing the other way:
+
+| | infrastructure#103 | wallet-api#39 |
+|---|---|---|
+| merge | 2026-09-05T21:03:12Z | 2026-09-05T21:41:08Z |
+| artifact | Lambda `LastModified` **21:03:38Z** | `adopted` row **21:41:41Z** |
+| image/code available | — | ECR push **21:42:11Z** |
+| ordering | artifact **26s after** merge ✅ | artifact **30s before** the code existed ❌ |
+
+`LastUpdateStatus: Successful`. Same clock, same method, opposite verdict — which is the
+point: the technique discriminates rather than always finding fault.
+
+### 3b. store-front #203 / #205 / #206 / #207 — all four deployed
+
+`aws --region us-east-2 amplify list-jobs --app-id d2pu6iph9ucr2s --branch-name main`.
+Every merge commit maps one-to-one onto a `SUCCEED` job:
+
+| job | commit | PR | started |
+|---|---|---|---|
+| 236 | `d85c9f1ecb` | #203 | 2026-09-05T07:32:41 (merge +1s) |
+| 237 | `5dc91621fc` | #206 | 21:10:12 (merge +1s) |
+| 238 | `50ee0f1487` | #205 | 21:12:40 |
+| 239 | `3d45dd32a2` | #207 | 21:57:01 (merge +2s) |
+
+**Deploy CONFIRMED for all four. Effect UNEXERCISED**, which is the more useful finding:
+`pinball.token_grant` has **one** `source_type='purchase'` grant since those deploys
+(2026-09-05T21:10Z → 2026-09-07T23:00Z). The refund guard (#206) and the
+"never take money we cannot credit" guard (#203) have had essentially no real traffic to
+act on. Sibling datum: `_PAID_GRANT_COND`'s test-checkout exclusion is load-bearing —
+10 of 170 purchase grants have `source_id LIKE 'cs_live_test%'`/`'cs_test%'`.
+
+### 3c. The cross-cutting result of this whole sweep
+
+**The production environment has almost no customer activity, so most of what merged this
+week is deployed but unexercised.** Six real HTTP requests to storefront-api in twelve
+hours; zero `POST /api/v1/events` ever; one purchase grant in two days; zero identity
+adoptions; zero `cta_click` in the table's lifetime. Every deploy in this window is real —
+I checked each one — and almost none of them has had the chance to be either right or wrong
+in production. That, not any individual defect, is the honest summary of the last three days.
 
 ---
 
@@ -209,11 +264,21 @@ any real customer.
 The author said so explicitly: *"Not verified: the jsonb round-trip against real Postgres."*
 It still is not, and **waiting will not help** — nothing is writing to the table.
 
-Measured 2026-09-07 ~19:00Z: 60 rows, **0 non-null `meta` all time**, 0 rows since the merge,
-latest row `2026-09-06 03:27:52Z` (~27h *before* the merge, so PR 28 did not break it).
-Cause: **zero `POST /api/v1/events` in 4,449 log events** — six genuine requests in twelve
-hours. `cta_click` is **0 of 60** impressions, all time; the table has only ever held
-`impression` rows.
+Measured 2026-09-07 ~19:00Z: 60 rows, **0 non-null `meta` all time**, 0 rows since the merge.
+Cause, and this is the load-bearing evidence: **zero `POST /api/v1/events` in 4,449 log
+events** — six genuine requests in twelve hours, against an app that access-logs every
+request. `cta_click` is **0 of 60**; the table has only ever held `impression` rows.
+
+> **Corrected.** An earlier draft led with "the table went quiet ~27h *before* the merge,
+> so PR 28 did not break it." That timing argument is an **over-read and has been dropped**
+> — `storefront-api` measured the baseline and my own data already contained the
+> refutation. 60 rows over an 11-day span but only **9 active days**, mean **6.7 on active
+> days**, and the series holds two interior zero-days (**2026-09-01**, **2026-09-04**)
+> predating all of this. A ~40h gap therefore sits *at the edge of* the observed pattern,
+> not outside it, and at that baseline density "quiet" and "broken" are not separable from
+> the row count at all. The conclusion (PR 28 did not break the write path) still stands —
+> it rests on the log evidence above, and on PR 28 touching only storefront-api, never the
+> client that would emit.
 
 I closed the read-only half: the 6-column INSERT is sufficient (`id`, `occurred_at` are the
 only other NOT NULL columns and both default), `meta` is jsonb/nullable/no-default, and
@@ -237,6 +302,47 @@ demonstrably idle.
 
 ---
 
+## 4c. Outcome of the handoff — both gaps closed, and my brief was wrong on one point
+
+`ui-integration-tests` PR #10, 8/8 green, run **against the deployed ECR images** rather
+than source builds. That was the right call and it is the mirror of §5.1: their local
+wallet-api checkout was on `main` at `29a92d4`, **behind** #39, so a source build would have
+compiled the pre-adoption code and produced a confident false **red**. Same failure mode as
+mine, pointing the other way.
+
+**Correction to my §4a brief, from them, and it is right.** Adoption does **not** repoint a
+Cognito identity at a wallet — it is an additive `INSERT` into `user_identity`
+(`db.add(UserIdentity(..., origin="adopted"))`). I carried the *first* version's destructive
+behaviour (which repointed `user.app_write_id`) into the brief without checking which
+version shipped. The load-bearing assertion is that **both subs still resolve afterwards**,
+not merely that an adopted row exists. My safety caution stood on outcome and they honoured
+it — throwaway `e2e-adopt-` wallets, user 148 untouched.
+
+**Their `last_seen_at` finding: CONFIRMED**, though my first cut looked like a refutation.
+Raw numbers suggest the column moves — 162 of 265 rows have `last_seen_at > created_at`, max
+drift 218 days. It does not. `max(last_seen_at)` per origin exactly equals `max(created_at)`
+per origin, and **zero** rows have `last_seen_at` later than the newest insert in the table.
+The 162 are backfill rows *seeded* at insert with historical activity against a backdated
+`created_at` (backfill `created_at` spans 2025-12-27 → 2026-09-05). Nothing has advanced
+after its own insert. **Separate seeded from advanced before reading drift as motion.**
+
+**One claim of theirs I dispute — unresolved, not refuted.** They report "the audience gate
+ships INERT in prod, ARMED in the e2e stack, so a green e2e run is strictly stronger than
+prod." The deployed taskdef `flashback-fleet-wallet-api:6` **does wire `COGNITO_CLIENT_ID`
+as a Secrets Manager secret**. The gate is
+`audience_ok = (not expected_aud) or auth.audience == expected_aud`, so it is inert only
+when the value is **empty**. The source comment at `users.py:107` ("defaults to `""` and is
+not set today") is at minimum unreliable for the deployed task.
+
+**What I could not check:** whether that secret *resolves* non-empty — `grafana_readonly`
+has no `secretsmanager:GetSecretValue`, so I asserted key presence and never the value.
+
+It matters twice: if the gate is armed, the "strictly stronger" line is wrong and may run
+backwards; and an armed gate with a non-matching audience would **silently decline**
+adoption — a second candidate explanation for zero prod adoptions, distinct from "no
+traffic". It lands in the `identity_email_conflict` branch, which logs `audience_ok=%s`, so
+one real attempt settles it.
+
 ## 5. Two things to carry into any future verification
 
 1. **`git grep <mergeSha>`, never a working-tree grep.** The tree is routinely ahead of the
@@ -244,3 +350,16 @@ demonstrably idle.
 2. **Silence is only evidence once you have proved the thing would have spoken.** Check that
    the code logs, that your pattern matches the literal string, and that your log stream
    covers the window. Two of my findings depended entirely on getting this right.
+
+3. **A gap in a count is only evidence once you have proved the baseline is dense enough to
+   notice one.** `ui-integration-tests`' generalization of rule 2, and it caught me: I read
+   a ~40h gap in `storefront_event` as a signal against a series averaging 6.7 rows on
+   active days that already contained two interior zero-days. **Establish the active-day
+   rate and the interior zero-days before calling any gap anomalous** — and note that both
+   my raw daily counts and the corrected reading came from the same query. The refutation
+   was already on my screen; I led with the timing argument anyway.
+
+4. **Separate seeded-at-insert from advanced-by-running-code before reading drift as
+   motion.** `user_identity.last_seen_at` shows 162 of 265 rows "drifting" up to 218 days
+   and has in fact never advanced after its own insert. Compare `max(col)` against
+   `max(created_at)` before concluding a column moves.
