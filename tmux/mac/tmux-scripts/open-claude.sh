@@ -509,7 +509,24 @@ that nothing announces. If a number must appear, stamp it as a measurement with 
 
 **Say what would have made you wrong.** A green check that cannot fail carries no information.
 If you report a passing test, a clean sweep, or "no instances found", state what a failure
-would have looked like and confirm that outcome was actually reachable.'
+would have looked like and confirm that outcome was actually reachable.
+
+**Every PR body carries a `VERIFY:` line.** One line, naming a measurement that would come
+out DIFFERENT if your change did not work:
+
+    VERIFY: /health reports 0.1.463 and ECS rolloutState=COMPLETED
+    VERIFY: the leaderboard query returns 0 rows for user_id = 0
+    VERIFY: operator revenue for location 4 is unchanged (this merge is additive-only)
+
+It must be something someone else can run. `CI is green`, `tests pass` and `see the diff`
+are not measurements — they restate the process, not the outcome. A verifier agent reads
+these after merge and reports CONFIRMED, DRIFTED, or UNFALSIFIABLE.
+
+**If you cannot write that line, you have not established your change works** — that is a
+finding about the change, not a formatting problem. Say so in the PR rather than inventing
+a claim. Baseline when this was introduced: 24 merges across the fleet in three days, and
+not one carried a falsifiable claim — including a merge reported as "deployed" whose new
+predicates were wired to no query at all.'
 fi
 
 # ── Review partner (set NEXUS_REVIEW_PARTNER=<fqdn> at spawn) ──────────────
