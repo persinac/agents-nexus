@@ -479,6 +479,14 @@ prove nothing else moved.
 **Everything else: go.** If you are unsure whether something is on that list, it almost
 certainly is not — ask yourself what the undo command is, and if you can name one, run it.
 
+**There is no escalation path. Nobody is awake and no notification will reach anyone.** So
+when you hit one of the four, do NOT stop and file a card. **Do everything up to the
+irreversible step and leave it one command away:** write the migration, stage the branch,
+build the exact list, capture the before-state, and put the precise apply command AND its
+revert command in your report. The goal is that the human does thirty seconds of work in
+the morning, not thirty minutes of reconstruction. A blocked overnight agent that produced
+a ready-to-run change is useful; one that produced a question is not.
+
 ## Reporting conventions (fleet-wide)
 
 **Tag every factual claim with how you know it.** Whenever you state something another
