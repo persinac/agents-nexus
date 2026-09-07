@@ -71,6 +71,27 @@ EOF
   exit 2
 fi
 
+# ── Guard 3: unbalanced single quotes ──────────────────────────────────────
+# The command is re-parsed by the pane's shell, so an apostrophe inside a
+# single-quoted seed ("that column's first writer") closes the quote early and the
+# rest of the line becomes garbage. Same failure class as guard 1: valid where you
+# typed it, broken where it is re-read. Caught on the verifier's first spawn.
+_q_count=$(printf '%s' "$CMD" | tr -cd "'" | wc -c)
+if [ $((_q_count % 2)) -ne 0 ]; then
+  cat >&2 <<'EOF'
+agent-spawn: REFUSED — odd number of single quotes in the command.
+
+  The pane's shell re-parses this line, so an apostrophe inside a single-quoted
+  value ("the column's writer") terminates the quote early and the remainder is
+  parsed as garbage. The pane is created, the shell dies, and substrate reports
+  exit 0.
+
+  Fix: remove apostrophes from seed text, or write them as a quote-escape:
+      'that column'"'"'s first writer'
+EOF
+  exit 2
+fi
+
 # ── Inject the review partner, if named ────────────────────────────────────
 if [ -n "$PARTNER" ]; then
   case "$CMD" in
