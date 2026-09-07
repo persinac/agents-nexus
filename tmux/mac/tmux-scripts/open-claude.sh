@@ -441,8 +441,41 @@ else
   seed_trust
 fi
 
+# ── Reporting conventions (always injected; NEXUS_INJECT_CONVENTIONS=0 to omit) ──
+# Added 2026-09-07 after an overnight multi-agent run. An UNTAGGED claim from the
+# orchestrator ("user.is_internal is read by nothing") was wrong, propagated to three
+# agents, and was caught only because one of them happened to re-derive it. That column
+# drives a customer-facing revenue query; a backfill on the strength of it would have
+# silently changed operator reports. The tag is one word and stops that at the first hop.
+conventions_section=""
+if [ "${NEXUS_INJECT_CONVENTIONS:-1}" = "1" ]; then
+  conventions_section='## Reporting conventions (fleet-wide)
+
+**Tag every factual claim with how you know it.** Whenever you state something another
+agent or the orchestrator might act on:
+
+- `VERIFIED <file:line>` / `VERIFIED <command>` — you checked it yourself, this session
+- `RELAYED` — you are passing on someone else'"'"'s claim, unchecked
+- `ASSUMED` — plausible, reasoned from, not checked
+
+**An untagged claim will be read as VERIFIED.** If you did not check it, say so — including
+when the claim came from the orchestrator. "My orchestrator told me" is RELAYED, not
+VERIFIED, and relaying it untagged is how one wrong claim reaches three agents at once.
+
+**Before acting irreversibly on a RELAYED claim, re-derive it.** Cheaply, once. Applies to
+migrations, merges, deletes, prod config, and anything a customer can see.
+
+**Derivable values: derive them, never record them.** A commit count, a row count, a file
+list — quote the COMMAND, not the number. A recorded derivable is a fact with an expiry date
+that nothing announces. If a number must appear, stamp it as a measurement with a time.
+
+**Say what would have made you wrong.** A green check that cannot fail carries no information.
+If you report a passing test, a clean sweep, or "no instances found", state what a failure
+would have looked like and confirm that outcome was actually reachable.'
+fi
+
 # ── Launch claude with assembled context ───────────────────────────────────
-if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" ] || [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ] || [ -n "$pointer_section" ]; then
+if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" ] || [ -n "$context" ] || [ -n "$registry_section" ] || [ -n "$memory_section" ] || [ -n "$pointer_section" ] || [ -n "$conventions_section" ]; then
   prompt=""
   # Seed first: it is the actual task this agent was launched to do.
   if [ -n "$seed_section" ]; then
@@ -471,6 +504,12 @@ if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" 
   if [ -n "$registry_section" ]; then
     [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
     prompt="${prompt}${registry_section}"
+  fi
+  # Conventions last: they govern how everything above gets reported back, and the
+  # closing position is the one an agent re-reads when composing a report.
+  if [ -n "$conventions_section" ]; then
+    [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
+    prompt="${prompt}${conventions_section}"
   fi
   exec claude "${claude_args[@]}" "$prompt"
 else
