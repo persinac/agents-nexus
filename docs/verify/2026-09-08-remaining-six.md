@@ -79,7 +79,7 @@ positive worth recording:** counting all `unit="..."` occurrences showed a *stil
 declaration. Exactly one cent-unit metric declaration exists and it uses the annotation form.
 `unit="s"` ×2 is deliberate per the PR.
 
-## flashback-cns#216 — `9706ba29e4` — **CONFIRMED** (deploy and effect)
+## flashback-cns#216 — `9706ba29e4` — deploy CONFIRMED; **metric fires, join correlation UNVERIFIED**
 
 Claim: per-machine relay silence is now schedule-aware, because the location-level
 `location_kind_all_expected_dark` reads 0 where only one machine of six powers down.
@@ -135,10 +135,18 @@ merges had not landed.
 | infrastructure#107 | CONFIRMED — debounce shipped; `execErrState: Alerting` still armed |
 | flashback-cns#214 | **CONFIRMED** — reconciler reports 0 unfulfilled, sweep healthy |
 | flashback-cns#215 | CONFIRMED |
-| flashback-cns#216 | **CONFIRMED** — effect measured; per-entity series fires incl. Brigid's machine 15 |
+| flashback-cns#216 | metric fires (Brigid's machine 15); **join correlation unverified** — Trello 613 reopened |
 | flashback-cns#217 | CONFIRMED |
 
-**All six now CONFIRMED.** cns#216 and cns#214 were both closed by direct measurement after
-this document was first written — see the corrections above. The only thing still open across
-the whole sweep is the infrastructure#107 `execErrState` decision, filed as Trello card 612,
-which needs an owner rather than a measurement.
+**Five CONFIRMED; cns#216 is partially confirmed.** cns#214 was closed by direct measurement.
+cns#216's metric demonstrably fires — the FAIL condition is ruled out — but the *correlation*
+half is unverified: series-goes-high is necessary, not sufficient, since the join can still
+mismatch on labels. **I archived Trello 613 on half its own PASS condition and have reopened
+it** with the narrower scope: confirm `kcv-silence` did NOT fire for an entity while its
+series was 1, which needs a correlated *range* query rather than an instant one.
+
+Trello 612 (infrastructure#107) also narrowed: `execErrState: Alerting` is **deliberate** and
+must stay — the intent is written four lines above it in the ConfigMap. The surviving defect
+is the **wording**: on an exec error there is no `$values.B`, so both annotations render a
+blank count while still asserting hostility and recommending tablet revocation. The debounce
+changed how often it fires, not what it says.
