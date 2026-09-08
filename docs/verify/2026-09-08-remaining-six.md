@@ -43,16 +43,29 @@ error that persists past 5 minutes still pages as *"Possible PIN guessing… rev
 if hostile."* Whether that is acceptable is a judgment call, but the exec-error path is still
 armed and the PR reads as though it was closed.
 
-## flashback-cns#214 — `dea36af662` — **deploy CONFIRMED, premise only half-checkable by me**
+## flashback-cns#214 — `dea36af662` — **CONFIRMED** (deploy and premise)
 
 `payment-reconciler` deployment is live in namespace `flashback-fleet`, **1/1**, age 2d21h,
 image `flashback-cns:0.1.246`.
 
-**What I could not check, and why it is a real limit rather than an omission:** the reconciler
-compares *Stripe paid sessions* against *issued grants*. I have the grants side only —
-`pinball.token_grant` shows 170 `source_type='purchase'` grants across 168 distinct
-checkouts, 1 since the merge. **The Stripe side is not in Postgres**, so "paid but no tokens"
-is not derivable from my access. I did not verify the premise; I verified the workload runs.
+**CORRECTED — the premise IS checkable, and it checks out.** I first recorded this as a hard
+limit: the reconciler compares *Stripe paid sessions* against *issued grants*, and the Stripe
+side is not in Postgres. **That was wrong.** The service publishes its own result:
+
+```
+payments_reconcile_ok                   -> 1     (sweep succeeded)
+payments_unfulfilled_count              -> 0
+payments_unfulfilled_amount_cents       -> 0
+payments_unfulfilled_oldest_age_seconds -> 0
+```
+
+**Zero unfulfilled paid checkouts**, against the 9 sessions / $84.28 that accumulated
+undetected over ~3 months before this existed. I went looking for the *input* and missed that
+the *output* was already exposed as a metric — the general form being: when a service exists
+to compute a comparison, read its answer before trying to recompute it.
+
+Note `payments_reconcile_ok` is the load-bearing one: a count of 0 and a broken exporter read
+identically on a dashboard.
 
 ## flashback-cns#215 — `06804fccc8` — **CONFIRMED**
 
@@ -120,11 +133,12 @@ merges had not landed.
 |---|---|
 | storefront-api#27 | CONFIRMED — docs-only, claim exact, needed nothing |
 | infrastructure#107 | CONFIRMED — debounce shipped; `execErrState: Alerting` still armed |
-| flashback-cns#214 | deploy CONFIRMED; premise not checkable from Postgres alone |
+| flashback-cns#214 | **CONFIRMED** — reconciler reports 0 unfulfilled, sweep healthy |
 | flashback-cns#215 | CONFIRMED |
 | flashback-cns#216 | **CONFIRMED** — effect measured; per-entity series fires incl. Brigid's machine 15 |
 | flashback-cns#217 | CONFIRMED |
 
-**One thing left open:** cns#214's premise needs the Stripe side, which is outside this
-station's access. cns#216 was closed by direct measurement (see above). The
-infrastructure#107 gap is filed as Trello card 612.
+**All six now CONFIRMED.** cns#216 and cns#214 were both closed by direct measurement after
+this document was first written — see the corrections above. The only thing still open across
+the whole sweep is the infrastructure#107 `execErrState` decision, filed as Trello card 612,
+which needs an owner rather than a measurement.
