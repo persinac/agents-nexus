@@ -48,6 +48,32 @@ expect this — **`kubectl` reaches the prod cluster** (`fbf-cp-1`/`fbf-cp-2`). 
 alerting lives in ConfigMaps in namespace `observability`, not as `PrometheusRule` CRDs
 (that CRD is not installed — my first attempt errored).
 
+### ⚠️ The fleet is SPLIT ACROSS TWO REGIONS — state it as a fact, not a lesson
+
+`aws --profile flashback` defaults to **us-east-1**, and a listing there looks complete and
+is not. This cost me a false "merged but never deployed" finding on infrastructure#103, and
+cost the orchestrator an `Unable to describe` on the same trap an hour later.
+
+| region | what lives there |
+|---|---|
+| **us-east-1** | ECS cluster `flashback-fleet` (`management-api`, `storefront-api`, `wallet-api`), their ECR repos and `/aws/ecs/...` log groups, and 4 Lambdas (`test`, `ask_wolfram`, `healthcheck-trigger`, `healthcheck-confirm-callback`). **Zero Amplify apps. Zero Cognito pools.** |
+| **us-east-2** | All Amplify: `pinball-storefront` `d2pu6iph9ucr2s`, `pinball-db` `d28q9q9vc7zpeg`, `kiosk` `d2k0f6h8rbbbge`, `management-dashboard` `d3scukgdfa2fkw`. The `cognito-auto-link` Lambda. **All 3 Cognito pools.** |
+
+**Cognito, enumerated 2026-09-08** — three pools, each with **exactly one** app client:
+
+| pool | name | sole client |
+|---|---|---|
+| `us-east-2_ovfrqG49D` | pinball-storefront | `storefront-web` |
+| `us-east-2_Uw3ogIQSm` | pinball-management | `management-dashboard` |
+| `us-east-2_LWGIR5Cd9` | pinball-management-test | `ui-integration-tests` |
+
+**All three client IDs are 26 characters** — that is simply the standard Cognito
+app-client-id length. I earlier offered "the configured secret is 26 chars, matching the
+pool's client" as corroboration that the audience is correct. **That was near-vacuous and is
+withdrawn**: it establishes *shape*, not *identity*, and any of the three would have matched.
+Correctness there rests on `ui-integration-tests`' SHA256-prefix comparison, which is
+identity. See rule 5 — I had checked armedness and dressed it as correctness.
+
 ---
 
 ## 2. The order I ran things, and why that order
@@ -451,3 +477,15 @@ zero adoptions.**
    as rule 5 in a different register — **presence of a syntactic marker read as presence of
    an enforced property.** When a fix is a type-level token, ask what it emits before
    believing it changes behaviour.
+
+9. **An empty result and a failed call are byte-identical — only the exit code or error class
+   tells them apart.** The orchestrator's, and the sharpest generalisation of rule 2 we
+   reached: rule 2 says silence is not evidence until you prove the thing would have spoken;
+   this says **zero bytes is not a value until you prove the call succeeded.** They were one
+   step from reporting "the secret is empty, therefore the gate is inert" off a read that
+   returned 0 bytes — which was a `ValidationException` from an ARN they had not stripped of
+   its `:jsonkey::` suffix. Same shape as the NUL-byte grep in this repo's CLAUDE.md, where
+   `Binary file matches` degrades to empty output under `-q`/`-c`. **Check the error class
+   before reading anything into an empty result** — and note that the wrong conclusion here
+   would have been *confidently* wrong, in the same direction as the stale comment that
+   started the whole thread.
