@@ -541,6 +541,20 @@ settled to the next person.
    said `COGNITO_CLIENT_ID` "is not set today" was false for the deployed task and would have
    stayed false silently.
 
+   **THE OTHER HALF, and I violated it the same night (orchestrator, 2026-09-08): a comment is
+   not evidence of CONFIG, but it IS evidence of INTENT — read it before judging a DESIGN.**
+   I checked the deployed kiosk ConfigMap, saw `execErrState: Alerting` still set after a fix
+   that claimed to stop exec errors paging as security events, and called the fix incomplete.
+   The reasoning sat **four lines above the setting in the same ConfigMap**: *"a security
+   control that silently stops evaluating (DB down, grant revoked) must say so rather than go
+   dark."* The config matched the intent exactly; removing the setting would have made a
+   security control fail silently — the opposite of the fix.
+
+   So the rule is directional, not a blanket distrust of comments. **Config questions: measure
+   the deployment, never the comment. Design questions: read the intent before calling
+   something unfinished.** Applying the first half where the second belonged produced a
+   confident wrong verdict on a merge that was correct.
+
 8. **A type-level construct is not a runtime guarantee** — and this is the most dangerous of
    the eight, because unlike the others **it looks *right* in a pull request.** From `funnel`
    → `notif` → `ui-integration-tests`; verified here both ways.
