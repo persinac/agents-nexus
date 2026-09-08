@@ -489,3 +489,23 @@ zero adoptions.**
    before reading anything into an empty result** — and note that the wrong conclusion here
    would have been *confidently* wrong, in the same direction as the stale comment that
    started the whole thread.
+
+   **Rule 5 caught three agents in one day, which is why it is the one to push fleet-wide.**
+   The same collapse in three registers: `ui-integration-tests` read a source comment as
+   deployed config (presence→armedness); the orchestrator verified configuration and then
+   asserted a runtime consequence they had not measured (armedness→correctness); I matched a
+   ClientId *length* and called it an audience match (shape→identity). None of us would have
+   caught our own. **Name which of the three you checked, every time.**
+
+   The wallet-api audience question resolves into **two** claims, and conflating them is what
+   produced two of those three errors:
+   - **config-match** — does `COGNITO_CLIENT_ID` equal the pool's client id? **ANSWERED** by
+     `ui-integration-tests`' SHA256-prefix comparison.
+   - **runtime-exercise** — has a real federated token ever driven token parsing, the
+     `aud`-as-list-vs-string path, and the `is_id_token` branch? **UNANSWERED**, and
+     unanswerable from logs *because* of the no-traffic condition. The gate is armed and has
+     **declined nothing** — a pre-condition ahead of the first real adoption, not a live
+     rejection. e2e is the only place it can be settled before a customer finds out.
+
+   Fleet note: every agent on this box commits as `persinac`, so **git authorship never
+   discriminates between agents.** Do not infer who wrote a branch from its author field.
