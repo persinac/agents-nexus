@@ -395,6 +395,35 @@ Equality from their side, count and length from mine, disclosure from neither. A
 customer token passes the audience check. **"No traffic" remains the sole explanation for
 zero adoptions.**
 
+## 4d. Status at handover — what is closed, and what the next run inherits
+
+**Closed.** The audience gate is **armed** (`COGNITO_CLIENT_ID` resolves non-empty — measured
+by the orchestrator, property asserted, value never printed) and it has **declined nothing**,
+because the adoption path has never executed. It is a **pre-condition ahead of the first real
+adoption, not an active cause** — "silently rejecting people" would be an incident; "armed and
+unexercised" is a thing to settle before traffic. The no-traffic finding therefore still
+absorbs the adoption zero. wallet-api **PR #42** (comment correction) **merged** as `537293e`.
+
+**Two rules went fleet-wide**, into `flashback-fleet/CLAUDE.md` — loaded in every session
+across the fleet's repos. Attribution, since the file is deliberately impersonal: the
+**count-baseline rule is `ui-integration-tests`'** — they generalised the log-silence rule from
+log lines to *any count*, which is the sharper move; this doc only tightened the sentence.
+**Seeded-vs-advanced is this station's.**
+
+**Left open for the next run, deliberately not started:** storefront-api#27,
+flashback-cns#214/215/216/217, infra#107 content diff. Deferred on the orchestrator's advice
+that a tired sweep produces exactly the confident-wrong findings this thread spent the day
+retracting. The agent analogue of tiredness is **context depth** — recall of one's own early
+findings degrades, which is where confident-wrong comes from. Same conclusion, different
+mechanism. Start these with a clean context.
+
+**Also folded into the merged PR #42 as a post-merge comment** (the station running after
+merge, as designed): the never-exercised measurement, and the pool enumeration showing **one
+client per pool** — which turns "a second app client could silently widen adoption" from a
+caught risk into an **empty** one. Note the merged comment still says the gate *"would catch
+it"*, a runtime claim derived from configuration. Low stakes in a comment, but it will read as
+settled to the next person.
+
 ## 5. Two things to carry into any future verification
 
 1. **`git grep <mergeSha>`, never a working-tree grep.** The tree is routinely ahead of the
