@@ -112,10 +112,26 @@ curl -s https://<svc>.flashbackfleet.com/health
 
 **The ECS task definition is not evidence of what is deployed.**
 `flashback-fleet-management-api:7` was registered **2026-08-28** and pins the mutable tag
-`:latest`. Deploys re-pull `:latest` without creating a revision. Use, in increasing
-strength: ECR `imagePushedAt` (the fleet dual-tags, so `:latest` also carries the semver)
-→ deployment `createdAt` / `rolloutState=COMPLETED` → `/health` version → the container's
-own startup log line.
+`:latest`. Deploys re-pull `:latest` without creating a revision. Use ECR `imagePushedAt`
+(the fleet dual-tags, so `:latest` also carries the semver), then the deployment's
+`rolloutState`, then `/health`, then the container's own startup log line.
+
+> **⚠️ Correction (Alex, 2026-09-07 — `docs/verifier-agent.md`): `/health` flips BEFORE the
+> rollout completes.** An earlier draft of this document ranked `/health` *above*
+> `rolloutState` as the strongest signal. **That ordering was wrong.** Measured on
+> `management-api` 0.1.464: `/health` served the new version for roughly **six minutes**
+> while ECS `rolloutState` was still `IN_PROGRESS`. During that window both old and new
+> tasks answer, so a version poll can return the new value from a task about to be replaced —
+> or while the rollout can still fail and roll back.
+>
+> **Wait for `rolloutState=COMPLETED` at the expected running count, then confirm `/health`.**
+> Version flip is a *leading indicator*, not a completion signal. This is the fourth field
+> the fleet has found that looks like the thing and does not move with it, after the ECS
+> taskdef revision, the frozen `VERSION` file, and `git diff` on untracked paths.
+>
+> This does not move any verdict in these documents — every deploy claim here checked
+> `rolloutState=COMPLETED` *and* `/health` — but the guidance as written would have misled
+> someone who checked only the cheaper one.
 
 Cluster is `flashback-fleet` (not `flashback-cluster`). Services: `management-api`,
 `storefront-api`, `wallet-api`.
