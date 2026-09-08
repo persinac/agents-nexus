@@ -404,11 +404,30 @@ adoption, not an active cause** — "silently rejecting people" would be an inci
 unexercised" is a thing to settle before traffic. The no-traffic finding therefore still
 absorbs the adoption zero. wallet-api **PR #42** (comment correction) **merged** as `537293e`.
 
-**Two rules went fleet-wide**, into `flashback-fleet/CLAUDE.md` — loaded in every session
-across the fleet's repos. Attribution, since the file is deliberately impersonal: the
-**count-baseline rule is `ui-integration-tests`'** — they generalised the log-silence rule from
-log lines to *any count*, which is the sharper move; this doc only tightened the sentence.
-**Seeded-vs-advanced is this station's.**
+**Six rules went fleet-wide**, into `flashback-fleet/CLAUDE.md` — loaded in every session
+across the fleet's repos. Verified present rather than taken on relay: rules **3, 4, 5, 6, 7
+and 9** all appear (rule 9 with the `psql`-pipeline exit-code row and the
+`secretsmanager` `ValidationException` as its worked example).
+
+**Attribution, since the file is deliberately impersonal and three of the six are not this
+station's:**
+
+| rule | whose |
+|---|---|
+| 3 baseline density · 5 presence≠armedness≠correctness · 7 comment≠deployed config | **`ui-integration-tests`** |
+| 4 seeded-vs-advanced · 6 name the layer | this station |
+| 9 empty result ≠ failed call | **the orchestrator** |
+
+Rule 5 in particular — the one the orchestrator rates highest — is **theirs**; only the
+*diagnosis* of how it caught three of us is this doc's. **Three of the six best rules came
+from the agent this station was reviewing**, which is a stronger argument for the pairing
+mechanism than any framing, and it is only true if the credit line stays accurate.
+
+**⚠️ Rule 8 did NOT go fleet-wide** (`grep -c type-level` → 0) and is the one that most
+warrants it: it is the only rule of the nine describing an error that **looks right in a pull
+request** — review, CI and the diff all stay green. The other eight describe errors that look
+wrong once measured. A rules file is therefore the only place rule 8 can be caught. Flagged
+for promotion.
 
 **Left open for the next run, deliberately not started:** storefront-api#27,
 flashback-cns#214/215/216/217, infra#107 content diff. Deferred on the orchestrator's advice
