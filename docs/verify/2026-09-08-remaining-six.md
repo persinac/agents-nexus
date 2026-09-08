@@ -66,7 +66,7 @@ positive worth recording:** counting all `unit="..."` occurrences showed a *stil
 declaration. Exactly one cent-unit metric declaration exists and it uses the annotation form.
 `unit="s"` ×2 is deliberate per the PR.
 
-## flashback-cns#216 — `9706ba29e4` — **deploy CONFIRMED, effect UNVERIFIED**
+## flashback-cns#216 — `9706ba29e4` — **CONFIRMED** (deploy and effect)
 
 Claim: per-machine relay silence is now schedule-aware, because the location-level
 `location_kind_all_expected_dark` reads 0 where only one machine of six powers down.
@@ -75,12 +75,25 @@ Claim: per-machine relay silence is now schedule-aware, because the location-lev
 references `location_entity_expected_dark` alongside the location-level metric, with an
 `unless on (location…)` join.
 
-**Open and explicitly unverified:** whether `location_entity_expected_dark` ever actually
-goes high in production. If the series exists but never fires, the silence suppresses
-nothing and the nightly false pages continue — the exact failure the PR exists to fix. A
-killed subagent surfaced a partial lead in this direction; **I did not verify it and am not
-relaying it as fact.** This is the one item of the six that warrants a follow-up measurement
-against live Prometheus data.
+**RESOLVED — effect CONFIRMED against live Prometheus.**
+`max_over_time(location_entity_expected_dark[7d])` → 68 series (20 `bridges`, 48 `machines`),
+**18 nonzero**, including `machines / brigid-s-bottlehouse-4-4 / 15` — **the PacMan case the
+PR was written for** — plus both Fenix relays and four alex-garage machines. By contrast
+`max_over_time(location_kind_all_expected_dark[7d])` is 1 only at fenix and 0 everywhere
+else, which is precisely the gap #216 exists to close. It is closed.
+
+**Two corrections, both against myself, and the second is the one worth keeping:**
+
+1. The killed subagent's lead — *"the per-entity machine series never oscillates"* — is
+   **REFUTED**. Filing it as a hypothesis rather than a finding was the right call; as a
+   finding it would have been wrong in the permanent record.
+2. **My own first read was also wrong, and would have published.** I capped output at 8 rows;
+   all 8 happened to be `kind="bridges"`, all zero except Fenix — which reads cleanly as
+   "the per-entity metric only fires where the old location-level one already did, so
+   Brigid's is uncovered." The `machines` kind holds **48 of the 68 series** and sat entirely
+   below the cut. **A truncated result set is not a sample.** Check cardinality and the label
+   dimensions before reading a pattern into the first N rows — a `head`-shaped limit is a
+   sampling decision disguised as a display decision.
 
 ## flashback-cns#217 — `a1544159d7` — **CONFIRMED**
 
@@ -109,9 +122,9 @@ merges had not landed.
 | infrastructure#107 | CONFIRMED — debounce shipped; `execErrState: Alerting` still armed |
 | flashback-cns#214 | deploy CONFIRMED; premise not checkable from Postgres alone |
 | flashback-cns#215 | CONFIRMED |
-| flashback-cns#216 | deploy CONFIRMED; **effect unverified** — does the per-entity series ever fire? |
+| flashback-cns#216 | **CONFIRMED** — effect measured; per-entity series fires incl. Brigid's machine 15 |
 | flashback-cns#217 | CONFIRMED |
 
-**Two things left open, both stated rather than buried:** the cns#216 per-entity series needs
-a live Prometheus check, and cns#214's premise needs the Stripe side, which is outside this
-station's access.
+**One thing left open:** cns#214's premise needs the Stripe side, which is outside this
+station's access. cns#216 was closed by direct measurement (see above). The
+infrastructure#107 gap is filed as Trello card 612.
