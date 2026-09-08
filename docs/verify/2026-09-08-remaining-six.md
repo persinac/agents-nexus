@@ -79,7 +79,7 @@ positive worth recording:** counting all `unit="..."` occurrences showed a *stil
 declaration. Exactly one cent-unit metric declaration exists and it uses the annotation form.
 `unit="s"` ×2 is deliberate per the PR.
 
-## flashback-cns#216 — `9706ba29e4` — deploy CONFIRMED; **metric fires, join correlation UNVERIFIED**
+## flashback-cns#216 — `9706ba29e4` — **CONFIRMED** (deploy and effect, join tested directly)
 
 Claim: per-machine relay silence is now schedule-aware, because the location-level
 `location_kind_all_expected_dark` reads 0 where only one machine of six powers down.
@@ -135,15 +135,22 @@ merges had not landed.
 | infrastructure#107 | CONFIRMED — debounce shipped; `execErrState: Alerting` still armed |
 | flashback-cns#214 | **CONFIRMED** — reconciler reports 0 unfulfilled, sweep healthy |
 | flashback-cns#215 | CONFIRMED |
-| flashback-cns#216 | metric fires (Brigid's machine 15); **join correlation unverified** — Trello 613 reopened |
+| flashback-cns#216 | **CONFIRMED** — join tested: 14 ungated → 10 gated, 4 series suppressed |
 | flashback-cns#217 | CONFIRMED |
 
-**Five CONFIRMED; cns#216 is partially confirmed.** cns#214 was closed by direct measurement.
-cns#216's metric demonstrably fires — the FAIL condition is ruled out — but the *correlation*
-half is unverified: series-goes-high is necessary, not sufficient, since the join can still
-mismatch on labels. **I archived Trello 613 on half its own PASS condition and have reopened
-it** with the narrower scope: confirm `kcv-silence` did NOT fire for an entity while its
-series was 1, which needs a correlated *range* query rather than an instant one.
+**All six CONFIRMED.** cns#214 was closed by direct measurement.
+cns#216 is now confirmed on **effect**, not just deploy. The alert's own expression, split
+three ways and reproduced independently by both the orchestrator and this station:
+`count(...kcv_alert_ratio{kind='silence'})` = **14** ungated, **10** with the
+`unless on (location, machine) label_replace(...)` gate, RHS alone = **8**. **Four series
+suppressed right now** — a label mismatch would have left gated == ungated == 14.
+
+I had archived Trello 613 the first time on **half its own PASS condition**: I measured that
+the series fires and never checked that suppression follows. It was reopened for that reason
+and is now closed on the join test. Residual, recorded rather than buried: this is an
+*instant* query, not the range correlation the card specified — it proves the join matches
+now, not that it suppressed during a specific past window. Judged sufficient because the open
+risk was label mismatch and that is decisively excluded.
 
 Trello 612 (infrastructure#107) also narrowed: `execErrState: Alerting` is **deliberate** and
 must stay — the intent is written four lines above it in the ConfigMap. The surviving defect
