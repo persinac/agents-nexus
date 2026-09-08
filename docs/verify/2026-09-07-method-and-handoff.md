@@ -423,11 +423,31 @@ Rule 5 in particular — the one the orchestrator rates highest — is **theirs*
 from the agent this station was reviewing**, which is a stronger argument for the pairing
 mechanism than any framing, and it is only true if the credit line stays accurate.
 
-**⚠️ Rule 8 did NOT go fleet-wide** (`grep -c type-level` → 0) and is the one that most
-warrants it: it is the only rule of the nine describing an error that **looks right in a pull
-request** — review, CI and the diff all stay green. The other eight describe errors that look
-wrong once measured. A rules file is therefore the only place rule 8 can be caught. Flagged
-for promotion.
+**Rule 8 was promoted after being flagged** — now at `flashback-fleet/CLAUDE.md:201`,
+generalised past the non-null assertion to any construct the compiler removes (`as`,
+`satisfies`, interfaces, type-only imports). **All seven rules from this thread are now
+fleet-wide**, verified present rather than taken on relay.
+
+### A withdrawn claim is not worthless work — separate the claim from the data
+
+The 26-character check was withdrawn as corroboration, correctly: all three clients are 26
+because **26 *is* the standard Cognito length**, so it was a control that could not fail —
+the same shape as a `grep -c` positive control that always matches. That part stays retracted.
+
+But the **three-pool enumeration** that came with it turned out to be the enabling evidence
+for the orchestrator's decisive test. Their hash comparison could rule out the one coherent
+failure mode — `COGNITO_CLIENT_ID` pointing at `management-dashboard`'s client while
+validating the storefront pool — **only because there were named negative candidates to test
+against.** As they put it: *a match against one known id proves much less than a match
+against one of three.*
+
+**Final state of the audience question, settled from three independent directions, no value
+in any transcript:** configured `COGNITO_CLIENT_ID` hashes to `storefront-web`;
+`COGNITO_USER_POOL_ID` hashes to `us-east-2_ovfrqG49D`. Config-match **ANSWERED**.
+Runtime-exercise still **UNANSWERED** — the gate remains armed and never fired.
+
+The lesson: **retract the inference, keep the measurements.** An overclaim withdrawn does not
+retract the data it was built on, and that data may be load-bearing for someone else's test.
 
 **Left open for the next run, deliberately not started:** storefront-api#27,
 flashback-cns#214/215/216/217, infra#107 content diff. Deferred on the orchestrator's advice
