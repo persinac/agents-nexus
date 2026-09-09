@@ -872,6 +872,54 @@ def _changed_files(ws):
     return files
 
 
+_REL_PATH_RE = re.compile(r'(?<![\w/])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8})')
+_EXTEND_CUE_RE = re.compile(
+    r'\b(?:extend|existing|already (?:in|defined)|do not create|don\'t create|not create a new|'
+    r'add (?:it|the \w+) to|alongside)\b', re.I)
+
+
+EXTEND_CUE_WINDOW = 160
+
+
+def _extend_targets(goal: str) -> list:
+    """Repo-relative paths the goal says to EXTEND, by a cue on the same line. Line-bounded
+    because splitting on `.` splits `setup_athena.py` and a wider window leaks across items."""
+    targets = []
+    for m in _REL_PATH_RE.finditer(goal):
+        path = m.group(1)
+        if path.startswith("/") or path in targets:
+            continue
+        lo = goal.rfind("\n", 0, m.start()) + 1
+        hi = goal.find("\n", m.end())
+        hi = len(goal) if hi < 0 else hi
+        lo = max(lo, m.start() - EXTEND_CUE_WINDOW)
+        hi = min(hi, m.end() + EXTEND_CUE_WINDOW)
+        if _EXTEND_CUE_RE.search(goal[lo:hi]):
+            targets.append(path)
+    return targets
+
+
+def _target_file_probes(goal: str, ws: str) -> list:
+    """Deterministic 'did it actually edit that file' check — 1ce34834 created a sibling manifest
+    against an explicit prohibition, which git status answers outright and prose does not."""
+    targets = _extend_targets(goal)
+    if not targets or not os.path.isdir(ws):
+        return []
+    changed = _changed_files(ws)
+    untracked = subprocess.run(["git", "-C", ws, "ls-files", "--others", "--exclude-standard"],
+                               capture_output=True, text=True).stdout.split()
+    out = []
+    for t in targets:
+        exists = os.path.isfile(os.path.join(ws, t))
+        modified = t in changed
+        siblings = [u for u in untracked
+                    if os.path.dirname(u) == os.path.dirname(t) and u != t]
+        out.append({"probe": "extend_target", "path": t, "exists": exists,
+                    "modified": modified, "ok": bool(modified or not exists),
+                    "new_files_in_same_dir": siblings})
+    return out
+
+
 # ── cross-vendor reviewer (Codex) ─────────────────────────────────────────────
 # One of the N adversarial reviewers can run on OpenAI Codex instead of the Claude SDK —
 # a genuine second-model opinion in the verify stage. Read-only, verdict-only, same
@@ -928,10 +976,15 @@ def _reviewer_prompt(goal: str, summaries: list, probes: list, lens: str, cwd: s
         f"merges, or collapses, and any table/file/identifier renamed away from what the goal "
         f"states. Compare them element by element and say which are missing. A tolerant or "
         f"'inferred' mapping is a FAIL, not a mitigation." if refs else "")
+    unmet = [p["path"] for p in probes if p.get("probe") == "extend_target" and not p["ok"]]
+    targets = (
+        f"\n\nTARGET FILES — the goal said to EXTEND these and they were NOT modified: {unmet}. "
+        f"The `extend_target` probes are git ground truth, not opinion. This is a BLOCKER; say so "
+        f"even if a new file beside it is otherwise well written." if unmet else "")
     return (
         f"You are an ADVERSARIAL reviewer using the '{lens}' lens. Find why this mission is NOT "
         f"correctly/completely done. Be strict: if anything is unverified, missing, or wrong, FAIL it. "
-        f"{inspect}{fidelity}\n\n"
+        f"{inspect}{fidelity}{targets}\n\n"
         f"Goal: {goal}\nWork summaries: {json.dumps(summaries)}\n"
         f"Ground-truth probes: {json.dumps(probes)}\n\n"
         'Respond with ONLY JSON: {"pass":true,"findings":[{"severity":"blocker|major|minor","where":"","what":""}]}'
@@ -1010,6 +1063,8 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
                     pass
             probes.append(p)
     probes.extend(_reference_probes(goal))
+    for repo in sorted({s.get("repo") for s in subtasks if s.get("repo")}):
+        probes.extend(_target_file_probes(goal, workspace(mid, repo)))
     summaries = [{"subtask": s["subtask_key"], "status": s["status"],
                   "summary": (s.get("result") or {}).get("summary", "")} for s in subtasks]
 
@@ -1862,6 +1917,20 @@ async def _safe_synthesize(db, mid, goal, subs, verdict, verified=True):
     return art.get("artifact", "")
 
 
+def _gate(db, mid, goal, subs, verdict, art, why: str):
+    """Hold before ANY filing. Covers the exhausted path too: `on_exhausted: partial` files a
+    draft MR + triage tickets, so gating only the verified path still let a dead mission file."""
+    branches = _commit_worktrees(mid, subs, goal)   # the branch is the deliverable; only filing is held
+    db.log_event(mid, "report_gate", {"why": why, "verdict": verdict,
+                                      "artifact": (art or "")[:4000], "branches": branches})
+    db.finish_mission(mid, "gated")
+    print(f"[conductor] GATED before reporting ({why}) · mission {mid}\n"
+          f"[conductor] review the worktree, then release with: "
+          f"conductor.py --resume {mid[:8]}   (unset CONDUCTOR_GATE_BEFORE_REPORT first)")
+    _slack_relay(f"⏸ Conductor {mid[:8]} GATED before reporting ({why}) · {_title(goal)}")
+    return mid, "gated"
+
+
 async def finalize(db, mid, goal, start_round=0):
     """Shared tail for run + resume: DAG/verify/re-plan loop → synthesize → report → finish."""
     verdict, ok = await run_and_verify(db, mid, goal, start_round=start_round)
@@ -1874,6 +1943,8 @@ async def finalize(db, mid, goal, start_round=0):
         # honesty. Default `escalate` keeps the historical stop-and-strand behavior.
         if ON_EXHAUSTED == "partial":
             art = await _safe_synthesize(db, mid, goal, subs, verdict, verified=False)
+            if GATE_BEFORE_REPORT:
+                return _gate(db, mid, goal, subs, verdict, art, "exhausted")
             targets = await report(db, mid, goal, art, subs, verdict, draft=True, triage=True)
             db.finish_mission(mid, "partial")
             db.log_event(mid, "partial", {"verdict": verdict, "replans": replans, "targets": targets})
@@ -1885,15 +1956,7 @@ async def finalize(db, mid, goal, start_round=0):
         return mid, "escalated"
     art = await _safe_synthesize(db, mid, goal, subs, verdict, verified=True)
     if GATE_BEFORE_REPORT:
-        branches = _commit_worktrees(mid, subs, goal)   # the branch is the deliverable; only the filing is held
-        db.log_event(mid, "report_gate", {"verdict": verdict, "artifact": (art or "")[:4000],
-                                          "branches": branches})
-        db.finish_mission(mid, "gated")
-        print(f"[conductor] GATED before reporting · mission {mid}\n"
-              f"[conductor] review the worktree, then release with: "
-              f"conductor.py --resume {mid[:8]}   (unset CONDUCTOR_GATE_BEFORE_REPORT first)")
-        _slack_relay(f"⏸ Conductor {mid[:8]} verified and GATED before reporting · {_title(goal)}")
-        return mid, "gated"
+        return _gate(db, mid, goal, subs, verdict, art, "verified")
     targets = await report(db, mid, goal, art, subs, verdict)
     db.finish_mission(mid, "done")
     print(f"[conductor] DONE · mission {mid} · reported→{targets}")

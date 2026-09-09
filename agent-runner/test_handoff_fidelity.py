@@ -130,6 +130,61 @@ check("fail-closed verdict explains itself",
 check("a verdict missing findings gets an empty list",
       conductor._verdict_json('{"pass": true}')["findings"] == [])
 
+g = (
+    "1. New module pipelines/openrouter_perf.py.\n"
+    "2. EXTEND the existing scripts/setup_athena.py. Do NOT create a new setup script.\n"
+    "3. ADD the CronJob to the existing kubernetes/cronjob.yml. Do NOT create a new manifest file.\n"
+)
+t = conductor._extend_targets(g)
+check("extend cue picks up setup_athena.py", "scripts/setup_athena.py" in t)
+check("extend cue picks up cronjob.yml", "kubernetes/cronjob.yml" in t)
+check("a brand-new module on its own line is NOT an extend target",
+      "pipelines/openrouter_perf.py" not in t)
+check("a cue does not leak across lines",
+      conductor._extend_targets("Extend the existing a/b.py\nAlso write c/d.py\n") == ["a/b.py"])
+check("no cue means no targets",
+      conductor._extend_targets("Write pipelines/foo.py and tests/test_foo.py.") == [])
+check("absolute paths are not extend targets",
+      conductor._extend_targets("Extend the existing /etc/thing/conf.yml here.") == [])
+check("a dotted filename survives the matcher",
+      conductor._extend_targets("Extend the existing scripts/setup_athena.py now.")
+      == ["scripts/setup_athena.py"])
+
+import subprocess as _sp
+
+_wt = tempfile.mkdtemp(prefix="extend-wt-")
+_sp.run(["git", "init", "-q", _wt], check=True)
+os.makedirs(os.path.join(_wt, "kubernetes"))
+os.makedirs(os.path.join(_wt, "scripts"))
+for _f in ("kubernetes/cronjob.yml", "scripts/setup_athena.py"):
+    open(os.path.join(_wt, _f), "w").write("original\n")
+_sp.run(["git", "-C", _wt, "add", "-A"], check=True)
+_sp.run(["git", "-C", _wt, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "base"], check=True)
+
+# the round-0 violation: sibling manifest created, cronjob.yml untouched
+open(os.path.join(_wt, "kubernetes/cronjob-openrouter.yml"), "w").write("new\n")
+open(os.path.join(_wt, "scripts/setup_athena.py"), "a").write("extended\n")
+pr = {p["path"]: p for p in conductor._target_file_probes(g, _wt)}
+check("probe flags the untouched extend target", pr["kubernetes/cronjob.yml"]["ok"] is False)
+check("probe names the sibling that was created instead",
+      "kubernetes/cronjob-openrouter.yml" in pr["kubernetes/cronjob.yml"]["new_files_in_same_dir"])
+check("probe passes the target that WAS modified", pr["scripts/setup_athena.py"]["ok"] is True)
+
+prompt_unmet = conductor._reviewer_prompt(g, [], list(pr.values()), "completeness", _wt)
+check("reviewer is told the unmet target is a blocker", "TARGET FILES" in prompt_unmet)
+check("reviewer prompt names the unmet file",
+      "kubernetes/cronjob.yml" in prompt_unmet.split("TARGET FILES")[1][:200])
+
+# the round-1 fix: cronjob.yml actually extended
+open(os.path.join(_wt, "kubernetes/cronjob.yml"), "a").write("---\nsecond doc\n")
+pr2 = {p["path"]: p for p in conductor._target_file_probes(g, _wt)}
+check("probe clears once the target is really modified", pr2["kubernetes/cronjob.yml"]["ok"] is True)
+check("no TARGET FILES block when every target is met",
+      "TARGET FILES" not in conductor._reviewer_prompt(g, [], list(pr2.values()), "x", _wt))
+check("a goal with no extend cues yields no probes",
+      conductor._target_file_probes("just build pipelines/x.py", _wt) == [])
+
 p_with = conductor._reviewer_prompt("goal", [], probes, "correctness", d)
 p_without = conductor._reviewer_prompt("goal", [], [{"probe": "artifact"}], "correctness", d)
 check("fidelity instruction present when references exist", "FIDELITY CHECK" in p_with)

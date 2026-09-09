@@ -92,15 +92,44 @@ def test_gate_off_reports_as_before():
     assert "report_gate" not in db.kinds()
 
 
-def test_gate_does_not_apply_to_a_failed_mission():
+def test_escalate_path_files_nothing_anyway():
     restore = _patch(ON_EXHAUSTED="escalate")
     try:
         db, status, reported = _finalize(gate=True, ok=False)
-        assert status == "escalated", "a gate is for verified work, not a failure path"
+        assert status == "escalated"
         assert reported is False
         assert "report_gate" not in db.kinds()
     finally:
         restore()
+
+
+def test_gate_covers_the_exhausted_partial_path():
+    """on_exhausted=partial files a DRAFT MR + triage tickets. Gating only the verified path
+    let a dead mission file anyway — mission 1ce34834 was heading straight into it."""
+    restore = _patch(ON_EXHAUSTED="partial")
+    try:
+        db, status, reported = _finalize(gate=True, ok=False)
+        assert status == "gated", f"exhausted+gate must gate, got {status}"
+        assert reported is False, "the gate must stop the draft-MR/triage filing too"
+        assert db.payload("report_gate")["why"] == "exhausted"
+        assert "partial" not in db.kinds()
+    finally:
+        restore()
+
+
+def test_exhausted_partial_still_files_when_ungated():
+    restore = _patch(ON_EXHAUSTED="partial")
+    try:
+        db, status, reported = _finalize(gate=False, ok=False)
+        assert status == "partial"
+        assert reported is True, "without the gate the historical partial behaviour is unchanged"
+    finally:
+        restore()
+
+
+def test_gate_records_why_it_held():
+    db, _s, _r = _finalize(gate=True, ok=True)
+    assert db.payload("report_gate")["why"] == "verified"
 
 
 if __name__ == "__main__":
