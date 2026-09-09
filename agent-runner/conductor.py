@@ -653,6 +653,7 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
 
 _RESULT_KEYS = ("status", "summary", "handoff", "artifacts")
 _VERDICT_KEYS = ("pass", "findings")
+_REPORT_KEYS = ("key", "url", "id", "self", "error", "title", "branch", "description")
 
 
 def _last_shaped_json(text: str, keys: tuple) -> dict:
@@ -1604,7 +1605,7 @@ async def _name_mr(goal, worktree, target="main"):
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         text.append(b.text)
-        out = _extract_json("".join(text))
+        out = _last_shaped_json("".join(text), _REPORT_KEYS) or _extract_json("".join(text))
     except (ClaudeSDKError, ValueError):
         return None
     title = (out.get("title") or "").strip()[:72]
@@ -1680,7 +1681,12 @@ async def reporter_agent(instruction, mcp_names):
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         text.append(b.text)
-        return _extract_json("".join(text))
+        joined = "".join(text)
+        out = _last_shaped_json(joined, _REPORT_KEYS)
+        if out:
+            return out
+        url = _first_url(joined)   # the agent filed it but wrote prose; don't lose the artifact
+        return {"url": url} if url else _extract_json(joined)
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
 

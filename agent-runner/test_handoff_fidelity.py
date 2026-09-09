@@ -140,6 +140,14 @@ check("fail-closed verdict explains itself",
 check("a verdict missing findings gets an empty list",
       conductor._verdict_json('{"pass": true}')["findings"] == [])
 
+rep = ('I created the ticket. Note the bucket is garner-health-app-data-{env}. '
+       '{"key": "CN-9999", "url": "https://x/CN-9999"}')
+check("a report agent's verdict survives a {env} in its prose",
+      conductor._last_shaped_json(rep, conductor._REPORT_KEYS)["key"] == "CN-9999")
+check("report keys are recognised", "key" in conductor._REPORT_KEYS and "url" in conductor._REPORT_KEYS)
+check("a non-report object is not mistaken for a report",
+      conductor._last_shaped_json('{"env": "prod"}', conductor._REPORT_KEYS) == {})
+
 MISSION = ("EXACT NAMES: table chatbot_analytics.openrouter_endpoint_perf.\n"
            "Columns: captured_at, endpoint_id, ttft_p99_ms, n_requests, raw_stats.\n"
            "ADD the CronJob to the existing kubernetes/cronjob.yml. Do NOT create a new manifest.")
