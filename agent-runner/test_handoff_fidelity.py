@@ -130,6 +130,30 @@ check("fail-closed verdict explains itself",
 check("a verdict missing findings gets an empty list",
       conductor._verdict_json('{"pass": true}')["findings"] == [])
 
+MISSION = ("EXACT NAMES: table chatbot_analytics.openrouter_endpoint_perf.\n"
+           "Columns: captured_at, endpoint_id, ttft_p99_ms, n_requests, raw_stats.\n"
+           "ADD the CronJob to the existing kubernetes/cronjob.yml. Do NOT create a new manifest.")
+PLANNED = "Port the scraper, write parquet to S3, create the Athena table."
+
+sg = conductor._subtask_goal(PLANNED, MISSION)
+check("subtask goal keeps the planner framing", PLANNED in sg)
+check("subtask goal carries the exact column names", "ttft_p99_ms" in sg)
+check("subtask goal carries the file-target prohibition", "Do NOT create a new manifest" in sg)
+check("subtask goal marks the mission goal authoritative", "AUTHORITATIVE" in sg)
+check("mission goal is bounded",
+      len(conductor._subtask_goal(PLANNED, "x" * 99999))
+      <= len(PLANNED) + len(conductor._MISSION_GOAL_HDR) + conductor.MISSION_GOAL_MAX)
+check("no mission goal is a no-op", conductor._subtask_goal(PLANNED, "") == PLANNED)
+check("a one-shot plan that already IS the goal is not duplicated",
+      conductor._subtask_goal(MISSION, MISSION) == MISSION)
+
+_fb = f"{sg}\n\n[Verification feedback]\nstale noise"
+check("appending verification feedback preserves the mission goal",
+      "ttft_p99_ms" in _fb.split("\n\n[Verification feedback]")[0])
+_uc = f"{sg}\n\n[Upstream context]\nfrom s1"
+check("appending upstream context preserves the mission goal",
+      "ttft_p99_ms" in _uc.split("\n\n[Upstream context]")[0])
+
 g = (
     "1. New module pipelines/openrouter_perf.py.\n"
     "2. EXTEND the existing scripts/setup_athena.py. Do NOT create a new setup script.\n"

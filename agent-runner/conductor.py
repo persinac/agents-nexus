@@ -1943,6 +1943,19 @@ async def _safe_synthesize(db, mid, goal, subs, verdict, verified=True):
     return art.get("artifact", "")
 
 
+MISSION_GOAL_MAX = int(os.environ.get("CONDUCTOR_MISSION_GOAL_MAX", 12000))
+_MISSION_GOAL_HDR = ("\n\n[Mission goal — AUTHORITATIVE. The framing above is a planner paraphrase; "
+                     "exact names, schemas, file targets and prohibitions below override it.]\n")
+
+
+def _subtask_goal(planned: str, mission_goal: str) -> str:
+    """Planner framing plus the verbatim mission goal — 1ce34834's subtask goal was a 393-char
+    paraphrase carrying none of the exact columns, file targets, or prohibitions it was judged on."""
+    if not mission_goal or mission_goal.strip() in (planned or "").strip():
+        return planned
+    return f"{planned}{_MISSION_GOAL_HDR}{mission_goal[:MISSION_GOAL_MAX]}"
+
+
 def _gate(db, mid, goal, subs, verdict, art, why: str):
     """Hold before ANY filing. Covers the exhausted path too: `on_exhausted: partial` files a
     draft MR + triage tickets, so gating only the verified path still let a dead mission file."""
@@ -2030,7 +2043,7 @@ async def run_mission(goal: str, created_by: str = "cli") -> tuple:
             p["design"] = design_brief
         db.update_mission(mid, plan=p, status="dispatched")
         for st in p.get("subtasks", []):
-            db.create_subtask(mid, st["id"], st["goal"], st.get("profile", "one-shot"),
+            db.create_subtask(mid, st["id"], _subtask_goal(st["goal"], goal), st.get("profile", "one-shot"),
                               repo=st.get("repo"), depends_on=st.get("depends_on", []), effort=WORKER_EFFORT)
         db.log_event(mid, "planned", {"strategy": p.get("strategy"), "subtasks": len(p.get("subtasks", []))})
         if PLAN_GATE_ON:
