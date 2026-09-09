@@ -862,6 +862,40 @@ def _run_check(cwd):
     return None
 
 
+_CHECK_INLINE_RE = re.compile(r'^(?P<file>[\w./\\-]+\.\w+):(?P<line>\d+)(?::\d+)?:\s+(?P<rest>\S.*)$')
+_CHECK_ARROW_RE = re.compile(r'^\s*-->\s+(?P<file>[\w./\\-]+\.\w+):(?P<line>\d+)')
+_CHECK_RULE_RE = re.compile(r'^(?P<code>[A-Z]{1,5}\d{2,4})\s+(?P<msg>\S.*)$')
+
+
+def _check_findings(output: str) -> set:
+    """Lint findings as (file, message), line numbers dropped since they shift on any edit.
+    Handles ruff's default two-line form and the one-line form ruff --concise / mypy emit."""
+    found, rule = set(), None
+    for raw in (output or "").splitlines():
+        ln = raw.rstrip()
+        m = _CHECK_ARROW_RE.match(ln)
+        if m:
+            if rule:
+                found.add((m.group("file"), rule))
+            continue
+        m = _CHECK_RULE_RE.match(ln.strip())
+        if m:
+            rule = f'{m.group("code")} {" ".join(m.group("msg").split())}'[:160]
+            continue
+        m = _CHECK_INLINE_RE.match(ln.strip())
+        if m:
+            found.add((m.group("file"), " ".join(m.group("rest").split())[:160]))
+    return found
+
+
+def _new_check_findings(branch_out: str, base_out: str, changed: set) -> list:
+    """Findings the branch has that the baseline does not, in files the mission touched — naming
+    a file was too coarse, since editing a file with standing debt then blamed you for it."""
+    base = _check_findings(base_out)
+    return sorted(f"{f}: {msg}" for f, msg in _check_findings(branch_out) - base
+                  if not changed or f in changed or os.path.basename(f) in changed)
+
+
 _BASE_CHECK = {}   # cache: same lint on origin/main per mission (pre-existing debt)
 
 
@@ -1132,18 +1166,22 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
             print(f"[conductor] check `{cp['command']}` in {repo}: PASS")
             continue
         # Branch check failed — baseline-diff: is it the mission's fault or pre-existing debt?
-        changed = _changed_files(ws)
-        if any(cf and cf in cp["output_tail"] for cf in changed):
+        base_cp = await asyncio.to_thread(_run_check_base, repo, mid)
+        if not base_cp or base_cp["ok"]:
             check_ok = False
-            print(f"[conductor] check FAIL in {repo} on a mission-changed file → HARD FAIL")
+            print(f"[conductor] check FAIL in {repo} (baseline clean) → HARD FAIL")
+            continue
+        new_findings = _new_check_findings(cp["output_tail"], base_cp["output_tail"],
+                                          _changed_files(ws))
+        cp["baseline_dirty"] = True
+        if new_findings:
+            check_ok = False
+            cp["new_findings"] = new_findings[:20]
+            print(f"[conductor] check FAIL in {repo}: {len(new_findings)} finding(s) absent from "
+                  f"baseline → HARD FAIL\n    " + "\n    ".join(new_findings[:5]))
         else:
-            base_cp = await asyncio.to_thread(_run_check_base, repo, mid)
-            if base_cp and not base_cp["ok"]:
-                cp["baseline_dirty"] = True   # pre-existing failures, none in mission files → advisory
-                print(f"[conductor] check FAIL in {repo} but baseline also fails (no mission files) → advisory")
-            else:
-                check_ok = False
-                print(f"[conductor] check FAIL in {repo} (baseline clean) → HARD FAIL")
+            print(f"[conductor] check FAIL in {repo} but every finding is in the baseline too "
+                  f"→ advisory")
 
     cwd = os.path.join(CONDUCTOR_WORK, mid[:8])
     if not os.path.isdir(cwd):

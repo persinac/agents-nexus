@@ -239,6 +239,65 @@ cf = conductor._changed_files(_wt)
 check("lint attribution sees COMMITTED files (else every failure reads as pre-existing)",
       "kubernetes/cronjob.yml" in cf)
 check("lint attribution still carries basenames for output matching", "cronjob.yml" in cf)
+
+# verbatim `uv run ruff check .`; the first parser only knew --concise and found nothing here
+RUFF_DEFAULT = (
+    "warning: The following rules have been removed and ignoring them has no effect:\n"
+    "    - UP038\n\n"
+    "SIM105 Use `contextlib.suppress(Exception)` instead of `try`-`except`-`pass`\n"
+    "  --> pipelines/common.py:90:13\n"
+    "   |\n"
+    "88 |           except BaseException:\n"
+    "90 | /             try:\n"
+    "   | |____________________^\n"
+    "help: Replace `try`-`except`-`pass` with `with contextlib.suppress(Exception): ...`\n\n"
+    "T201 `print` found\n"
+    "  --> scripts/create_snowflake_db.py:235:9\n"
+    "help: Remove `print`\n"
+    "Found 2 errors.\n"
+)
+rf = conductor._check_findings(RUFF_DEFAULT)
+check("ruff's DEFAULT format is parsed at all", len(rf) == 2)
+check("ruff default: the file is attributed",
+      ("pipelines/common.py", ) == tuple(f for f, m in rf if "SIM105" in m))
+check("ruff default: source-context lines are not mistaken for findings",
+      not any(f.isdigit() for f, _m in rf))
+check("mypy-style one-line findings still parse",
+      conductor._check_findings("pipelines/x.py:12: error: bad type [arg-type]")
+      == {("pipelines/x.py", "error: bad type [arg-type]")})
+
+# same two findings, line numbers shifted by an edit above them
+RUFF_SHIFTED = RUFF_DEFAULT.replace("common.py:90:13", "common.py:96:13")
+check("ruff default: a line-number shift is not a new finding",
+      conductor._check_findings(RUFF_SHIFTED) == rf)
+
+BASE_LINT = (
+    "pipelines/common.py:86:13: SIM105 Use `contextlib.suppress(Exception)` instead\n"
+    "scripts/create_snowflake_db.py:235:9: T201 `print` found\n"
+    "Found 2 errors.\n"
+)
+BRANCH_SAME = (
+    "pipelines/common.py:92:13: SIM105 Use `contextlib.suppress(Exception)` instead\n"
+    "scripts/create_snowflake_db.py:235:9: T201 `print` found\n"
+    "Found 2 errors.\n"
+)
+touched = {"pipelines/common.py", "common.py", "pipelines/openrouter_perf.py", "openrouter_perf.py"}
+
+check("pre-existing debt in a file the mission merely edited is NOT the mission's fault",
+      conductor._new_check_findings(BRANCH_SAME, BASE_LINT, touched) == [])
+check("line-number drift alone is not a new finding",
+      conductor._check_findings(BASE_LINT) == conductor._check_findings(BRANCH_SAME))
+
+BRANCH_NEW = BRANCH_SAME + "pipelines/openrouter_perf.py:12:1: F401 unused import\n"
+nf = conductor._new_check_findings(BRANCH_NEW, BASE_LINT, touched)
+check("a genuinely NEW finding in a mission file hard-fails", len(nf) == 1)
+check("the new finding is named", "openrouter_perf.py" in nf[0] and "F401" in nf[0])
+
+check("a new finding in a file the mission never touched is not attributed",
+      conductor._new_check_findings(
+          BRANCH_SAME + "other/untouched.py:3:1: F401 unused import\n", BASE_LINT, touched) == [])
+check("no changed-file info falls back to reporting all new findings",
+      len(conductor._new_check_findings(BRANCH_NEW, BASE_LINT, set())) == 1)
 check("no TARGET FILES block when every target is met",
       "TARGET FILES" not in conductor._reviewer_prompt(g, [], list(pr2.values()), "x", _wt))
 check("a goal with no extend cues yields no probes",
