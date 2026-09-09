@@ -637,11 +637,12 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
 
 
 _RESULT_KEYS = ("status", "summary", "handoff", "artifacts")
+_VERDICT_KEYS = ("pass", "findings")
 
 
-def _last_result_json(text: str) -> dict:
-    """The LAST contract-shaped JSON object — `_extract_json` takes the first `{...}`, which on a
-    transcript is as likely to be a snippet the worker printed as its actual result."""
+def _last_shaped_json(text: str, keys: tuple) -> dict:
+    """The LAST JSON object carrying one of `keys`. `_extract_json` takes the FIRST `{...}`, so a
+    reviewer quoting a goal's `{env}` placeholder cost it its whole vote."""
     for i in range(len(text) - 1, -1, -1):
         if text[i] != "{":
             continue
@@ -649,9 +650,23 @@ def _last_result_json(text: str) -> dict:
             obj = _extract_json(text[i:])
         except ValueError:
             continue
-        if isinstance(obj, dict) and any(k in obj for k in _RESULT_KEYS):
+        if isinstance(obj, dict) and any(k in obj for k in keys):
             return obj
     return {}
+
+
+def _last_result_json(text: str) -> dict:
+    return _last_shaped_json(text, _RESULT_KEYS)
+
+
+def _verdict_json(text: str) -> dict:
+    """A reviewer verdict, or a FAIL-CLOSED verdict when nothing parseable is present."""
+    v = _last_shaped_json(text, _VERDICT_KEYS)
+    if not isinstance(v.get("pass"), bool):
+        return {"pass": False, "findings": [{"severity": "major", "where": "reviewer",
+                                             "what": "no parseable verdict in reviewer output"}]}
+    v.setdefault("findings", [])
+    return v
 
 
 def _worker_result(sid: str, status: str, joined: str, artifacts: list) -> dict:
@@ -941,7 +956,7 @@ async def review_one(mid: str, goal: str, summaries: list, probes: list, lens: s
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         text.append(b.text)
-        return {"lens": lens, "verdict": _extract_json("".join(text))}
+        return {"lens": lens, "verdict": _verdict_json("".join(text))}
     except Exception as e:
         return {"lens": lens, "verdict": {"pass": False,
                 "findings": [{"severity": "major", "where": lens, "what": f"reviewer failed: {e}"}]}}
@@ -1080,7 +1095,7 @@ async def review_plan(mid: str, goal: str, design_brief: dict, plan_obj: dict, l
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         text.append(b.text)
-        return {"lens": lens, "verdict": _extract_json("".join(text))}
+        return {"lens": lens, "verdict": _verdict_json("".join(text))}
     except Exception as e:
         return {"lens": lens, "verdict": {"pass": False,
                 "findings": [{"severity": "major", "where": lens, "what": f"plan reviewer failed: {e}"}]}}

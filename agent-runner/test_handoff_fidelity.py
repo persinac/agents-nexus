@@ -110,6 +110,26 @@ check("oversized reference is truncated and flagged",
       len(bp[0]["content"]) == conductor.REF_PROBE_BYTES and bp[0]["truncated"] is True)
 
 
+brace_prose = (
+    'The goal fixes the bucket as garner-health-app-data-{env}, but the code hyphenates it. '
+    '{"pass": false, "findings": [{"severity":"blocker","where":"a.py:1","what":"renamed"}]}'
+)
+v = conductor._verdict_json(brace_prose)
+check("a quoted {env} placeholder no longer eats the verdict", v["pass"] is False)
+check("the real verdict's findings survive the brace in prose",
+      v["findings"][0]["severity"] == "blocker")
+
+v_pass = conductor._verdict_json('Looks fine to me. {"pass": true, "findings": []}')
+check("a passing verdict parses", v_pass["pass"] is True and v_pass["findings"] == [])
+
+for _bad in ("no json at all", "{env}", 'prose {env} more prose', '{"unrelated": 1}'):
+    _v = conductor._verdict_json(_bad)
+    check(f"unparseable reviewer output fails CLOSED: {_bad[:22]!r}", _v["pass"] is False)
+check("fail-closed verdict explains itself",
+      "no parseable verdict" in conductor._verdict_json("{env}")["findings"][0]["what"])
+check("a verdict missing findings gets an empty list",
+      conductor._verdict_json('{"pass": true}')["findings"] == [])
+
 p_with = conductor._reviewer_prompt("goal", [], probes, "correctness", d)
 p_without = conductor._reviewer_prompt("goal", [], [{"probe": "artifact"}], "correctness", d)
 check("fidelity instruction present when references exist", "FIDELITY CHECK" in p_with)
