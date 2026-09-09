@@ -113,6 +113,48 @@ turns (waiting on the bus, on another agent, or on you):
   (`cohort-held(stale)`) once idle past `COHORT_WARN_SECS` (default 24h) rather than
   becoming immortal.
 
+### Letting an agent cook — `@autoaccept`
+
+A **different axis** from the two above: `@keep`/`@cohort` decide whether the reaper
+closes a window; `@autoaccept` decides whether the **permission gate** stops to ask.
+All three are independent tags, so flagging an agent never changes whether it gets
+reaped, and pinning one never changes how its prompts are answered.
+
+```
+scripts/agent-auto.sh <name|slot|%pane>        # flag   (@autoaccept 1)
+scripts/agent-auto.sh <name|slot|%pane> off    # unflag
+scripts/agent-auto.sh                          # list flagged
+```
+
+A flagged pane skips `notify-classify.py`'s model call entirely and auto-approves.
+That LLM tier is the one that turns a classifier timeout into a spurious denial, so
+removing it is what lets an unattended agent keep working through a flaky network
+instead of stopping on a prompt it never should have seen.
+
+**Still asks a human**, flag or no flag: everything `_bash_is_denied` refuses — `rm`,
+`kubectl delete`, `DROP TABLE`/`DELETE FROM`, `terraform destroy`, `git push --force`,
+`doppler secrets set`. A match falls through to the normal classifier path. Also
+untouched: `AskUserQuestion`, which is not a permission decision but the agent asking
+*you* something — auto-clearing it would swallow the question and strand the pane.
+
+**Accepted trade, stated plainly:** on a flagged pane a `Write` to a credential-ish
+path (`.env`, `*.pem`, kubeconfig) and a mutating MCP call (Slack post, Trello write)
+are auto-approved. Only the Bash denylists hold the line. The PreToolUse hooks
+(`block-destructive.sh`, `block-credential-dump.sh`) still apply regardless.
+
+Two things it does **not** do:
+
+- It cannot rescue a **native** Claude Code auto-mode denial. Those hard-deny and never
+  raise an answerable prompt (see `automode-watchdog.py`), so there is nothing for this
+  gate to answer. Run flagged panes in **Manual** mode, where every call raises a prompt
+  and lands here.
+- It does not bypass PreToolUse. `block-destructive.sh` still refuses a `kubectl delete`
+  even under `--dangerously-skip-permissions`.
+
+Approvals are logged as the `autoaccept` tier in `~/.tmux/gate-decisions.log`, so
+`tmux-scripts/gate-report.sh` breaks them out under `by tier` with no change needed
+there. `NEXUS_AUTOACCEPT=1|0` overrides the pane option (used by the test suite).
+
 ### Config (env)
 
 | Var | Default | Meaning |

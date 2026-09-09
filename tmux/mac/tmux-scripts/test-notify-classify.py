@@ -1193,6 +1193,70 @@ def _check_e2e():
     return fails
 
 
+# --- @autoaccept: the per-pane "let them eat" flag (added 2026-09-07) --------
+# (tool, input, want_decision, label)
+#
+# Two directions, and the second is the load-bearing one. The flag must clear ordinary
+# work WITHOUT a model call -- that is the point, since the LLM tier is what turns a
+# classifier timeout into a spurious denial. But it must NOT widen _bash_is_denied by
+# even one command, because that carve-out is the entire reason the flag is safe to
+# hand out. A regression in the first direction is an annoyance; a regression in the
+# second silently auto-approves `kubectl delete ns prod` on every flagged pane.
+AUTOACCEPT_CHECKS = [
+    # Cleared by the flag, no LLM.
+    ("Bash", {"command": "python3 build.py > out.txt"}, "read", "write redirect"),
+    ("Bash", {"command": "git add -A && git commit -m wip"}, "read", "git commit"),
+    ("Bash", {"command": "npm install"}, "read", "npm install"),
+    ("Write", {"file_path": "/home/u/notes.md"}, "read", "ordinary write"),
+    # Deliberately auto-approved on a flagged pane, per the operator's explicit call:
+    # web egress and mutating MCP are NOT carved out. Asserted so that decision stays
+    # a decision rather than drifting into an accident.
+    ("WebFetch", {"url": "https://example.com"}, "read", "web egress"),
+    ("mcp__slack__slack_send_message", {"channel_id": "C1"}, "read", "mutating MCP"),
+    # The carve-out: still reaches a human even with the flag on.
+    ("Bash", {"command": "rm -rf /home/persinac/repos/x"}, "modify", "rm -rf"),
+    ("Bash", {"command": "kubectl delete ns prod"}, "modify", "k8s delete"),
+    ("Bash", {"command": 'psql -c "DELETE FROM users"'}, "modify", "sql delete"),
+    ("Bash", {"command": "terraform destroy"}, "modify", "terraform destroy"),
+    ("Bash", {"command": "sudo dd if=/dev/zero of=/dev/sda"}, "modify", "sudo dd"),
+    ("Bash", {"command": "git push --force origin main"}, "modify", "force push"),
+    # Not a permission decision -- the agent is asking the HUMAN something. Clearing it
+    # at exit 0 would send the keypress, drop the Slack surface, and strand the pane on
+    # a rendered dialog. Must stay 'modify' no matter what the flag says.
+    ("AskUserQuestion", ASKQ_INPUT, "modify", "AskUserQuestion"),
+]
+
+
+def _check_autoaccept():
+    """@autoaccept clears ordinary work without an LLM call, and never widens the
+    Bash denylists. Drives nc._autoaccept_memo directly so the check needs no live
+    pane, no substrate, and no NEXUS_AUTOACCEPT in the environment."""
+    fails = []
+    saved = nc._autoaccept_memo
+    try:
+        nc._autoaccept_memo = True
+        for name, inp, want, label in AUTOACCEPT_CHECKS:
+            decision, category, _summary = nc.classify(name, inp)
+            if decision != want:
+                fails.append((f"@autoaccept: expected {want}, got {decision}", label))
+                continue
+            # An approval must come from the flag tier, not incidentally from the
+            # allowlist/permissive tiers -- otherwise the check passes while the flag
+            # itself is dead code.
+            if want == "read" and category != "auto-accept (flagged pane)":
+                fails.append((f"@autoaccept: approved via {category!r}, not the flag tier", label))
+
+        # Flag OFF: the tier must not leak into normal operation at all.
+        nc._autoaccept_memo = False
+        for name, inp, _want, label in AUTOACCEPT_CHECKS:
+            _d, category, _s = nc.classify(name, inp)
+            if category == "auto-accept (flagged pane)":
+                fails.append(("@autoaccept tier fired with the flag OFF", label))
+    finally:
+        nc._autoaccept_memo = saved
+    return fails
+
+
 def main() -> int:
     fails = []
     for cmd in EXPECT_READ:
@@ -1257,6 +1321,7 @@ def main() -> int:
     fails += _check_monitor_and_task_tools()
     fails += _check_repeat_suppression()
     fails += _check_git_recoverable_rm()
+    fails += _check_autoaccept()
     fails += _check_e2e()
 
     total = (len(EXPECT_READ) + len(EXPECT_WITHHELD)
@@ -1266,7 +1331,8 @@ def main() -> int:
              + len(REPEAT_CHECKS) + len(GIT_RM_CHECKS) + len(E2E_CASES) + 3 + 3
              + len(MONITOR_READ) + len(MONITOR_ASK) + len(EXPECT_BLOCKED)
              + len(EXPECT_TOOL_READ) + len(EXPECT_TOOL_ASK) + 2 + 7
-             + len(REDACT_CASES) + len(REDACT_KEEP))
+             + len(REDACT_CASES) + len(REDACT_KEEP)
+             + 2 * len(AUTOACCEPT_CHECKS))    # each case asserted flag-on and flag-off
     if fails:
         print(f"FAIL — {len(fails)} of {total}")
         for why, cmd in fails:

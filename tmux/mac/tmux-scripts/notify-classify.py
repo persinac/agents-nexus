@@ -41,6 +41,15 @@ Compound shell commands are "read" only if every part is read-only; the denylist
 match against the whole command string, so a destructive part anywhere blocks.
 Set CLASSIFY_STRICT=1 to revert to allowlist-only behaviour with no code change.
 
+Per-pane override (added 2026-09-07, see _autoaccept_pane): a pane tagged
+`@autoaccept 1` skips the model call and auto-approves everything EXCEPT what
+_bash_is_denied refuses — a denied command falls through to the normal tier and still
+asks a human. This is the "let them eat" posture for an agent you want to just cook;
+it removes the LLM tier, and with it the failure where a classifier timeout reads as a
+policy denial. It does NOT touch AskUserQuestion (not a permission decision), and it
+does NOT rescue a native Claude Code auto-mode denial (those never raise an answerable
+prompt). Set with scripts/agent-auto.sh; NEXUS_AUTOACCEPT=1/0 overrides it.
+
 Loosened 2026-08-14 per Alex — more confident given block-credential-dump.sh as a
 separate, independent layer for the credential-exposure threat specifically. That
 hook does NOT cover any of the below; each of these is its own risk call:
@@ -486,6 +495,72 @@ _DESTRUCTIVE = re.compile(
     r"|\bdoppler\s+secrets\s+(set|delete|upload|download)\b",
     re.I,
 )
+
+# --- @autoaccept: per-pane "let them eat" flag (added 2026-09-07, per Alex) --
+# A pane tagged `@autoaccept 1` skips the model call entirely and auto-approves,
+# EXCEPT where _bash_is_denied says otherwise. Alex's framing: "no matter the input
+# (except for a select few statements), it just goes... No classifier... just run it",
+# with rm/delete still routed through the classifier.
+#
+# WHY A FLAG AND NOT A GLOBAL. Permissive mode already clears ~94.7% of Bash. The
+# residue that still asks is web egress, mutating MCP, unknown tools -- and, crucially,
+# every call where the LLM tier itself FAILS. That last case is the one that hurts: a
+# classifier timeout falls through to "modify", so a flaky network reads as a policy
+# denial and an unattended agent stops. This flag removes the model from the path for
+# panes where the operator has already accepted that trade, without weakening the gate
+# for the rest of the fleet.
+#
+# WHAT THIS FLAG IS NOT. It cannot rescue a NATIVE Claude Code auto-mode denial --
+# those never become an answerable permission prompt, they hard-deny (see
+# automode-watchdog.py). A flagged pane should therefore run in Manual mode, where
+# every call raises a prompt and lands here. Setting the flag on an auto-mode pane is
+# not wrong, just largely inert.
+#
+# FAILS CLOSED. Any error reading the flag -> False -> the normal gate, which is
+# already permissive. A failed read costs latency, never safety.
+#
+# Set/cleared with scripts/agent-auto.sh; stored on the same generic substrate seam as
+# @keep/@cohort (substrate.sh set-opt / pane-opt), so neither substrate.sh nor
+# substrated needed a new case.
+_AUTOACCEPT_OPT = "@autoaccept"
+_autoaccept_memo = None
+
+
+def _autoaccept_pane():
+    """True when this pane carries @autoaccept=1.
+
+    NEXUS_AUTOACCEPT overrides the pane option -- that is how the regression suite and
+    any `--tool` caller with no pane exercise this without a live substrate.
+
+    Read through `substrate.sh pane-opt` rather than the sidecar file directly. A second
+    reader would drift from the seam, and the copy that drifts is the one that stops
+    agreeing -- the same single-source-of-truth rule block-destructive.sh follows when it
+    imports _DESTRUCTIVE instead of copying it.
+    """
+    global _autoaccept_memo
+    if _autoaccept_memo is not None:
+        return _autoaccept_memo
+    val = False
+    env = os.environ.get("NEXUS_AUTOACCEPT", "").strip().lower()
+    if env in ("1", "true", "yes", "on"):
+        val = True
+    elif env in ("0", "false", "no", "off"):
+        val = False
+    else:
+        pane = os.environ.get("PANE", "")
+        if pane:
+            import subprocess
+            sub = os.path.join(os.path.expanduser("~"), ".tmux", "substrate.sh")
+            try:
+                out = subprocess.run(
+                    [sub, "pane-opt", pane, _AUTOACCEPT_OPT],
+                    capture_output=True, text=True, timeout=3)
+                val = out.stdout.strip() == "1"
+            except Exception:
+                val = False                      # unreadable -> normal gate
+    _autoaccept_memo = val
+    return val
+
 
 # --- Deterministic read-only allowlist -------------------------------------
 # Common inspection commands auto-approve WITHOUT an LLM call — instant and 100%
@@ -1841,6 +1916,31 @@ def classify(name, inp):
     #     adds nothing.
     if short in SURFACE_TOOLS:
         return "modify", "question", det
+    # 1c. @autoaccept panes: approve without a model call. See _autoaccept_pane.
+    #
+    #     ORDER IS LOAD-BEARING, in both directions:
+    #       - AFTER SURFACE_TOOLS, so AskUserQuestion is untouched. That prompt is not a
+    #         permission decision -- it is the agent asking the HUMAN something -- and
+    #         clearing it at exit 0 would send the keypress, drop the Slack surface and
+    #         leave the pane sitting on a rendered dialog nobody was told about. The
+    #         exit-11 path above already clears it correctly and still alerts.
+    #       - BEFORE the Bash tier, which is the entire point: that tier's tail is the
+    #         _llm() call, and skipping it is what makes a flagged pane immune to a
+    #         classifier timeout reading as a denial.
+    #     READ_TOOLS/INERT_TOOLS stay above it: they are already free, and logging them
+    #     as `autoaccept` would inflate the tier and hide what the flag actually cleared.
+    #
+    #     Bash/Shell/Monitor still consult _bash_is_denied -- the single authority, not a
+    #     second copy of the rule. A match falls THROUGH to the normal tier below, which
+    #     derives `denied_by`, logs the specific clause, and asks a human. That is the
+    #     "rm / delete still runs through the classifier" carve-out, and it is the only
+    #     one: on a flagged pane a credential-path Write and a mutating MCP call are
+    #     approved, which is the accepted trade of turning this on.
+    if _autoaccept_pane():
+        cmd = (inp.get("command") or "").strip() if short in ("bash", "shell", "monitor") else ""
+        if not (cmd and _bash_is_denied(cmd)):
+            _log_decision("approve", "autoaccept", cmd or "<{}>".format(name or "tool"))
+            return "read", "auto-accept (flagged pane)", det
     # 2. Bash: hard denylists (modify) -> read allowlist (auto) -> permissive (auto)
     #    -> LLM. The two denylists are checked together and FIRST; nothing below can
     #    override them, which is what makes the permissive tier safe to enable.
