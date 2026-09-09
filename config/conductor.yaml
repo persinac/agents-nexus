@@ -48,10 +48,19 @@ profiles:
     permission: standard
     verify: { mode: code, checks: [tests, swarm-review] }
 
+  # Incidents only. For "read this code and report how it works", plan `research` — pinning the
+  # postmortem skill here made it the only research seat, so code-recon subtasks inherited it.
   investigation:
     skill: incident-postmortem
     tools: [Read, Grep, Bash]
     mcp: [agent-memory, snowflake, datadog]
+    permission: read-only
+    verify: { mode: report, checks: [fact-check, sourcing] }
+
+  # Reads code and reports. Deliberately skill-less: a wrong procedure is worse than none.
+  research:
+    tools: [Read, Grep, Glob, Bash]
+    mcp: [agent-memory]
     permission: read-only
     verify: { mode: report, checks: [fact-check, sourcing] }
 

@@ -212,6 +212,19 @@ from claude_agent_sdk import (
 
 WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}   # real SDK write tools (MultiEdit isn't one)
 
+# Head-anchored, not tail: the old `joined[-400:]` handed a dependent the worker's sign-off and
+# dropped its findings (d2f16450 — s1's spec became 400 chars of epilogue, so s2 invented a schema
+# that renamed or dropped 25 of the source's 29 columns).
+HANDOFF_MAX = int(os.environ.get("CONDUCTOR_HANDOFF_MAX", 8000))
+SUMMARY_MAX = int(os.environ.get("CONDUCTOR_SUMMARY_MAX", 4000))
+
+_WORKER_RESULT_RULE = (
+    " When you are done, end your FINAL message with a single JSON object (no code fence) shaped "
+    '{"status":"done|error|blocked","summary":"<what you did>","artifacts":["<absolute path>"],'
+    '"handoff":"<everything a dependent subtask needs: exact names, schemas, signatures, '
+    'decisions — not a one-line summary>"}. If your subtask produced a specification, put the '
+    "specification itself in `handoff`, in full.")
+
 # The worker runs in a git worktree PRE-CHECKED-OUT on the mission branch. A worker doing
 # reflexive "good git hygiene" (git checkout -b, switch, branch rename) silently FORKS the
 # mission: its commit rides an invented branch while the conductor commits/pushes/MRs the mission
@@ -538,9 +551,9 @@ async def _run_worker_codex(subtask: dict, profile: dict, effort: str) -> dict:
                                     capture_output=True, text=True, timeout=CODEX_WORKER_TIMEOUT)
         wr = json.load(open(out))
         status = wr.get("status") if wr.get("status") in ("done", "error", "blocked") else "error"
-        summary = str(wr.get("summary") or "")[-1500:]
+        summary = str(wr.get("summary") or "")[:SUMMARY_MAX]
         artifacts = [a for a in (wr.get("artifacts") or []) if a]
-        handoff = wr.get("handoff")
+        handoff = (wr.get("handoff") or None) and str(wr["handoff"])[:HANDOFF_MAX]
     except Exception as e:
         # Gap E: a parse/timeout failure is NOT necessarily a WORK failure. If codex actually changed
         # files in the worktree, reconcile to done from git — don't discard good work and let the
@@ -588,6 +601,7 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
         append = (f"You are a Conductor worker. Your assigned procedure is the skill at {skill_md} — "
                   f"read it and follow it to completion (its references/ are alongside it), then stop."
                   + _WORKER_BRANCH_RULE)
+    append += _WORKER_RESULT_RULE
 
     # Workers are autonomous within an approved mission → bypassPermissions.
     # read-only profiles disallow the write tools (Bash-write hardening is slice C+,
@@ -619,8 +633,44 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
         elif isinstance(msg, ResultMessage):
             status = "done" if msg.subtype == "success" else "error"
     joined = " ".join(text)
-    return {"subtask_id": subtask["id"], "status": status,
-            "summary": joined[-1500:], "artifacts": sorted(set(artifacts)), "handoff": joined[-400:]}
+    return _worker_result(subtask["id"], status, joined, artifacts)
+
+
+_RESULT_KEYS = ("status", "summary", "handoff", "artifacts")
+
+
+def _last_result_json(text: str) -> dict:
+    """The LAST contract-shaped JSON object — `_extract_json` takes the first `{...}`, which on a
+    transcript is as likely to be a snippet the worker printed as its actual result."""
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] != "{":
+            continue
+        try:
+            obj = _extract_json(text[i:])
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and any(k in obj for k in _RESULT_KEYS):
+            return obj
+    return {}
+
+
+def _worker_result(sid: str, status: str, joined: str, artifacts: list) -> dict:
+    """Worker result, preferring the final-message JSON contract over the transcript.
+    `full_output` is always untruncated — a read-only subtask's text IS its deliverable."""
+    parsed = _last_result_json(joined)
+    if not isinstance(parsed.get("handoff"), str) or not parsed["handoff"].strip():
+        parsed.pop("handoff", None)
+
+    declared = [a for a in (parsed.get("artifacts") or []) if isinstance(a, str) and a]
+    if parsed.get("status") in ("done", "error", "blocked"):
+        status = parsed["status"]
+    return {
+        "subtask_id": sid, "status": status,
+        "summary": str(parsed.get("summary") or joined)[:SUMMARY_MAX],
+        "artifacts": sorted(set(artifacts) | set(declared)),
+        "handoff": (parsed.get("handoff") or joined)[:HANDOFF_MAX],
+        "full_output": joined,
+    }
 
 
 # ── dispatch (slice C: cross-process workers, one tmux window per subtask) ────
@@ -711,6 +761,15 @@ async def wait_terminal(db, sids, timeout=1200):
                           result={"status": "error", "summary": "worker timeout", "artifacts": []})
 
 
+def _dep_context(result: dict) -> str:
+    """Upstream text a dependent needs, richest field first, head-anchored."""
+    for k in ("handoff", "full_output", "summary"):
+        v = result.get(k)
+        if isinstance(v, str) and v.strip():
+            return v[:HANDOFF_MAX]
+    return "(no handoff recorded)"
+
+
 async def execute_dag(db, mid: str):
     """Run pending subtasks wave by wave, respecting depends_on; inject upstream
     handoffs into a dependent's goal before spawning it."""
@@ -726,9 +785,9 @@ async def execute_dag(db, mid: str):
         for s in ready:
             deps = [by_key[d] for d in (s["depends_on"] or []) if d in by_key]
             if deps:
-                ctx = "\n".join(
-                    f"- {d['subtask_key']}: "
-                    f"{((d.get('result') or {}).get('handoff') or (d.get('result') or {}).get('summary', ''))[:300]}"
+                ctx = "\n\n".join(
+                    f"### {d['subtask_key']}\n"
+                    f"{_dep_context(d.get('result') or {})}"
                     for d in deps)
                 base = s["goal"].split("\n\n[Upstream context]")[0]
                 db.update_subtask(s["id"], goal=f"{base}\n\n[Upstream context]\n{ctx}")
@@ -813,6 +872,30 @@ VERDICT_SCHEMA = os.path.join(REPO, "agent-runner", "schemas", "verdict.schema.j
 RESULT_SCHEMA = os.path.join(REPO, "agent-runner", "schemas", "result.schema.json")
 
 
+_REF_PATH_RE = re.compile(r'(?<![\w/])(/(?:[\w.@+-]+/)+[\w.@+-]+\.[A-Za-z0-9]{1,8})')
+REF_PROBE_BYTES = int(os.environ.get("CONDUCTOR_REF_PROBE_BYTES", 6000))
+
+
+def _reference_probes(goal: str, cap: int = 6) -> list:
+    """Read the files the goal names so verify can check the diff against them.
+    d2f16450 passed verify having renamed or dropped 25 of 29 source columns; nothing compared."""
+    out = []
+    for path in dict.fromkeys(_REF_PATH_RE.findall(goal)):
+        if len(out) >= cap:
+            break
+        if not os.path.isfile(path):
+            continue
+        p = {"probe": "reference", "path": path}
+        try:
+            with open(path, errors="replace") as f:
+                p["content"] = f.read(REF_PROBE_BYTES)
+            p["truncated"] = os.path.getsize(path) > REF_PROBE_BYTES
+        except OSError as e:
+            p["error"] = str(e)
+        out.append(p)
+    return out
+
+
 def _reviewer_prompt(goal: str, summaries: list, probes: list, lens: str, cwd: str,
                      can_inspect: bool = True) -> str:
     """Shared adversarial-reviewer prompt used by BOTH the Claude and Codex reviewers.
@@ -822,10 +905,18 @@ def _reviewer_prompt(goal: str, summaries: list, probes: list, lens: str, cwd: s
     inspect = (f"You MAY inspect artifacts under {cwd} (Read/Grep/Bash, read-only)."
                if can_inspect else
                "Judge ONLY from the summaries and ground-truth probes below; do not run shell commands.")
+    refs = [p["path"] for p in probes if p.get("probe") == "reference"]
+    fidelity = (
+        f"\n\nFIDELITY CHECK — the goal names these authoritative sources, included verbatim in the "
+        f"`reference` probes: {refs}. The work must be FAITHFUL to them. Treat as a BLOCKER any "
+        f"field, column, key, or parameter that the source defines and the output renames, drops, "
+        f"merges, or collapses, and any table/file/identifier renamed away from what the goal "
+        f"states. Compare them element by element and say which are missing. A tolerant or "
+        f"'inferred' mapping is a FAIL, not a mitigation." if refs else "")
     return (
         f"You are an ADVERSARIAL reviewer using the '{lens}' lens. Find why this mission is NOT "
         f"correctly/completely done. Be strict: if anything is unverified, missing, or wrong, FAIL it. "
-        f"{inspect}\n\n"
+        f"{inspect}{fidelity}\n\n"
         f"Goal: {goal}\nWork summaries: {json.dumps(summaries)}\n"
         f"Ground-truth probes: {json.dumps(probes)}\n\n"
         'Respond with ONLY JSON: {"pass":true,"findings":[{"severity":"blocker|major|minor","where":"","what":""}]}'
@@ -903,6 +994,7 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
                 except OSError:
                     pass
             probes.append(p)
+    probes.extend(_reference_probes(goal))
     summaries = [{"subtask": s["subtask_key"], "status": s["status"],
                   "summary": (s.get("result") or {}).get("summary", "")} for s in subtasks]
 
@@ -1104,6 +1196,15 @@ def _expandvars_deep(x):
     return x
 
 REPORTING = _expandvars_deep(CFG.get("reporting", {}))
+
+
+def _resolve_gate_before_report() -> bool:
+    """Hold a verified mission before it files anything. Env or --gate-before-report."""
+    v = (os.environ.get("CONDUCTOR_GATE_BEFORE_REPORT") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+GATE_BEFORE_REPORT = _resolve_gate_before_report()
 
 
 def _jira_epic():
@@ -1768,6 +1869,16 @@ async def finalize(db, mid, goal, start_round=0):
         print(f"[conductor] ESCALATED after {MAX_REPLANS} re-plans · mission {mid}")
         return mid, "escalated"
     art = await _safe_synthesize(db, mid, goal, subs, verdict, verified=True)
+    if GATE_BEFORE_REPORT:
+        branches = _commit_worktrees(mid, subs, goal)   # the branch is the deliverable; only the filing is held
+        db.log_event(mid, "report_gate", {"verdict": verdict, "artifact": (art or "")[:4000],
+                                          "branches": branches})
+        db.finish_mission(mid, "gated")
+        print(f"[conductor] GATED before reporting · mission {mid}\n"
+              f"[conductor] review the worktree, then release with: "
+              f"conductor.py --resume {mid[:8]}   (unset CONDUCTOR_GATE_BEFORE_REPORT first)")
+        _slack_relay(f"⏸ Conductor {mid[:8]} verified and GATED before reporting · {_title(goal)}")
+        return mid, "gated"
     targets = await report(db, mid, goal, art, subs, verdict)
     db.finish_mission(mid, "done")
     print(f"[conductor] DONE · mission {mid} · reported→{targets}")
@@ -2303,8 +2414,19 @@ async def run_sdlc_mission(goal: str, created_by: str = "cli") -> tuple:
 
 if __name__ == "__main__":
     import anyio
+    # Line-buffered: a redirected log otherwise sits empty for minutes and a healthy mission is
+    # indistinguishable from a hang.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
     _load_dotenv()   # idempotent re-load (already ran at import); harmless belt-and-suspenders
     args = sys.argv[1:]
+    if "--gate-before-report" in args:
+        GATE_BEFORE_REPORT = True
+        os.environ["CONDUCTOR_GATE_BEFORE_REPORT"] = "1"   # cross the --distribute seam
+        args = [a for a in args if a != "--gate-before-report"]
     # Run-mode flags override CONDUCTOR_RUN_MODE (the default; see _resolve_run_mode). Precedence:
     # explicit flag > env > default(dry). --dry-run wins if both flags are passed (fail safe).
     _mode_override = None
@@ -2341,6 +2463,7 @@ if __name__ == "__main__":
         import base64
         g64 = base64.b64encode(goal.encode()).decode()
         inner = (f"env CONDUCTOR_MISSION_WS={label} CONDUCTOR_GOAL_B64={g64} CONDUCTOR_RUN_MODE={RUN_MODE} "
+                 f"CONDUCTOR_GATE_BEFORE_REPORT={'1' if GATE_BEFORE_REPORT else '0'} "
                  f"{PYEXE} {os.path.abspath(__file__)} --distribute-run")
         r = subprocess.run([SUBSTRATE, "spawn", name, _REPO_ROOT, inner, "--workspace", label],
                            capture_output=True, text=True)
