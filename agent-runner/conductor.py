@@ -883,13 +883,12 @@ def _run_check_base(repo, mid):
 
 
 def _changed_files(ws):
-    """The mission's changed files in a worktree (paths + basenames), for attributing lint failures."""
-    out = subprocess.run(["git", "-C", ws, "status", "--porcelain"], capture_output=True, text=True).stdout
+    """Changed files (paths + basenames) for attributing lint failures — committed diff included,
+    since a status-only view of a committed mission makes every failure look pre-existing."""
+    touched, _added = _touched_vs_base(ws)
     files = set()
-    for ln in out.splitlines():
-        f = ln[3:].strip().strip('"')
-        if f:
-            files.add(f); files.add(os.path.basename(f))
+    for f in touched:
+        files.add(f); files.add(os.path.basename(f))
     return files
 
 

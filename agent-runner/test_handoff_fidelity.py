@@ -234,6 +234,11 @@ check("COMMITTED edits still count as modified (git status alone would say no)",
       pr3["kubernetes/cronjob.yml"]["modified"] is True)
 check("committed extend target passes", pr3["kubernetes/cronjob.yml"]["ok"] is True)
 check("committed setup_athena target passes", pr3["scripts/setup_athena.py"]["ok"] is True)
+
+cf = conductor._changed_files(_wt)
+check("lint attribution sees COMMITTED files (else every failure reads as pre-existing)",
+      "kubernetes/cronjob.yml" in cf)
+check("lint attribution still carries basenames for output matching", "cronjob.yml" in cf)
 check("no TARGET FILES block when every target is met",
       "TARGET FILES" not in conductor._reviewer_prompt(g, [], list(pr2.values()), "x", _wt))
 check("a goal with no extend cues yields no probes",
