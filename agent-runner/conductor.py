@@ -873,9 +873,11 @@ def _changed_files(ws):
 
 
 _REL_PATH_RE = re.compile(r'(?<![\w/])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8})')
+# "existing" alone is NOT a cue — "write through the existing S3Output helper in common.py"
+# names a dependency to use, not a file to modify, and flagged it as an unmet target.
 _EXTEND_CUE_RE = re.compile(
-    r'\b(?:extend|existing|already (?:in|defined)|do not create|don\'t create|not create a new|'
-    r'add (?:it|the \w+) to|alongside)\b', re.I)
+    r'\b(?:extend|do not create|don\'t create|not create a new|'
+    r'add (?:it|the \w+) to|append to|alongside)\b', re.I)
 
 
 EXTEND_CUE_WINDOW = 160
@@ -899,15 +901,39 @@ def _extend_targets(goal: str) -> list:
     return targets
 
 
+def _touched_vs_base(ws: str) -> tuple:
+    """(touched, added) paths — COMMITTED diff vs base plus the worktree. Workers are told to
+    commit, so `git status` alone reports a finished subtask as having changed nothing."""
+    base = next((r for r in ("origin/main", "origin/master", "main", "master")
+                 if subprocess.run(["git", "-C", ws, "rev-parse", "--verify", r],
+                                   capture_output=True).returncode == 0), None)
+    touched, added = set(), set()
+    if base:
+        d = subprocess.run(["git", "-C", ws, "diff", "--name-status", f"{base}...HEAD"],
+                           capture_output=True, text=True).stdout
+        for ln in d.splitlines():
+            parts = ln.split("\t")
+            if len(parts) >= 2:
+                touched.add(parts[-1])
+                if parts[0].startswith("A"):
+                    added.add(parts[-1])
+    for ln in subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                             capture_output=True, text=True).stdout.splitlines():
+        f = ln[3:].strip().strip('"')
+        if f:
+            touched.add(f)
+            if ln[:2].strip() in ("??", "A"):
+                added.add(f)
+    return touched, added
+
+
 def _target_file_probes(goal: str, ws: str) -> list:
     """Deterministic 'did it actually edit that file' check — 1ce34834 created a sibling manifest
-    against an explicit prohibition, which git status answers outright and prose does not."""
+    against an explicit prohibition, which git answers outright and prose does not."""
     targets = _extend_targets(goal)
     if not targets or not os.path.isdir(ws):
         return []
-    changed = _changed_files(ws)
-    untracked = subprocess.run(["git", "-C", ws, "ls-files", "--others", "--exclude-standard"],
-                               capture_output=True, text=True).stdout.split()
+    changed, untracked = _touched_vs_base(ws)
     out = []
     for t in targets:
         exists = os.path.isfile(os.path.join(ws, t))

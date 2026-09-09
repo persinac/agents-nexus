@@ -149,6 +149,11 @@ check("absolute paths are not extend targets",
 check("a dotted filename survives the matcher",
       conductor._extend_targets("Extend the existing scripts/setup_athena.py now.")
       == ["scripts/setup_athena.py"])
+check("a dependency to USE is not an extend target",
+      conductor._extend_targets(
+          "Write parquet through the existing S3Output helper in pipelines/common.py.") == [])
+check("'existing' alone does not make a target",
+      conductor._extend_targets("Follow the existing pattern in pipelines/glue.py.") == [])
 
 import subprocess as _sp
 
@@ -161,6 +166,8 @@ for _f in ("kubernetes/cronjob.yml", "scripts/setup_athena.py"):
 _sp.run(["git", "-C", _wt, "add", "-A"], check=True)
 _sp.run(["git", "-C", _wt, "-c", "user.email=t@t", "-c", "user.name=t",
          "commit", "-qm", "base"], check=True)
+_sp.run(["git", "-C", _wt, "branch", "-M", "main"], check=True)
+_sp.run(["git", "-C", _wt, "checkout", "-q", "-b", "mission"], check=True)
 
 # the round-0 violation: sibling manifest created, cronjob.yml untouched
 open(os.path.join(_wt, "kubernetes/cronjob-openrouter.yml"), "w").write("new\n")
@@ -180,6 +187,19 @@ check("reviewer prompt names the unmet file",
 open(os.path.join(_wt, "kubernetes/cronjob.yml"), "a").write("---\nsecond doc\n")
 pr2 = {p["path"]: p for p in conductor._target_file_probes(g, _wt)}
 check("probe clears once the target is really modified", pr2["kubernetes/cronjob.yml"]["ok"] is True)
+
+# a worker that COMMITS its work must still count as having modified the target
+_sp.run(["git", "-C", _wt, "add", "-A"], check=True)
+_sp.run(["git", "-C", _wt, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "mission work"], check=True)
+check("worktree is clean after the commit",
+      _sp.run(["git", "-C", _wt, "status", "--porcelain"],
+              capture_output=True, text=True).stdout.strip() == "")
+pr3 = {p["path"]: p for p in conductor._target_file_probes(g, _wt)}
+check("COMMITTED edits still count as modified (git status alone would say no)",
+      pr3["kubernetes/cronjob.yml"]["modified"] is True)
+check("committed extend target passes", pr3["kubernetes/cronjob.yml"]["ok"] is True)
+check("committed setup_athena target passes", pr3["scripts/setup_athena.py"]["ok"] is True)
 check("no TARGET FILES block when every target is met",
       "TARGET FILES" not in conductor._reviewer_prompt(g, [], list(pr2.values()), "x", _wt))
 check("a goal with no extend cues yields no probes",
