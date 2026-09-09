@@ -66,6 +66,16 @@ check("_last_result_json returns {} when nothing is contract-shaped",
 r7 = conductor._worker_result("s1", "done", 'trailing {"status":"blocked","summary":"cannot"}', [])
 check("blocked status from the contract is honoured", r7["status"] == "blocked")
 
+rd = conductor._worker_result("s1", "error", "partial work", ["/tmp/a.py"],
+                              degraded="max_turns; reconciled from git — 12 file(s) changed")
+check("a reconciled turn-limit round counts as done", rd["status"] == "done")
+check("the reconciled round records why it was degraded", "max_turns" in rd["degraded"])
+check("the degraded reason is visible in the summary", rd["summary"].startswith("[degraded]"))
+check("a reconciled round keeps its artifacts", rd["artifacts"] == ["/tmp/a.py"])
+rd2 = conductor._worker_result("s1", "error", '{"status":"error","summary":"gave up"}', ["/tmp/a.py"],
+                               degraded="max_turns; reconciled")
+check("a contract 'error' cannot override a git-reconciled done", rd2["status"] == "done")
+
 
 long_handoff = "H" * 5000
 check("dep_context passes the full handoff (not [:300])",

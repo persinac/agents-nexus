@@ -615,24 +615,39 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
         system_prompt={"type": "preset", "preset": "claude_code", "append": append},
     )
     artifacts, text, status = [], [], "error"
-    async for msg in query(prompt=subtask["goal"], options=opts):
-        if isinstance(msg, AssistantMessage):
-            for b in msg.content:
-                if isinstance(b, TextBlock) and b.text.strip():
-                    text.append(b.text.strip())
-                elif isinstance(b, ToolUseBlock):
-                    if b.name in WRITE_TOOLS:
-                        fp = b.input.get("file_path") or b.input.get("notebook_path")
-                        if fp:
-                            artifacts.append(fp if os.path.isabs(fp) else os.path.join(cwd, fp))
-                    elif b.name == "Bash":   # catch files written via redirect / tee / touch
-                        for m in re.finditer(r'(?:>>?\s*|(?:^|\s)(?:tee|touch)\s+)([^\s;|&>]+)',
-                                             b.input.get("command") or ""):
-                            fp = m.group(1)
-                            artifacts.append(fp if os.path.isabs(fp) else os.path.join(cwd, fp))
-        elif isinstance(msg, ResultMessage):
-            status = "done" if msg.subtype == "success" else "error"
+    err = None
+    try:
+        async for msg in query(prompt=subtask["goal"], options=opts):
+            if isinstance(msg, AssistantMessage):
+                for b in msg.content:
+                    if isinstance(b, TextBlock) and b.text.strip():
+                        text.append(b.text.strip())
+                    elif isinstance(b, ToolUseBlock):
+                        if b.name in WRITE_TOOLS:
+                            fp = b.input.get("file_path") or b.input.get("notebook_path")
+                            if fp:
+                                artifacts.append(fp if os.path.isabs(fp) else os.path.join(cwd, fp))
+                        elif b.name == "Bash":   # catch files written via redirect / tee / touch
+                            for m in re.finditer(r'(?:>>?\s*|(?:^|\s)(?:tee|touch)\s+)([^\s;|&>]+)',
+                                                 b.input.get("command") or ""):
+                                fp = m.group(1)
+                                artifacts.append(fp if os.path.isabs(fp) else os.path.join(cwd, fp))
+            elif isinstance(msg, ResultMessage):
+                status = "done" if msg.subtype == "success" else "error"
+    except ClaudeSDKError as e:
+        err = e
     joined = " ".join(text)
+    if status != "done":
+        # Mirror the codex path's Gap E: a turn-limit or SDK error is not necessarily a WORK
+        # failure. 1ce34834 round 2 hit max_turns with 12 files and 114 insertions already
+        # written, and reported artifacts=[] handoff=null — the whole round discarded.
+        changed = _worktree_changed_paths(cwd)
+        if changed:
+            why = f"{type(err).__name__}: {err}" if err else "worker did not report success"
+            return _worker_result(subtask["id"], "done", joined, artifacts + changed,
+                                  degraded=f"{why}; reconciled from git — {len(changed)} file(s) changed")
+        if err:
+            raise err
     return _worker_result(subtask["id"], status, joined, artifacts)
 
 
@@ -669,7 +684,7 @@ def _verdict_json(text: str) -> dict:
     return v
 
 
-def _worker_result(sid: str, status: str, joined: str, artifacts: list) -> dict:
+def _worker_result(sid: str, status: str, joined: str, artifacts: list, degraded: str = None) -> dict:
     """Worker result, preferring the final-message JSON contract over the transcript.
     `full_output` is always untruncated — a read-only subtask's text IS its deliverable."""
     parsed = _last_result_json(joined)
@@ -677,15 +692,21 @@ def _worker_result(sid: str, status: str, joined: str, artifacts: list) -> dict:
         parsed.pop("handoff", None)
 
     declared = [a for a in (parsed.get("artifacts") or []) if isinstance(a, str) and a]
-    if parsed.get("status") in ("done", "error", "blocked"):
+    if degraded:
+        status = "done"   # reconciled from git: files changed, so the work happened
+    elif parsed.get("status") in ("done", "error", "blocked"):
         status = parsed["status"]
-    return {
+    summary = str(parsed.get("summary") or joined)[:SUMMARY_MAX]
+    out = {
         "subtask_id": sid, "status": status,
-        "summary": str(parsed.get("summary") or joined)[:SUMMARY_MAX],
+        "summary": f"[degraded] {degraded}. {summary}"[:SUMMARY_MAX] if degraded else summary,
         "artifacts": sorted(set(artifacts) | set(declared)),
         "handoff": (parsed.get("handoff") or joined)[:HANDOFF_MAX],
         "full_output": joined,
     }
+    if degraded:
+        out["degraded"] = degraded
+    return out
 
 
 # ── dispatch (slice C: cross-process workers, one tmux window per subtask) ────
