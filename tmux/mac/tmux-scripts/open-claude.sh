@@ -563,6 +563,31 @@ finding about the change, not a formatting problem. Say so in the PR rather than
 a claim.'
 fi
 
+# ── Guard: prove the conventions block survived its own quoting ────────────
+# The block above is ONE single-quoted string. An unescaped apostrophe in the
+# prose closes it mid-statement, and the assignment then becomes a PREFIX
+# assignment on whatever word follows -- so conventions_section ends up EMPTY
+# rather than truncated, and the prose up to the next apostrophe EXECUTES as
+# shell commands.
+#
+# An ODD number of stray apostrophes fails loudly at spawn. An EVEN number
+# passes `bash -n` and every other syntax check, which is exactly how two of
+# them shipped through three commits and silently removed the entire standing
+# brief from every spawned agent for three days before anyone noticed.
+#
+# Escape apostrophes inside the block the way the rest of it does. To launch
+# deliberately without a brief, set NEXUS_INJECT_CONVENTIONS=0 -- do not
+# delete this check.
+CONVENTIONS_MIN_BYTES="${CONVENTIONS_MIN_BYTES:-2000}"
+if [ "${NEXUS_INJECT_CONVENTIONS:-1}" = "1" ] && [ "${#conventions_section}" -lt "$CONVENTIONS_MIN_BYTES" ]; then
+  printf '%s\n' \
+    "open-claude: FATAL - conventions_section is ${#conventions_section} bytes, floor is ${CONVENTIONS_MIN_BYTES}." \
+    "  The quoted conventions block is broken, almost certainly an unescaped apostrophe." \
+    "  Agents would otherwise launch with no standing brief and nothing would say so." \
+    "  Fix the quoting, or set NEXUS_INJECT_CONVENTIONS=0 to launch without one." >&2
+  exit 1
+fi
+
 # ── Review partner (set NEXUS_REVIEW_PARTNER=<fqdn> at spawn) ──────────────
 # Added 2026-09-07: overnight, every highest-value finding came from agents reviewing
 # each other, and all of it was ACCIDENTAL overlap. Pairing formalises that in PARALLEL —
