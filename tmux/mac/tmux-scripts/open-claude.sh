@@ -275,7 +275,12 @@ fi
 CACHE_FILE="$NEXUS_TMUX_DIR/cache/${project_slug}.md"
 cache_section=""
 if [ "${NEXUS_INJECT_CACHE:-1}" = "1" ] && [ -f "$CACHE_FILE" ]; then
-  cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE" 2>/dev/null || stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) ))
+  # Capture each stat arm into its own assignment. A `||` chain INSIDE $( ) keeps the
+  # stdout of the FAILING arm too: on Linux `stat -f` is --file-system, so it prints a
+  # whole filesystem block, exits non-zero, and the GNU arm's epoch gets appended to it.
+  # The result is a fatal arithmetic syntax error that exits the shell at this line.
+  cache_mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null) || cache_mtime=$(stat -f %m "$CACHE_FILE" 2>/dev/null) || cache_mtime=0
+  cache_age=$(( $(date +%s) - ${cache_mtime:-0} ))
   if [ "$cache_age" -lt 86400 ]; then
     cache_section=$(cat "$CACHE_FILE")
     mv "$CACHE_FILE" "${CACHE_FILE%.md}.used" 2>/dev/null
@@ -544,14 +549,14 @@ would have looked like and confirm that outcome was actually reachable.
 
 **Provenance applies to REVIEWS, not just reports — this is where it fails in practice.**
 Observed on this fleet: one reviewer named its method ("confirmed via search that X is
-defined once") — legibly VERIFIED. A second restated the *author's own central measurement*
+defined once") — legibly VERIFIED. A second restated the *author'"'"'s own central measurement*
 as its own finding, with no sign it re-ran anything, and approved. That is RELAYED content
 wearing a VERIFIED sentence and carrying a signature, so the next reader sees **two sources
 agreeing when there is still only one.**
 
 **The reviewer is where a bad number should die. Untagged, it is where the number gets
 laundered.** So: tag your review claims, re-run what you repeat, and when auditing a review
-panel, grep the review bodies for the author's own figures — **a verbatim echo is the tell.**
+panel, grep the review bodies for the author'"'"'s own figures — **a verbatim echo is the tell.**
 
 **Every PR body carries a `VERIFY:` line.** One line, naming a measurement that would come
 out DIFFERENT if your change did not work:
