@@ -447,63 +447,56 @@ else
 fi
 
 # ── Reporting conventions (always injected; NEXUS_INJECT_CONVENTIONS=0 to omit) ──
-# Added 2026-09-07 after an overnight multi-agent run. An UNTAGGED claim from the
-# orchestrator ("user.is_internal is read by nothing") was wrong, propagated to three
-# agents, and was caught only because one of them happened to re-derive it. That column
-# drives a customer-facing revenue query; a backfill on the strength of it would have
-# silently changed operator reports. The tag is one word and stops that at the first hop.
+# Added 2026-09-07: one UNTAGGED orchestrator claim, wrong, reached three agents before
+# anyone re-derived it — a write on it would have changed a report already delivered.
+# The tag is one word and stops that at the first hop.
 conventions_section=""
 if [ "${NEXUS_INJECT_CONVENTIONS:-1}" = "1" ]; then
   conventions_section='## Authorization (standing policy — Alex, 2026-09-07)
 
 **You may do anything reversible. Default to acting, not asking.** Branch, commit, push,
-open PRs, **merge**, refactor, add tests, run read-only queries against production, edit
-docs and cards. You do not need permission for any of it. Alex is risk-tolerant and would
-rather you shipped and were wrong than sat idle waiting for a reply — especially overnight,
-when a blocked agent wastes the whole window.
+open PRs, refactor, add tests, edit docs and cards. You do not need permission for any of
+it. Alex is risk-tolerant and would rather you shipped and were wrong than sat idle waiting
+for a reply — especially overnight, when a blocked agent wastes the whole window.
 
 **If a thing can be undone with a revert, a down-migration, or a re-run, it is in budget.**
-Prod *config* is in budget too — back it up first, apply, then diff against the backup to
-prove nothing else moved.
+Prod is locked down, but dev is fair game.
 
 **The short list that is NOT reversible.** Everything here is evidenced, not hypothetical:
 
-1. **Merging or deleting customer accounts / wallets.** Two merged wallets do not cleanly
-   separate afterwards. Get sign-off.
+1. **Merging or deleting data.**
 2. **Deleting or overwriting untracked files.** There is no git history to restore from.
    Move to `~/vault/Archive/<name>-<date>/` with a README instead of deleting — and
    `git clean -fd`, `git reset --hard` and `checkout -f` in a shared checkout need a
    peer'"'"'s reply first, not just an announcement.
-3. **A write that changes a report someone has already received.** The DB row reverts; the
-   operator'"'"'s emailed revenue figure does not. `user.is_internal` is the live example —
-   it filters a customer-facing revenue query. Related: any clear-then-set script
-   (`mark_internal_users.py --interactive`) destroys prior state with no record of it.
+3. **A write that changes a report someone has already received.**
 4. **Printing a secret.** It cannot be un-printed; the remediation is rotation. See the
    credential rules in CLAUDE.md.
 
 **Everything else: go.** If you are unsure whether something is on that list, it almost
 certainly is not — ask yourself what the undo command is, and if you can name one, run it.
 
-**There is no escalation path. Nobody is awake and no notification will reach anyone.** So
-when you hit one of the four, do NOT stop and file a card. **Do everything up to the
-irreversible step and leave it one command away:** write the migration, stage the branch,
-build the exact list, capture the before-state, and put the precise apply command AND its
-revert command in your report. The goal is that the human does thirty seconds of work in
-the morning, not thirty minutes of reconstruction. A blocked overnight agent that produced
-a ready-to-run change is useful; one that produced a question is not.
+**There is no escalation path overnight. Nobody is awake between 11PM and 8AM Mountain time
+and no notification will reach anyone.** So when you hit one of the four, do NOT stop and
+file a card. **Do everything up to the irreversible step and leave it one command away:**
+write the migration, stage the branch, build the exact list, capture the before-state, and
+put the precise apply command AND its revert command in your report. The goal is that the
+human does thirty seconds of work in the morning, not thirty minutes of reconstruction. A
+blocked overnight agent that produced a ready-to-run change is useful; one that produced a
+question is not.
 
 ## Shared working trees — you may not be alone in your checkout
 
 Several repos here have MULTIPLE agents in one working tree, which means **one HEAD and one
-working directory between you**. Git will not tell you. As of 2026-09-07: `minions-suite` had
-four, `store-front` two, `agents-nexus` two.
+working directory between you**. Git will not tell you.
 
 **What actually happened:** one agent checked out `main` while another had work on a branch.
 The second saw HEAD on main, zero commits ahead, its files gone from disk, and a smaller test
 count — **identical to its work having been destroyed.** Nothing was lost, but only because
 the work was already committed.
 
-- **Commit early, to an explicitly named branch.** Necessary, and *not sufficient* — see below.
+- **Commit early, to an explicitly named branch (no slashes in branch name).** Necessary,
+  and *not sufficient*.
 - **Always use an explicit pathspec.** A bare `git commit` sweeps whatever a peer left staged.
   That happened, and cost a `reset --soft` to undo. Verify what you swept by **content hash,
   not filename** — a file can appear in both lists and differ.
@@ -537,7 +530,7 @@ when the claim came from the orchestrator. "My orchestrator told me" is RELAYED,
 VERIFIED, and relaying it untagged is how one wrong claim reaches three agents at once.
 
 **Before acting irreversibly on a RELAYED claim, re-derive it.** Cheaply, once. Applies to
-migrations, merges, deletes, prod config, and anything a customer can see.
+migrations, merges, deletes, prod config, and anything a human can see.
 
 **Derivable values: derive them, never record them.** A commit count, a row count, a file
 list — quote the COMMAND, not the number. A recorded derivable is a fact with an expiry date
@@ -559,11 +552,7 @@ laundered.** So: tag your review claims, re-run what you repeat, and when auditi
 panel, grep the review bodies for the author'"'"'s own figures — **a verbatim echo is the tell.**
 
 **Every PR body carries a `VERIFY:` line.** One line, naming a measurement that would come
-out DIFFERENT if your change did not work:
-
-    VERIFY: /health reports 0.1.463 and ECS rolloutState=COMPLETED
-    VERIFY: the leaderboard query returns 0 rows for user_id = 0
-    VERIFY: operator revenue for location 4 is unchanged (this merge is additive-only)
+out DIFFERENT if your change did not work.
 
 It must be something someone else can run. `CI is green`, `tests pass` and `see the diff`
 are not measurements — they restate the process, not the outcome. A verifier agent reads
@@ -571,20 +560,13 @@ these after merge and reports CONFIRMED, DRIFTED, or UNFALSIFIABLE.
 
 **If you cannot write that line, you have not established your change works** — that is a
 finding about the change, not a formatting problem. Say so in the PR rather than inventing
-a claim. Baseline when this was introduced: 24 merges across the fleet in three days, and
-not one carried a falsifiable claim — including a merge reported as "deployed" whose new
-predicates were wired to no query at all.'
+a claim.'
 fi
 
 # ── Review partner (set NEXUS_REVIEW_PARTNER=<fqdn> at spawn) ──────────────
-# Added 2026-09-07. On the overnight run the highest-value findings all came from
-# agents reviewing each other, and every one of them was ACCIDENTAL — they overlapped
-# on the same code and argued. notif caught funnel shipping a value the API would have
-# 422'd; management-api caught is-internal missing three joins in patron.py; wallet-api
-# and leaderboard each caught a wrong claim from the orchestrator. Pairing formalises
-# what already worked, and does it in PARALLEL — a single reviewer agent would be a
-# serial bottleneck across seven producers, and would lack the domain context that
-# made those specific catches possible.
+# Added 2026-09-07: overnight, every highest-value finding came from agents reviewing
+# each other, and all of it was ACCIDENTAL overlap. Pairing formalises that in PARALLEL —
+# one central reviewer is a serial bottleneck and lacks the domain context that catches.
 pairing_section=""
 if [ -n "${NEXUS_REVIEW_PARTNER:-}" ]; then
   pairing_section="## Your review partner: \`${NEXUS_REVIEW_PARTNER}\`
