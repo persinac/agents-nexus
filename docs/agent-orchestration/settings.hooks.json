@@ -1,0 +1,22 @@
+{
+  "_comment": "Merge the PreToolUse and Stop blocks into your ~/.claude/settings.json. Paths assume the hooks live at $HOME/.claude/hooks/.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "$HOME/.claude/hooks/block-credential-dump.sh" },
+          { "type": "command", "command": "$HOME/.claude/hooks/block-destructive.sh" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "$HOME/.claude/hooks/auto-checkpoint.sh", "timeout": 120, "async": true }
+        ]
+      }
+    ]
+  }
+}
