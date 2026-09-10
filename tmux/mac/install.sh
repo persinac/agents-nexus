@@ -303,7 +303,9 @@ mkdir -p "$HOME/.claude/skills"
 for skill_dir in "$NEXUS_DIR"/skills/*/; do
   [ -d "$skill_dir" ] || continue
   name=$(basename "$skill_dir")
-  ln -sf "$skill_dir" "$HOME/.claude/skills/$name"
+  # -n: replace the link itself. Without it ln follows an existing link and nests
+  # the new one inside the repo dir it points at.
+  ln -sfn "$skill_dir" "$HOME/.claude/skills/$name"
   echo "  Linked skill: $name"
 done
 
@@ -312,7 +314,7 @@ mkdir -p "$HOME/.claude/commands"
 for cmd_dir in "$NEXUS_DIR"/commands/*/; do
   [ -d "$cmd_dir" ] || continue
   name=$(basename "$cmd_dir")
-  ln -sf "$cmd_dir" "$HOME/.claude/commands/$name"
+  ln -sfn "$cmd_dir" "$HOME/.claude/commands/$name"
   echo "  Linked command: $name"
 done
 
