@@ -450,8 +450,15 @@ fi
 # Added 2026-09-07: one UNTAGGED orchestrator claim, wrong, reached three agents before
 # anyone re-derived it — a write on it would have changed a report already delivered.
 # The tag is one word and stops that at the first hop.
+# A per-box brief wins over the inline block: an overlay symlinks its own file to
+# ~/.tmux/conventions.md (the personal authorization below is wrong for a regulated box).
+NEXUS_CONVENTIONS_FILE="${NEXUS_CONVENTIONS_FILE:-$HOME/.tmux/conventions.md}"
 conventions_section=""
-if [ "${NEXUS_INJECT_CONVENTIONS:-1}" = "1" ]; then
+conventions_source="inline"
+if [ "${NEXUS_INJECT_CONVENTIONS:-1}" = "1" ] && [ -r "$NEXUS_CONVENTIONS_FILE" ]; then
+  conventions_section="$(cat "$NEXUS_CONVENTIONS_FILE")"
+  conventions_source="$NEXUS_CONVENTIONS_FILE"
+elif [ "${NEXUS_INJECT_CONVENTIONS:-1}" = "1" ]; then
   conventions_section='## Authorization (standing policy — Alex, 2026-09-07)
 
 **You may do anything reversible. Default to acting, not asking.** Branch, commit, push,
@@ -581,8 +588,8 @@ fi
 CONVENTIONS_MIN_BYTES="${CONVENTIONS_MIN_BYTES:-2000}"
 if [ "${NEXUS_INJECT_CONVENTIONS:-1}" = "1" ] && [ "${#conventions_section}" -lt "$CONVENTIONS_MIN_BYTES" ]; then
   printf '%s\n' \
-    "open-claude: FATAL - conventions_section is ${#conventions_section} bytes, floor is ${CONVENTIONS_MIN_BYTES}." \
-    "  The quoted conventions block is broken, almost certainly an unescaped apostrophe." \
+    "open-claude: FATAL - conventions_section is ${#conventions_section} bytes, floor is ${CONVENTIONS_MIN_BYTES} (source: ${conventions_source})." \
+    "  Inline block: broken quoting, almost certainly an unescaped apostrophe. File: empty or truncated." \
     "  Agents would otherwise launch with no standing brief and nothing would say so." \
     "  Fix the quoting, or set NEXUS_INJECT_CONVENTIONS=0 to launch without one." >&2
   exit 1
@@ -670,7 +677,9 @@ if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" 
     [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
     prompt="${prompt}${conventions_section}"
   fi
+  if [ "${NEXUS_PROMPT_DRY_RUN:-0}" = "1" ]; then printf '%s\n' "$prompt"; exit 0; fi
   exec claude "${claude_args[@]}" "$prompt"
 else
+  [ "${NEXUS_PROMPT_DRY_RUN:-0}" = "1" ] && exit 0
   exec claude "${claude_args[@]}"
 fi
