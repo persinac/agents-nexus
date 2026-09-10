@@ -38,13 +38,29 @@ substrate wrapped the command in `exec <cmd>`, and a command starting with a bar
 seed prompt is 800–1400 bytes, which lands exactly on that threshold**, so the same command that
 worked at 110 bytes in testing broke once a paragraph of seed text was added.
 
-**Three guards, in order:**
+**Four guards, in order:**
 
 1. **Refuse a bare-assignment command prefix** and say what to use instead (`env VAR=value prog`).
 2. **After spawning, poll the process table** for a live agent process whose environment carries the
    expected workspace name. **Never trust the spawn command's exit code.**
-3. **Refuse an odd number of single quotes** in the seed. An apostrophe in prose — *"that column's
-   first writer"* — closes the quote and kills the spawn silently.
+3. **Count apostrophes in anything you interpolate into a quoted shell string — and do not settle
+   for "reject odd".** An apostrophe in prose — *"that column's first writer"* — closes the quote.
+   Both parities are bugs, and they fail in opposite directions:
+
+   | stray apostrophes | what happens |
+   |---|---|
+   | **odd** | the string never closes. `bash -n` fails and the spawn dies **loudly**. Annoying, and harmless |
+   | **even** | the string closes at the first and reopens at the second. The prose between them **executes as shell**, and the variable ends up **empty — not truncated** — because the assignment has become a *prefix* assignment on a stray command. **`bash -n` passes** |
+
+   Measured 2026-09-10: two unescaped apostrophes rode through three commits and silently removed
+   the **entire** standing brief from every spawned agent for three days. Every syntax check passed
+   the whole time. It surfaced only because a *second*, unrelated bug in the same script printed the
+   executing prose to a terminal — nothing was watching for the first one.
+
+4. **Assert the brief is non-empty after you build it**, and exit non-zero if it is not. Three
+   lines, and the only one of these four that would have caught the above; a byte floor also catches
+   a partial build. Verified against the real broken revision — the check fires at 0 bytes on a file
+   `bash -n` accepts, so the detector demonstrably returns both answers.
 
 Exit non-zero with a diagnosis if the process never appears. A spawner that cannot prove the agent
 started is the first self-confirming green signal in the chain.
