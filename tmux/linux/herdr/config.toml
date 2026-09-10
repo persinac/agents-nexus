@@ -119,3 +119,9 @@ show_agent_labels_on_pane_borders = true
 sidebar_width = 32
 sidebar_collapsed_mode = "compact"
 agent_panel_sort = "priority"
+
+# Sound alerts default ON and shell out to afplay when a background-workspace agent
+# changes state — a "done" chime and a "request" chime. On a fleet this size that is
+# constant audio for state the sidebar already shows. Set enabled = true to restore.
+[ui.sound]
+enabled = false
