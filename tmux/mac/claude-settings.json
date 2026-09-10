@@ -23,6 +23,30 @@
             "timeout": 120
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 $HOME/.claude/hooks/comment-density.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 $HOME/.claude/hooks/comment-budget.py"
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 $HOME/.claude/hooks/comment-ticket-refs.py"
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -45,7 +69,7 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Read",
         "hooks": [
           {
             "type": "command",
@@ -59,6 +83,15 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/block-destructive.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 $HOME/.claude/hooks/comment-budget-snapshot.py"
           }
         ]
       }

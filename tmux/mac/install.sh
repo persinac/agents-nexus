@@ -155,8 +155,9 @@ mkdir -p "$HOME/.claude"
 # only knew auto-checkpoint.sh by name. Drop a new hook in claude-hooks/ and it installs.
 # Matching settings.json entries live in claude-settings.json and merge below.
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/auto-checkpoint"
-for hook in "$SCRIPT_DIR"/claude-hooks/*.sh; do
+for hook in "$SCRIPT_DIR"/claude-hooks/*.sh "$SCRIPT_DIR"/claude-hooks/*.py; do
   [ -f "$hook" ] || continue          # unmatched glob when the dir is empty
+  case "$hook" in *.test.py) continue ;; esac   # test suites live beside the hooks
   chmod +x "$hook"
   ln -sfn "$hook" "$HOME/.claude/hooks/$(basename "$hook")"
   echo "Installed hook ~/.claude/hooks/$(basename "$hook")"

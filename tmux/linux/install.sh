@@ -236,8 +236,9 @@ mkdir -p "$HOME/.claude"
 # Sourced from $MAC_DIR: the hooks are plain bash + python3 and are shared, not duplicated
 # per platform. Globbed rather than named one-by-one so a new hook installs by existing.
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/auto-checkpoint"
-for hook in "$MAC_DIR"/claude-hooks/*.sh; do
+for hook in "$MAC_DIR"/claude-hooks/*.sh "$MAC_DIR"/claude-hooks/*.py; do
   [ -f "$hook" ] || continue          # unmatched glob when the dir is empty
+  case "$hook" in *.test.py) continue ;; esac   # test suites live beside the hooks
   chmod +x "$hook"
   ln -sfn "$hook" "$HOME/.claude/hooks/$(basename "$hook")"
   echo "Installed hook ~/.claude/hooks/$(basename "$hook")"
