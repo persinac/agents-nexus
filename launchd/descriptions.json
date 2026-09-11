@@ -5,6 +5,8 @@
   "com.agents-nexus.docker": "Starts the agents-nexus Docker stack at login (proxy, langfuse, mnemon)",
   "com.agents-nexus.gl-reviews": "Writes the GitLab review queue into today's Obsidian daily note",
   "com.agents-nexus.gl-reviews-prune": "Prunes stale reviewer assignments from open GitLab MRs",
+  "com.agents-nexus.factory-intake": "Every 15 min on weekdays: claims one factory-labelled ticket from the tracker queue, dispatches a Conductor mission, then hands the resulting MR to the swarm review loop",
+  "com.agents-nexus.deflection-report": "Weekly: runs the chatbot deflection report headlessly and delivers it through the Slack plugin (DM until promoted to the channel)",
   "com.agents-nexus.langfuse-cost-snapshot": "Daily: snapshots Langfuse cost/usage into Postgres so spend history survives the 10-day trace TTL",
   "com.agents-nexus.muninn.sync": "Syncs reMarkable rM1 handwritten pages into the Obsidian vault",
   "com.agents-nexus.notify-pipeline-check": "Hourly: verifies the notify-classify permission gate is still absorbing prompts (handled-rate, classifier reachability, log rotation, presence-plugin canary) and pings Slack only on an anomaly",
