@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
 # Send a message from one agent to another.
 #
+# The A2A transport is NATS (JetStream stream + presence KV), fronted by the local
+# bridge on :8788. Slack is NOT an agent-to-agent path; the SLACK_* names below are
+# deprecated aliases kept only because live shells still export them.
+#
+# Message shape: the body is flattened to ONE line (newlines become spaces) and the
+# bridge caps it at NEXUS_BUS_MAX_CHARS (default 8000). Overflow is cut with a visible
+# "…[truncated N chars]" marker, never silently. Send pointers (MR URL, ticket key,
+# file path), not payloads.
+#
 # Dual-mode, with a configurable same-host default:
-#   - A NAME target that is NOT in THIS host's registry -> route through the Slack
-#     bridge bus (POST :8788/send), so agents on other hosts are reachable.
-#     Requires the bus enabled (SLACK_BUS_ENABLED=1); else the old "Agent not
+#   - A NAME target that is NOT in THIS host's registry -> route through the NATS
+#     bus via the bridge (POST :8788/send), so agents on other hosts are reachable.
+#     Requires the bus enabled (NEXUS_BUS_ENABLED=1); else the old "Agent not
 #     found" behavior, with no network call.
 #   - A LOCAL target (a %pane, a slot number, or a name in this host's registry):
-#       * default (SLACK_A2A_SAMEHOST=local) -> tmux send-keys, instant, no network.
-#       * SLACK_A2A_SAMEHOST=channel + bus on -> route through #nexus-agents so the
+#       * default (NEXUS_A2A_SAMEHOST=local) -> pane injection, instant, no network.
+#       * NEXUS_A2A_SAMEHOST=channel + bus on -> route through the NATS bus so the
 #         exchange is buffered + idle-gated + audited. A slot/%pane target is
 #         reverse-resolved to its agent NAME first (the bus keys on name), so ALL
-#         addressing of a registered agent goes through Slack. Falls back to local
-#         send-keys if the bus is unreachable. Two things still stay local: a bare
+#         addressing of a registered agent goes through the bus. Falls back to local
+#         injection if the bus is unreachable. Two things still stay local: a bare
 #         control digit (idle-gating a permission-menu input would deadlock it) and
 #         a window with no registered agent (no name to route by).
 #   - --via-bus forces the bus path (for a name); --local forces send-keys.
@@ -21,10 +30,11 @@
 #     is NATS. Nothing about this flag chooses a transport; that is NEXUS_BUS_TRANSPORT.
 #   - A namespaced NAME `host/name` is inherently cross-host (names a specific
 #     bridge) → always routes through the bus; errors if the bus is off.
-#   - --relay posts <message> to #nexus-agents for a HUMAN to read (no target,
-#     no delivery) — share your output instead of copy-pasting it into Slack.
+#   - --relay posts <message> to the bridge's human notify leg (POST /relay). It is
+#     NOT agent-to-agent delivery and returns 503 when no human channel is connected.
+#     Prefer Jira, the MR, and a bus message to a named agent for reporting.
 #
-# Set SLACK_A2A_SAMEHOST in the AGENT shell env (~/.tmux/env.sh) — NOT in the
+# Set NEXUS_A2A_SAMEHOST in the AGENT shell env (~/.tmux/env.sh) — NOT in the
 # bridge's env — so the bridge's own deliveries stay local and never loop.
 #
 # Usage: agent-send.sh [--via-bus|--local] <slot_or_name_or_%pane|host/name> <message>
@@ -77,8 +87,8 @@ while true; do
   esac
 done
 
-# --relay has NO target: the whole remainder is text posted to #nexus-agents for
-# a HUMAN to read (share your output instead of copy-pasting it into a Slack DM).
+# --relay has NO target: the whole remainder is text handed to the bridge's human
+# notify leg (/relay). Not A2A; fails with 503 when no human channel is connected.
 if [ "$RELAY" = "1" ]; then
   TARGET=""
 else
@@ -115,17 +125,17 @@ BRIDGE_PORT="${NEXUS_BUS_PORT:-${SLACK_BRIDGE_PORT:-8788}}"
 BUS_ENABLED="${NEXUS_BUS_ENABLED:-${SLACK_BUS_ENABLED:-0}}"
 # nx-resolve: the shared address grammar (workspace/host parsing + workspace scoping).
 [ -f "$HOME/.tmux/agent-resolve.sh" ] && . "$HOME/.tmux/agent-resolve.sh"
-# Same-host routing: 'local' (fast send-keys, default) or 'channel' (route NAME
-# targets through #nexus-agents for visibility, with a local fallback).
-SAMEHOST_MODE="${SLACK_A2A_SAMEHOST:-local}"
+# Same-host routing: 'local' (fast pane injection, default) or 'channel' (route NAME
+# targets through the NATS bus for visibility, with a local fallback).
+SAMEHOST_MODE="${NEXUS_A2A_SAMEHOST:-${SLACK_A2A_SAMEHOST:-local}}"
 # Emit a one-line stderr nudge when a message to a real agent goes LOCAL only
 # because same-host channel routing is off (the launch-caveat trap). The bridge
-# sets SLACK_A2A_NUDGE=0 on its own deliveries (which are intentionally local).
-NUDGE="${SLACK_A2A_NUDGE:-1}"
+# sets NEXUS_A2A_NUDGE=0 on its own deliveries (which are intentionally local).
+NUDGE="${NEXUS_A2A_NUDGE:-${SLACK_A2A_NUDGE:-1}}"
 
 # Flatten to single line — newlines break both send-keys and the /send JSON
-# payload. Skipped for --relay: a relay is human-facing prose posted to Slack
-# (not injected via send-keys), so its multi-line shape is preserved as-is.
+# payload. Skipped for --relay: a relay is human-facing prose for the notify leg
+# (not injected into a pane), so its multi-line shape is preserved as-is.
 if [ "$RELAY" != "1" ]; then
   MSG=$(printf '%s' "$MSG" | tr '\n' ' ' | sed 's/  */ /g; s/^ *//; s/ *$//')
 fi
@@ -192,11 +202,12 @@ print(json.dumps(d))') \
   if [ "$http" = "200" ]; then
     echo "Sent to ${to} via bus (from ${FROM}): ${MSG}"; return 0
   fi
-  echo "bus: /send returned HTTP ${http} (is SLACK_BUS_ENABLED=1 on the bridge?)"; return 2
+  echo "bus: /send returned HTTP ${http} (is NEXUS_BUS_ENABLED=1 on the bridge?)"; return 2
 }
 
-# Relay MSG to #nexus-agents for a human to read (POST /relay). No target, no
-# delivery — just posts, sender-tagged. Returns 0 on a 200, non-zero otherwise.
+# Relay MSG to the bridge's human notify leg (POST /relay). No target, no A2A
+# delivery — just posts, sender-tagged. Returns 0 on a 200, non-zero otherwise;
+# 503 means no human channel is connected on this bridge.
 route_via_relay() {
   local payload http
   payload=$(FROM="$FROM" MSG="$MSG" python3 -c \
@@ -207,9 +218,9 @@ route_via_relay() {
          "http://127.0.0.1:${BRIDGE_PORT}/relay" 2>/dev/null) \
     || { echo "relay: bridge unreachable on :${BRIDGE_PORT}"; return 2; }
   if [ "$http" = "200" ]; then
-    echo "Relayed to #nexus-agents (from ${FROM})"; return 0
+    echo "Relayed to the human notify leg (from ${FROM})"; return 0
   fi
-  echo "relay: /relay returned HTTP ${http} (is SLACK_BUS_ENABLED=1 on the bridge?)"; return 2
+  echo "relay: /relay returned HTTP ${http} (503 = no human channel connected; use Jira, the MR, or a bus message to a named agent)"; return 2
 }
 
 # Local delivery. $1 = DEST.
@@ -275,11 +286,11 @@ resolve_registry_file() {
   done
 }
 
-# --relay posts to the channel for a human to read; it never delivers to an
-# agent, so it short-circuits all target resolution. Bus-only (cross-machine).
+# --relay posts to the human notify leg; it never delivers to an agent, so it
+# short-circuits all target resolution. Bridge-only.
 if [ "$RELAY" = "1" ]; then
   if [ "$BUS_ENABLED" != "1" ]; then
-    echo "Relay needs the bus (set SLACK_BUS_ENABLED=1); it posts to #nexus-agents." >&2
+    echo "Relay needs the bridge (set NEXUS_BUS_ENABLED=1); it is not agent-to-agent delivery." >&2
     exit 1
   fi
   route_via_relay; exit $?
@@ -290,7 +301,7 @@ fi
 # local send-keys fast path. The owning host delivers. Requires the bus enabled.
 if [ "$VIA_BUS" = "1" ] || [ -n "$KIND" ]; then
   if [ -n "$KIND" ] && [ "$BUS_ENABLED" != "1" ]; then
-    echo "--${KIND} needs the bus (set SLACK_BUS_ENABLED=1); typed A2A is bus-only." >&2
+    echo "--${KIND} needs the bus (set NEXUS_BUS_ENABLED=1); typed A2A is bus-only." >&2
     exit 1
   fi
   route_via_bus "$TARGET"; exit $?
@@ -307,7 +318,7 @@ WS_FILTER=""
 if [[ "$TARGET" == */* ]]; then
   _bus_only_qualified() {
     if [ "$BUS_ENABLED" != "1" ]; then
-      echo "Namespaced target '$TARGET' needs the bus (set SLACK_BUS_ENABLED=1); cross-host delivery is bus-only." >&2
+      echo "Namespaced target '$TARGET' needs the bus (set NEXUS_BUS_ENABLED=1); cross-host delivery is bus-only." >&2
       exit 1
     fi
     route_via_bus "$TARGET"; exit $?
@@ -404,10 +415,10 @@ fi
 
 # Local target.
 if [ -n "$DEST" ]; then
-  # Channel mode: route through the bus so the exchange is buffered + audited in
-  # #nexus-agents. A NAME target routes as-is; a SLOT/%pane target is reverse-
+  # Channel mode: route through the NATS bus so the exchange is buffered + audited.
+  # A NAME target routes as-is; a SLOT/%pane target is reverse-
   # resolved to its agent NAME so it round-trips too (the bus keys on name) — so
-  # ALL addressing of a registered agent goes through Slack. Two things stay local:
+  # ALL addressing of a registered agent goes through the bus. Two things stay local:
   # a bare control digit (idle-gating a permission-menu input would deadlock the
   # prompt), and a window with no registered agent (no name to route by).
   if [ "$BUS_ENABLED" = "1" ] && [ "$SAMEHOST_MODE" = "channel" ] && ! [[ "$MSG" =~ ^[0-9]$ ]]; then
@@ -419,13 +430,13 @@ if [ -n "$DEST" ]; then
     fi
   fi
   # Launch-caveat nudge: the bus is on and this targets a real agent, but it went
-  # local because same-host routing is off — so it did NOT post to #nexus-agents.
+  # local because same-host routing is off — so it did NOT go over the bus.
   # (Skipped for digits/unregistered windows, which stay local by design, and for
-  # the bridge's own deliveries via SLACK_A2A_NUDGE=0.)
+  # the bridge's own deliveries via NEXUS_A2A_NUDGE=0.)
   if [ "$NUDGE" = "1" ] && [ "$BUS_ENABLED" = "1" ] && [ "$SAMEHOST_MODE" != "channel" ] \
      && [ "$FORCE_LOCAL" != "1" ] && ! [[ "$MSG" =~ ^[0-9]$ ]]; then
     rn="$TARGET"; [ "$TARGET_IS_NAME" = "1" ] || rn="$(resolve_pane_name "$DEST" "$TARGET")"
-    [ -n "$rn" ] && echo "note: delivered locally — SLACK_A2A_SAMEHOST≠channel, so this did NOT post to #nexus-agents. Set it to 'channel' (and relaunch this agent) for channel routing." >&2
+    [ -n "$rn" ] && echo "note: delivered locally — NEXUS_A2A_SAMEHOST≠channel, so this did NOT go over the NATS bus. Set it to 'channel' (and relaunch this agent) for bus routing." >&2
   fi
   deliver_local "$DEST"; exit 0
 fi

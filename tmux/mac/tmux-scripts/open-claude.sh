@@ -371,8 +371,8 @@ ${_pl}"
   fi
 fi
 
-# ── Orchestrator seed / restore (Slack-spawned and restored agents) ────────
-# SEED_PROMPT        — a task to begin on immediately (e.g. the Slack message that
+# ── Orchestrator seed / restore (seeded and restored agents) ───────────────
+# SEED_PROMPT        — a task to begin on immediately (e.g. the request that
 #                      triggered the spawn). Becomes the FIRST section of the opening
 #                      prompt; the usual checkpoint/memory/registry context follows
 #                      for awareness. Delivered as the launch prompt — never via
@@ -414,7 +414,7 @@ claude_args=()
 [ -n "$CLAUDE_EFFORT" ] && claude_args+=(--effort "$CLAUDE_EFFORT")
 # Permission posture (opt-in): default|acceptEdits|bypassPermissions|plan. Unset →
 # claude's own default (interactive; the read-only auto-approve classifier still gates
-# prompts and escalates mutations to Slack). Set at spawn for a hands-off background
+# prompts and escalates mutations to the human notify leg). Set at spawn for a hands-off background
 # agent — e.g. CLAUDE_PERMISSION_MODE=bypassPermissions for a fire-and-forget reviewer,
 # which mirrors the Conductor SDK runner's permission_mode="bypassPermissions". Normal
 # launches leave it unset and are unchanged. NOTE: acceptEdits only auto-accepts file
@@ -641,7 +641,7 @@ if [ -n "$seed_section" ] || [ -n "$restore_section" ] || [ -n "$cache_section" 
   prompt=""
   # Seed first: it is the actual task this agent was launched to do.
   if [ -n "$seed_section" ]; then
-    prompt="You have been launched by the Nexus orchestrator to work on the following request (relayed from Slack). Begin working on it; the context below is for situational awareness:"$'\n\n'"${seed_section}"
+    prompt="You have been launched by the Nexus orchestrator to work on the following request. Agent-to-agent messaging is the NATS bus described under Agent Communication below; there is no Slack path. Begin working on it; the context below is for situational awareness:"$'\n\n'"${seed_section}"
   fi
   if [ -n "$restore_section" ]; then
     [ -n "$prompt" ] && prompt="${prompt}"$'\n\n'
