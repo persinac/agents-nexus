@@ -171,7 +171,11 @@ Design notes: [`docs/conductor-design.md`](docs/conductor-design.md).
 puts a read-only page on [localhost:8312](http://localhost:8312): every `com.agents-nexus.*` launchd job
 with its schedule, last run, next fire and today's stamp; the cron ledgers under
 `~/.local/state/nexus-cron/` with rows and spend for today and the last 7 days; open and recent
-Conductor missions; review-loop logs; and the fleet pane registry. Nothing on the page writes.
+Conductor missions; review-loop logs; and the fleet pane registry. Each mission links to a page
+with its plan, subtasks, verify rounds (worker handoff, verifier findings by severity, replans),
+report and event timeline; each minion links to its stamps, full ledger and log tail. A 7-day strip
+shows spend, tickets triaged, ACT NOW verdicts and weigh spend per ACT NOW, MRs opened and loops
+converged. Sections refresh in place every 15s. Nothing on the page writes.
 
 ## The proxy
 
