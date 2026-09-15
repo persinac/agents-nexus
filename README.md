@@ -167,6 +167,12 @@ single-repo work takes the one-shot escape hatch (worker + verify) and skips the
 
 Design notes: [`docs/conductor-design.md`](docs/conductor-design.md).
 
+**Watching it run.** `scripts/minions-dashboard.py serve` (or `task launchd:install:minions-dashboard`)
+puts a read-only page on [localhost:8312](http://localhost:8312): every `com.agents-nexus.*` launchd job
+with its schedule, last run, next fire and today's stamp; the cron ledgers under
+`~/.local/state/nexus-cron/` with rows and spend for today and the last 7 days; open and recent
+Conductor missions; review-loop logs; and the fleet pane registry. Nothing on the page writes.
+
 ## The proxy
 
 `nexus-proxy` (`:4000`) sits between Claude Code and Anthropic, forwards requests verbatim, and
@@ -243,6 +249,7 @@ create an account, generate keys, and add `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY
 | mnemon MCP (SSE) | 8330 |
 | slack-bridge health | 8788 |
 | Langfuse UI | 3000 |
+| minions dashboard | 8312 |
 
 ## Driving the fleet
 
