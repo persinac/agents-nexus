@@ -15,6 +15,10 @@ policy:
   escalate_after_fails: 2
   max_replans: 5                    # verify -> re-dispatch loops before escalating to a human
   worker_max_turns: 60              # per-worker turn budget; multi-file build subtasks dead-loop below ~60
+  worker_timeout: 1200              # seconds the Conductor waits on a worker before stopping it and re-planning
+  worker_timeout_by_profile:        # Snowflake re-computation and doc authoring ran 30-40 min on 2026-09-14
+    data-analysis: 2700
+    one-shot: 2400
   on_exhausted: escalate            # escalate (stop, work stranded) | partial (draft MR + queue findings)
   verify_command:                   # ground-truth check (first that EXISTS per repo) — the full lint suite, hard gate
     - task lint
