@@ -459,6 +459,22 @@ tasks:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.doc-vault.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.doc-vault.plist
 
+  launchd:install:minions-dashboard:
+    desc: Install launchd agent for the minions dashboard (KeepAlive; serves http://localhost:8312)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" launchd/com.agents-nexus.minions-dashboard.plist > ~/Library/LaunchAgents/com.agents-nexus.minions-dashboard.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.minions-dashboard.plist
+      - echo "Installed — minions dashboard on http://localhost:8312 (log at $HOME/Library/Logs/agents-nexus/minions-dashboard.log)"
+
+  launchd:uninstall:minions-dashboard:
+    desc: Remove the minions dashboard launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.minions-dashboard.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.minions-dashboard.plist
+
   launchd:install:slack-bridge:
     desc: Install launchd agent to keep the bridge running (KeepAlive; needs SLACK_* tokens, or a NATS transport)
     vars:

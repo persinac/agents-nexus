@@ -15,5 +15,6 @@
   "com.agents-nexus.permission-suggest": "Weekly: proposes safe Claude Code permission-allowlist additions from recent transcripts and pings Slack (propose-only)",
   "com.agents-nexus.slack-bridge": "Slack Socket Mode bridge — routes #nexus messages and thread replies to the right agent, and posts agent input-requests back to Slack",
   "com.agents-nexus.example-service-mr-labels": "Auto-applies hygiene labels, assignees, and reviewers to open example-service MRs (classification belongs to mr-triage)",
-  "com.agents-nexus.example-service-mr-triage": "Daily: classifies open example-service MRs on category::/intent::/priority:: from the linked tracker issue"
+  "com.agents-nexus.example-service-mr-triage": "Daily: classifies open example-service MRs on category::/intent::/priority:: from the linked tracker issue",
+  "com.agents-nexus.minions-dashboard": "Serves the read-only minions dashboard on localhost:8312: launchd timers, cron ledgers and stamps, Conductor missions, review loops, fleet panes"
 }
