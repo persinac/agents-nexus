@@ -504,7 +504,7 @@ for w in d.get("result", {}).get("workspaces", []):
     if w.get("label") == want or w.get("workspace_id") == want:
         print(w.get("workspace_id","")); break
 ' "$wt" || true)"
-    [ -n "$wid" ] && herdr workspace close "$wid" >/dev/null 2>&1 || true
+    [ -n "$wid" ] && herdr workspace close "$wid" >/dev/null || true
   else
     # tmux-degrade: close = kill every window whose registry WORKSPACE= matches (full or
     # slug); never the caller's own pane.
