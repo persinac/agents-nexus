@@ -30,9 +30,9 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 MISSION_ID = re.compile(r"^[0-9a-f]{32}$")
 LOOP_LOG = re.compile(r"^swarm-loop-(?:(.+)-)?mr(\d+)\.log$")
 DAY_NAMES = {0: "Sun", 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat"}
-LEDGER_COLUMNS = ["ts", "key", "action", "mission", "outcome", "class", "tier", "decision", "confidence",
-                  "size", "cost", "minutes", "mode", "dispatched", "keys", "silent_hours", "findings",
-                  "kinds", "reason", "summary"]
+LEDGER_COLUMNS = ["ts", "key", "action", "project", "mr", "author", "mission", "outcome", "class", "tier", "decision",
+                  "confidence", "size", "cost", "minutes", "hours", "mode", "dispatched", "keys", "silent_hours",
+                  "findings", "kinds", "sha", "reason", "summary", "title"]
 PILL_COLUMNS = {"action", "outcome", "class", "tier", "decision", "mode", "status"}
 NUM_COLUMNS = {"cost", "minutes", "confidence", "findings", "silent_hours"}
 PALETTE = {
@@ -41,7 +41,8 @@ PALETTE = {
 }
 STATUS_TONE = {
     "done": "ok", "converged": "ok", "closed": "ok", "triaged": "ok", "weighed": "ok", "pass": "ok",
-    "merged": "ok", "ready": "ok", "act now": "ok", "claim": "ok", "promote": "info",
+    "merged": "ok", "ready": "ok", "act now": "ok", "claim": "ok", "promote": "info", "reviewed": "ok",
+    "dispatch": "info", "timeout": "warn",
     "running": "warn", "dispatched": "warn", "verifying": "warn", "planning": "warn", "silent": "warn",
     "would-close": "warn", "needs-info": "warn", "defer": "warn", "partial": "warn", "unverified": "warn",
     "schedule": "info", "in_progress": "info", "resumed": "info", "propose": "info", "dry-run": "info",
@@ -220,10 +221,30 @@ def launchctl_table():
 
 
 def descriptions():
+    """launchd/descriptions.json, filled in from the cron-minions registry table for jobs it does not name."""
     try:
-        return json.loads((NEXUS / "launchd" / "descriptions.json").read_text())
+        desc = json.loads((NEXUS / "launchd" / "descriptions.json").read_text())
     except (OSError, ValueError):
-        return {}
+        desc = {}
+    for label, write in registry_rows().items():
+        desc.setdefault(label, write)
+    return desc
+
+
+def registry_rows():
+    """Job label to its 'one write' cell from docs/cron-minions.md, when that doc is installed."""
+    out = {}
+    try:
+        lines = (NEXUS / "docs" / "cron-minions.md").read_text().splitlines()
+    except OSError:
+        return out
+    for ln in lines:
+        if not ln.startswith(f"| `{PREFIX}"):
+            continue
+        cells = [c.strip() for c in ln.strip().strip("|").split(" | ")]
+        if len(cells) >= 3:
+            out[cells[0].strip("`")] = re.sub(r"`([^`]*)`", r"\1", cells[2])[:220]
+    return out
 
 
 def mtime(path):
@@ -450,7 +471,7 @@ def panes(now):
 def week_stats(ledgers, missions_rows, loop_rows, now):
     week_ago = now - dt.timedelta(days=7)
     stats = {"rows": 0, "cost": 0.0, "act_now": 0, "weighed": 0, "weigh_cost": 0.0, "triaged": 0,
-             "closed": 0, "claims": 0, "mrs": 0, "converged": 0}
+             "closed": 0, "claims": 0, "mrs": 0, "converged": 0, "reviews": 0, "review_dispatches": 0}
     for led in ledgers:
         stats["rows"] += led["rows_7d"]
         stats["cost"] += led["cost_7d"]
@@ -467,6 +488,10 @@ def week_stats(ledgers, missions_rows, loop_rows, now):
                 stats["closed"] += 1
             if row.get("action") == "claim":
                 stats["claims"] += 1
+            if row.get("action") == "reviewed":
+                stats["reviews"] += 1
+            if row.get("action") == "dispatch" and row.get("mr"):
+                stats["review_dispatches"] += 1
     for m in missions_rows:
         when = m.get("finished_at") or m.get("started_at")
         if m.get("mr") and when and when >= week_ago:
@@ -479,6 +504,7 @@ def week_stats(ledgers, missions_rows, loop_rows, now):
 
 
 def collect():
+    time.tzset()
     now = now_local()
     js = jobs(now)
     ms, m_err = missions()
@@ -556,7 +582,8 @@ def tiles_html(items):
         f"<div class='tile'><div class='n {cls}'>{esc(n)}</div><div class='l'>{l}</div></div>" for n, l, cls in items) + "</div>"
 
 
-def cell(col, value, now):
+def cell(col, row, now):
+    value = row.get(col, "")
     if col == "ts":
         return f"<td class='dim'>{esc(clock(parse_ts(value), now))}</td>"
     if col == "cost" and isinstance(value, (int, float)):
@@ -565,6 +592,14 @@ def cell(col, value, now):
         return f"<td>{pill(value)}</td>"
     if col == "key":
         return f"<td><b>{esc(value)}</b></td>"
+    if col == "mr" and value != "":
+        url = str(row.get("url") or "")
+        text = f"!{esc(value)}"
+        return f"<td><a href='{esc(url)}'>{text}</a></td>" if url.startswith("https://") else f"<td>{text}</td>"
+    if col == "project":
+        return f"<td class='dim'>{esc(str(value).rsplit('/', 1)[-1])}</td>"
+    if col == "sha":
+        return f"<td class='mono dim'>{esc(str(value)[:8])}</td>"
     return f"<td class='{'num' if col in NUM_COLUMNS else ''}'>{esc(value)}</td>"
 
 
@@ -572,7 +607,7 @@ def ledger_table(led, now):
     cols = led["columns"]
     rows = ["<table><tr>" + "".join(f"<th>{esc(c)}</th>" for c in cols) + "</tr>"]
     for r in led["recent"]:
-        rows.append("<tr>" + "".join(cell(c, r.get(c, ""), now) for c in cols) + "</tr>")
+        rows.append("<tr>" + "".join(cell(c, r, now) for c in cols) + "</tr>")
     rows.append("</table>")
     return "".join(rows)
 
@@ -613,6 +648,7 @@ def render_overview(state):
         (wk["claims"], "tickets claimed", ""),
         (wk["mrs"], "MRs opened", "ok" if wk["mrs"] else ""),
         (wk["converged"], "loops converged", "ok" if wk["converged"] else ""),
+        (f"{wk['reviews']} / {wk['review_dispatches']}", "swarm reviews done / started", ""),
         (wk["closed"], "stale tickets closed", ""),
     ]
     parts.append(f"<h2>Last 7 days</h2><section data-live='week'>{tiles_html(week)}</section>")
