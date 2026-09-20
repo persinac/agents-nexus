@@ -400,6 +400,11 @@ tasks:
     cmds:
       - python3 scripts/test-notify-pipeline-check.py
 
+  install:test:
+    desc: "Prove install.sh's ~/.claude linking handles every dest shape (sandbox HOME)"
+    cmds:
+      - ./scripts/tests/test-link-claude-tree.sh
+
   launchd:install:notify-pipeline-check:
     desc: Install launchd agent to check the notification pipeline hourly (alerts to Slack only on anomaly)
     vars:
