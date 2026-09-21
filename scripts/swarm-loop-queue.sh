@@ -162,7 +162,7 @@ spawn_loop() {
   fi
 
   "$HOME/.tmux/substrate.sh" spawn "loop-mr$mr" "$cwd" \
-    "env PROJECT_SLUG=loop-mr$mr CLAUDE_MODEL=claude-opus-4-8 CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions \
+    "env PROJECT_SLUG=loop-mr$mr CLAUDE_MODEL=claude-opus-5[1m] CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions \
      SEED_PROMPT='$seed' \
      \$HOME/.tmux/open-claude.sh" \
     --workspace "swarm/loop-mr$mr" >>"$LOG" 2>&1
