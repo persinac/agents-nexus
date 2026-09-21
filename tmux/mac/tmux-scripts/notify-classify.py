@@ -1690,6 +1690,66 @@ def _llm(name, inp):
         return None
 
 
+_JEV_GATE = float(os.environ.get("CC_JEV_GATE", "0.30") or 0.30)
+
+_JEV_CRITERIA = {
+    "read": ("Safe to auto-approve. Either purely observational, OR it changes state in a way "
+             "that is non-destructive, trivially reversible, and touches nothing sensitive: "
+             "`git fetch` (only remote-tracking refs move), a FORCE-LESS `git push` (appends, "
+             "cannot rewrite history), `terraform plan` (computes a diff, applies nothing), a "
+             "plain `mv` of an ordinary file. Reading from a remote system is still safe -- "
+             "leaving the machine does not make it dangerous."),
+    "modify": ("Needs the operator. It destroys, overwrites, deploys, installs, escalates, or "
+               "touches credentials: a FORCED git push, git reset/checkout/rebase/stash, rm or "
+               "find -delete, any write or redirect (> >>), kubectl apply/delete/patch/exec, "
+               "terraform apply/destroy, package installs, sudo, piping into a shell, moving "
+               "anything under .ssh/.aws/.kube/.env, or posting/creating/deleting in an "
+               "external system. In a compound command one such part is enough."),
+}
+
+
+def _jev(name, inp):
+    """Return (choice, margin) from the Jev typed classifier, or None on any failure."""
+    if os.environ.get("CC_JEV_CROSSCHECK") != "1":
+        return None
+    key = os.environ.get("TYPESAFE_API_KEY")
+    if not key:
+        return None
+    try:
+        # Imported lazily: measured 0.18 s on this box, and the hook forks per prompt, so
+        # nothing amortises it. Only paid once the deterministic tier has already declined.
+        from typesafe_sdk import Choice, TypeSafeClient
+        client = TypeSafeClient(api_key=key)
+        try:
+            resp = client.system_one(
+                f"Tool: {name}\nInput: {json.dumps(inp)[:1500]}",
+                {"access": Choice(
+                    instructions=("An autonomous coding agent paused to ask its human operator "
+                                  "for permission. Decide whether this call is safe to "
+                                  "auto-approve without waking them."),
+                    criteria=_JEV_CRITERIA)})
+        finally:
+            closer = getattr(client, "close", None)
+            if closer:
+                try:
+                    closer()
+                except Exception:
+                    pass
+        a = resp.answers["access"]
+        return a.choice, float(a.confidence)
+    except Exception:
+        return None
+
+
+def _jev_declines(name, inp):
+    """True when the typed cross-check will not vouch for an LLM 'read' approval."""
+    verdict = _jev(name, inp)
+    if verdict is None:
+        return False
+    choice, margin = verdict
+    return choice != "read" or margin < _JEV_GATE
+
+
 # --- Repeat-notification suppression (added 2026-08-19) ---------------------
 # Claude Code re-emits the SAME permission_prompt Notification every ~2 minutes for as
 # long as the prompt sits unanswered. Measured on 2026-08-19: one unanswered
@@ -1972,7 +2032,7 @@ def classify(name, inp):
             # it is also the fastest path in the module.
             return "read", "permitted change", det
         llm = _llm(name, inp)
-        if safe and llm and llm[0] == "read":
+        if safe and llm and llm[0] == "read" and not _jev_declines(name, inp):
             _log_decision("approve", "llm", cmd)
             return "read", llm[1], (llm[2] or det)
         _log_decision("ask", denied_by or ("empty" if not cmd else "llm"), cmd)
