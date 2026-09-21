@@ -405,6 +405,11 @@ tasks:
     cmds:
       - ./scripts/tests/test-link-claude-tree.sh
 
+  overlay:test:
+    desc: "Prove overlay-apply.sh marks every directory it writes into (sandbox core)"
+    cmds:
+      - ./scripts/tests/test-overlay-marker.sh
+
   launchd:install:notify-pipeline-check:
     desc: Install launchd agent to check the notification pipeline hourly (alerts to Slack only on anomaly)
     vars:
