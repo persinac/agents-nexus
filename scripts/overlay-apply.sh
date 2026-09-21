@@ -374,6 +374,37 @@ while IFS= read -r glob; do
   done
 done < <(toml_blocks "$MANIFEST" template glob)
 
+# ── 2b. mark every directory that received a file ────────────────────────────
+# The core copy looks authoritative and is not: the next apply overwrites it, --remove
+# deletes it, and the exclude block hides both from git status.
+_marker_one(){ # _marker_one ABS_DIR
+  cat > "$1/.overlay-managed.$NAME" <<EOF
+This directory receives files from the '$NAME' overlay.
+  source: $SRC
+
+Those files are OVERWRITTEN by the next 'scripts/overlay-apply.sh' run and DELETED
+by 'scripts/overlay-apply.sh --remove $NAME'. An edit made here survives neither.
+Overlay paths are recorded in .git/info/exclude, and some are covered by .gitignore,
+so 'git status' will not show the edit either -- it disappears with no warning.
+
+Edit the overlay repo instead, commit and push it there, then re-apply.
+EOF
+}
+if [ "${#COPIED[@]}" -gt 0 ]; then
+  MARKERS=()
+  while IFS= read -r mdir; do
+    [ -n "$mdir" ] || continue
+    run _marker_one "$NEXUS_DIR/$mdir"
+    if [ "$mdir" = "." ]; then
+      MARKERS+=(".overlay-managed.$NAME")
+    else
+      MARKERS+=("$mdir/.overlay-managed.$NAME")
+    fi
+  done < <(for r in "${COPIED[@]}"; do dirname "$r"; done | LC_ALL=C sort -u)
+  COPIED+=("${MARKERS[@]}")
+  say "  ${OKC}✓${Z} ${#MARKERS[@]} directory marker(s)"
+fi
+
 # ── 3. record copied paths in this overlay's named exclude block ─────────────
 if [ "$DRY" != 1 ] && [ "${#COPIED[@]}" -gt 0 ]; then
   write_exclude_block "$NAME" "${COPIED[@]}"
