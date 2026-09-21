@@ -37,8 +37,11 @@ detect_os() {
 }
 
 OS=$(detect_os)
-# A test sourcing this sets REPO_DIR to its sandbox; $0 would be the test's own path.
-REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+# Resolve from BASH_SOURCE, not $0: when this file is SOURCED (INSTALL_SH_LIB=1) $0 is the
+# sourcing shell -- `bash` -- so $0 would give /bin and every path below it would silently
+# miss. BASH_SOURCE[0] is this file in both modes. A caller may still preset REPO_DIR (the
+# test suite points it at a sandbox); $0 remains the fallback for a non-bash shell.
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
 PLATFORM_DIR="$REPO_DIR/tmux/$OS"
 
 # ── Flags ──────────────────────────────────────────────────────

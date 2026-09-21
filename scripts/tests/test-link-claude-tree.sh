@@ -103,5 +103,16 @@ link_claude_tree agents agents "agents" files >/dev/null
 check "spaced name links" "$([ -L "$HOME/.claude/agents/two words.md" ] && echo yes)" yes
 rm -rf "$SANDBOX"
 
+# Every check above presets REPO_DIR, so none of them can see a bad default. Sourced as a
+# library from a foreign cwd, $0 is the sourcing shell (`bash`) and `dirname "$0"` gave /bin;
+# link_claude_tree then returned at its `[ -d "$src_dir" ]` guard for every caller -- a silent
+# no-op that still exited 0. Resolve from BASH_SOURCE[0] instead.
+new_sandbox
+resolved="$(cd /tmp && unset REPO_DIR && export INSTALL_SH_LIB=1 \
+  && . "$INSTALL_SH" >/dev/null 2>&1 && printf '%s' "$REPO_DIR")"
+check "sourced from foreign cwd resolves REPO_DIR to the repo" \
+  "$resolved" "$(cd "$(dirname "$INSTALL_SH")" && pwd)"
+rm -rf "$SANDBOX"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
