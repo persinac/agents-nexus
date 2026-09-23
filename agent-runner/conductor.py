@@ -2,7 +2,7 @@
 """Conductor (Slice B) — mission orchestrator: single-subtask end-to-end.
 
 Deterministic spine with four scoped judgment nodes (classify / plan / adjudicate /
-synthesize), each a one-shot opus-4.8 call at `max` effort returning structured JSON.
+synthesize), each a one-shot opus-5 call at `max` effort returning structured JSON.
 Everything is logged to agents.missions / mission_subtasks / mission_events.
 
 Slice B proves the whole loop on one subtask, running the worker IN-PROCESS (a

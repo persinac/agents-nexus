@@ -190,13 +190,13 @@ def main() -> None:
                  sum(usage_details['input']),
                  sum(usage_details['cache_read_input_tokens']),
                  sum(usage_details['cache_creation_input_tokens'])
-                 FROM observations WHERE {W} AND {J.format('requested_model')}='claude-opus-4-8'""")
+                 FROM observations WHERE {W} AND {J.format('requested_model')} LIKE '%opus%'""")
     print(f"\n[D] headroom — if opus turns had been served by sonnet")
     if rows and rows[0][0] and int(rows[0][0]) > 0:
         n, out_all, n_small, out_small, i_all, cr_all, cw_all = (int(x) for x in rows[0])
         u_all = {"input": i_all, "output": out_all,
                  "cache_read_input_tokens": cr_all, "cache_creation_input_tokens": cw_all}
-        opus_cost = price("claude-opus-4-8", u_all)
+        opus_cost = price("claude-opus-5", u_all)
         sonnet_cost = price("claude-sonnet-5", u_all)
         print(f"    {n} opus turns, {out_all:,} output tok, actual ~${opus_cost:.2f} at opus rates")
         print(f"    theoretical if ALL -> sonnet: ~${sonnet_cost:.2f}  "

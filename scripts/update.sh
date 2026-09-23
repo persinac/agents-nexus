@@ -121,7 +121,7 @@ if [ -f "$ENV_SH" ] && grep -qE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_MODEL=
     cp "$ENV_SH" "$ENV_SH.pre-model.bak"
     case "$_ans" in
       [nN]*)
-        printf '  Model id to pin (e.g. claude-opus-4-8[1m] = 1M window, claude-opus-4-8 = 200k): ' > /dev/tty
+        printf '  Model id to pin (e.g. claude-opus-5[1m] = 1M window, claude-opus-5 = 200k): ' > /dev/tty
         read -r _model < /dev/tty || _model=""
         if [ -n "$_model" ]; then
           { grep -vE '^[[:space:]]*(export[[:space:]]+)?CLAUDE_MODEL=' "$ENV_SH.pre-model.bak"; \

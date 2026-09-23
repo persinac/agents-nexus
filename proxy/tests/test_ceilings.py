@@ -58,10 +58,10 @@ def test_turn_usd_strips_a_dated_model_id(monkeypatch):
 
 
 def test_turn_usd_does_not_tier_fallback(monkeypatch):
-    """claude-opus-4-8 must NOT price an unknown claude-opus-9. The report does
+    """claude-opus-5 must NOT price an unknown claude-opus-9. The report does
     substitute (loudly); the ceiling must not, or a mispriced model could hold a
     runaway under the cap."""
-    monkeypatch.setattr(main, "_PRICES", {"claude-opus-4-8": {"input": 5.0, "output": 25.0}})
+    monkeypatch.setattr(main, "_PRICES", {"claude-opus-5": {"input": 5.0, "output": 25.0}})
     assert main._turn_usd("claude-opus-9", _ud(out=1_000_000)) == 0.0
 
 

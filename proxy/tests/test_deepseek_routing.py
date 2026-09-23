@@ -57,7 +57,7 @@ def test_upstream_for_deepseek_beats_work(monkeypatch):
 # ── _decide_served: deepseek short-circuits everything else ────────────────
 
 CLASSIFIER_BODY = {
-    "model": "claude-opus-4-8",
+    "model": "claude-opus-5",
     "system": "<cc_automode_permissions>\nrules\n</cc_automode_permissions>",
     "messages": [{"role": "user", "content": "=== ACTION BEING CLASSIFIED ===\nBash: ls"}],
 }
@@ -68,7 +68,7 @@ def test_decide_served_forces_deepseek_model_unconditionally(monkeypatch):
     monkeypatch.setattr(main, "DEEPSEEK_MODEL", "deepseek-cheap")
     monkeypatch.setattr(main, "ROUTE_ENABLED", True)  # would otherwise also apply
     served, difficulty = main._decide_served(
-        True, "ds-mission-1", CLASSIFIER_BODY, "claude-opus-4-8", is_classifier=True,
+        True, "ds-mission-1", CLASSIFIER_BODY, "claude-opus-5", is_classifier=True,
     )
     assert (served, difficulty) == ("deepseek-cheap", "vendor-route")
 
@@ -78,8 +78,8 @@ def test_decide_served_ignores_bg_ceiling_for_deepseek_sessions(monkeypatch):
     monkeypatch.setattr(main, "DEEPSEEK_MODEL", "deepseek-cheap")
     monkeypatch.setattr(main, "BG_CEILING_ENABLED", True)
     monkeypatch.setattr(main, "BG_CEILING_MODEL", "claude-sonnet-5")
-    body = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}]}
-    served, difficulty = main._decide_served(True, "ds-bg-thing", body, "claude-opus-4-8")
+    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}]}
+    served, difficulty = main._decide_served(True, "ds-bg-thing", body, "claude-opus-5")
     assert (served, difficulty) == ("deepseek-cheap", "vendor-route")
 
 
@@ -119,12 +119,12 @@ async def test_nonstream_deepseek_strips_auth_and_hits_litellm(orch, monkeypatch
     monkeypatch.setattr(main, "LITELLM_UPSTREAM", "http://litellm")
     handler, seen = _captured()
     orch(handler)
-    body = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(body).encode()
     headers = {"authorization": "Bearer sk-ant-should-not-leak", "x-api-key": "sk-ant-also-not"}
     res = await main._nonstream_response(
         "POST", "v1/messages", raw, body, headers, {}, 0.0, "ds-mission-1",
-        True, "claude-opus-4-8", "deepseek-cheap", "vendor-route",
+        True, "claude-opus-5", "deepseek-cheap", "vendor-route",
     )
     assert isinstance(res, Response) and res.status_code == 200
     assert seen["url"].startswith("http://litellm/")
@@ -138,12 +138,12 @@ async def test_stream_deepseek_strips_auth_and_hits_litellm(orch, monkeypatch):
     monkeypatch.setattr(main, "LITELLM_UPSTREAM", "http://litellm")
     handler, seen = _captured()
     orch(handler)
-    body = {"model": "claude-opus-4-8", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(body).encode()
     headers = {"authorization": "Bearer sk-ant-should-not-leak"}
     res = await main._stream_response(
         "v1/messages", raw, body, headers, {}, 0.0, "ds-mission-1",
-        "claude-opus-4-8", "deepseek-cheap", "vendor-route",
+        "claude-opus-5", "deepseek-cheap", "vendor-route",
     )
     assert isinstance(res, StreamingResponse)
     out = await _drain(res)
@@ -161,11 +161,11 @@ async def test_nonstream_deepseek_failure_does_not_fall_back_to_anthropic(orch, 
     monkeypatch.setattr(main, "ROUTE_MAX_RETRIES", 1)
     handler, calls = _scripted([529, 529, 529])  # always retryable-failing
     orch(handler)
-    body = {"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(body).encode()
     res = await main._nonstream_response(
         "POST", "v1/messages", raw, body, {}, {}, 0.0, "ds-mission-1",
-        True, "claude-opus-4-8", "deepseek-cheap", "vendor-route",
+        True, "claude-opus-5", "deepseek-cheap", "vendor-route",
     )
     assert isinstance(res, Response) and not isinstance(res, StreamingResponse)
     # surfaced the real 529 verbatim, no shed attempt (calls == retries, not more)
@@ -180,11 +180,11 @@ async def test_stream_deepseek_persistent_failure_surfaces_verbatim(orch, monkey
     monkeypatch.setattr(main, "ROUTE_MAX_RETRIES", 1)
     handler, calls = _scripted([503, 503, 503])
     orch(handler)
-    body = {"model": "claude-opus-4-8", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(body).encode()
     res = await main._stream_response(
         "v1/messages", raw, body, {}, {}, 0.0, "ds-mission-1",
-        "claude-opus-4-8", "deepseek-cheap", "vendor-route",
+        "claude-opus-5", "deepseek-cheap", "vendor-route",
     )
     assert isinstance(res, Response) and not isinstance(res, StreamingResponse)
     assert res.status_code == 503
