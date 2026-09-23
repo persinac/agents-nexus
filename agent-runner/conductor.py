@@ -309,6 +309,9 @@ def _is_git(path):
     return os.path.isdir(os.path.join(path, ".git"))
 
 
+_WORKSPACE_GONE = "workspace missing"
+
+
 def workspace(mid, repo):
     """Deterministic worker cwd: a git worktree of `repo` on the mission branch, or a
     per-mission scratch dir for repo-less work — so a relative-path write never lands
@@ -579,13 +582,18 @@ async def _run_worker_codex(subtask: dict, profile: dict, effort: str) -> dict:
 
 
 async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
+    cwd = workspace(subtask["mission_id"], subtask.get("repo"))   # worktree or scratch — never a live checkout
+    # A worktree that vanished mid-mission (stray prune, half-finished setup) is not something a
+    # re-plan can fix: every retry re-raises CLIConnectionError, one effort rung higher.
+    if not os.path.isdir(cwd):
+        return _worker_result(subtask["id"], "error",
+                              f"{_WORKSPACE_GONE}: {cwd} — recreate the worktree and resume", [])
     if profile.get("vendor") == "codex":   # T2: mixed-vendor DAG worker — codex builds this subtask
         return await _run_worker_codex(subtask, profile, effort)
     tools = list(profile.get("tools", []))
     mcp = _load_mcp(profile.get("mcp", []))
     allowed = tools + [f"mcp__{s}__*" for s in mcp]
     read_only = profile.get("permission") == "read-only"
-    cwd = workspace(subtask["mission_id"], subtask.get("repo"))   # worktree or scratch — never a live checkout
 
     # A profile MAY name a `skill:` = the mission procedure (techdebt → pull-techdebt, etc.).
     # The Skill TOOL can't invoke plugin skills headlessly ("Unknown skill"), so we resolve the
@@ -1335,6 +1343,13 @@ async def run_and_verify(db, mid: str, goal: str, start_round: int = 0) -> tuple
         print(f"[conductor] round {rnd} verdict: pass={verdict.get('pass')} rec={verdict.get('recommendation')}")
         if verdict.get("pass"):
             return verdict, True
+        gone = [s for s in failed if _WORKSPACE_GONE in ((s.get("result") or {}).get("summary") or "")]
+        if gone:
+            keys = [s["subtask_key"] for s in gone]
+            db.log_event(mid, "workspace_missing", {"round": rnd, "subtasks": keys})
+            print(f"[conductor] workspace missing for {keys} — stopping at round {rnd}; "
+                  f"re-planning cannot recreate a worktree")
+            return verdict, False
         if rnd < MAX_REPLANS:
             db.log_event(mid, "replan", {"round": rnd, "findings": verdict.get("findings")})
             fb = json.dumps(verdict.get("findings", []))[:800]
