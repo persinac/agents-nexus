@@ -722,8 +722,9 @@ def spawn_worker(mid: str, st: dict, ws_label: str = None) -> str:
     fan-out is watchable at once. Falls back to a detached subprocess if the backend is down."""
     cwd = workspace(mid, st.get("repo"))
     name = f"cw-{st['subtask_key']}-{mid[:4]}"
-    env_prefix = "".join(f"{k}={os.environ[k]} " for k in
-                         ("CONDUCTOR_MODEL", "CONDUCTOR_ORCH_EFFORT", "CONDUCTOR_WORKER_EFFORT")
+    env_prefix = "".join(f"{k}='{os.environ[k]}' " for k in
+                         ("CONDUCTOR_MODEL", "CONDUCTOR_ORCH_EFFORT", "CONDUCTOR_WORKER_EFFORT",
+                          "CONDUCTOR_WORKER_MAX_TURNS", "CONDUCTOR_WAIT_TERMINAL_S")
                          if os.environ.get(k))
     cmd = f"{env_prefix}{PYEXE} {WORKER_SCRIPT} {mid} {st['id']}"
     # Route spawn through the substrate seam (tmux today; herdr under NEXUS_SUBSTRATE=herdr).
@@ -783,8 +784,9 @@ def _deregister_self() -> None:
         pass
 
 
-async def wait_terminal(db, sids, timeout=1200):
+async def wait_terminal(db, sids, timeout=None):
     """Poll subtask rows until all reach a terminal state (done|error|blocked)."""
+    timeout = timeout or int(os.environ.get("CONDUCTOR_WAIT_TERMINAL_S", 1200))
     pending = set(sids)
     end = time.time() + timeout
     while pending and time.time() < end:
@@ -1062,10 +1064,18 @@ def _reviewer_prompt(goal: str, summaries: list, probes: list, lens: str, cwd: s
         f"\n\nTARGET FILES — the goal said to EXTEND these and they were NOT modified: {unmet}. "
         f"The `extend_target` probes are git ground truth, not opinion. This is a BLOCKER; say so "
         f"even if a new file beside it is otherwise well written." if unmet else "")
+    # A pipeline the mission just triggered is always mid-flight at review time; without this the
+    # "fail anything unverified" rule below turns that timing into a blocker on every pushed MR.
+    timing = (
+        "\n\nPIPELINE TIMING — a CI pipeline that has not finished is NOT evidence of failure. "
+        "Jobs still `running`, `created`, `pending` or `manual` mean the evidence is incomplete: "
+        "report that at `minor`, never `blocker`, and never fail the mission on it alone. A job "
+        "that actually reported `failed` IS a blocker. Judge what has reported, not what has not "
+        "reported yet, and do not claim a pipeline is green while jobs are outstanding.")
     return (
         f"You are an ADVERSARIAL reviewer using the '{lens}' lens. Find why this mission is NOT "
         f"correctly/completely done. Be strict: if anything is unverified, missing, or wrong, FAIL it. "
-        f"{inspect}{fidelity}{targets}\n\n"
+        f"{inspect}{fidelity}{targets}{timing}\n\n"
         f"Goal: {goal}\nWork summaries: {json.dumps(summaries)}\n"
         f"Ground-truth probes: {json.dumps(probes)}\n\n"
         'Respond with ONLY JSON: {"pass":true,"findings":[{"severity":"blocker|major|minor","where":"","what":""}]}'
@@ -2077,7 +2087,8 @@ async def run_mission(goal: str, created_by: str = "cli") -> tuple:
         cr = await classify(goal)
         mid = db.create_mission(goal, type=cr.get("type", "building"),
                                 route=cr.get("route", "conductor"), repos=cr.get("repos", []),
-                                datasources=cr.get("datasources", []), created_by=created_by, device=HOST)
+                                datasources=cr.get("datasources", []), created_by=created_by, device=HOST,
+                                model=MODEL)
         _set_sess(f"conductor-{mid[:8]}")
         db.log_event(mid, "classified", cr)
         print(f"[conductor] mission {mid[:8]} · type={cr.get('type')} repos={cr.get('repos')}")
@@ -2527,7 +2538,8 @@ async def run_sdlc_mission(goal: str, created_by: str = "cli") -> tuple:
         ws_root = scan.get("workspace_root")
         proj, reason = _sdlc_resolve_project(goal, scan)
         mid = db.create_mission(goal, type="sdlc", route="sdlc",
-                                repos=(proj or {}).get("repos") or [], created_by=created_by, device=HOST)
+                                repos=(proj or {}).get("repos") or [], created_by=created_by, device=HOST,
+                                model=MODEL)
         _set_sess(f"conductor-sdlc-{mid[:8]}")
         db.log_event(mid, "sdlc_resolved", {"reason": reason, "project": (proj or {}).get("path"),
                      "workspace_root": ws_root, "ticket": ticket,
@@ -2643,8 +2655,12 @@ if __name__ == "__main__":
         # goals routinely carry spaces/parens/quotes. The detached conductor decodes it.
         import base64
         g64 = base64.b64encode(goal.encode()).decode()
+        policy_env = "".join(f"{k}='{os.environ[k]}' " for k in
+                             ("CONDUCTOR_MODEL", "CONDUCTOR_ORCH_EFFORT", "CONDUCTOR_WORKER_EFFORT",
+                          "CONDUCTOR_WORKER_MAX_TURNS", "CONDUCTOR_WAIT_TERMINAL_S")
+                             if os.environ.get(k))
         inner = (f"env CONDUCTOR_MISSION_WS={label} CONDUCTOR_GOAL_B64={g64} CONDUCTOR_RUN_MODE={RUN_MODE} "
-                 f"CONDUCTOR_GATE_BEFORE_REPORT={'1' if GATE_BEFORE_REPORT else '0'} "
+                 f"CONDUCTOR_GATE_BEFORE_REPORT={'1' if GATE_BEFORE_REPORT else '0'} {policy_env}"
                  f"{PYEXE} {os.path.abspath(__file__)} --distribute-run")
         r = subprocess.run([SUBSTRATE, "spawn", name, _REPO_ROOT, inner, "--workspace", label],
                            capture_output=True, text=True)
