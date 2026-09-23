@@ -282,30 +282,6 @@ tasks:
           "
 
   # =============================================================================
-  # GitLab jobs
-  # =============================================================================
-
-  gl:reviews:
-    desc: Show open MRs where you're a reviewer, priority-sorted
-    cmds:
-      - uv run scripts/gl-review-queue.py {{.CLI_ARGS}}
-
-  gl:reviews:daily:
-    desc: Show review queue and append to today's Obsidian daily note
-    cmds:
-      - uv run scripts/gl-review-queue.py --daily {{.CLI_ARGS}}
-
-  gl:reviews:prune:
-    desc: Remove yourself as reviewer from MRs older than 6mo (--min-age N to override)
-    cmds:
-      - uv run scripts/gl-review-prune.py {{.CLI_ARGS}}
-
-  gl:reviews:prune:dry:
-    desc: Preview stale MRs that would be pruned without making changes
-    cmds:
-      - uv run scripts/gl-review-prune.py --dry-run {{.CLI_ARGS}}
-
-  # =============================================================================
   # Nightly pipeline
   # =============================================================================
 
