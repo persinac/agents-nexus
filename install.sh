@@ -11,7 +11,7 @@
 #   ./install.sh --finish-slack        # paste Slack bridge tokens after first run
 #   ./install.sh --finish-nats         # set NATS broker URL + auth (the cross-machine step)
 #   ./install.sh --overlay <url|path>  # snap in a private "plugs" overlay (compose: run per overlay)
-#   ./install.sh --non-interactive     # deps + skills only (no prompts)
+#   ./install.sh --non-interactive     # deps + ~/.claude assets only (no prompts)
 #
 # Supported platforms: macOS, Linux. Windows path is left in place but no
 # longer actively maintained against the interactive flow.
@@ -37,7 +37,11 @@ detect_os() {
 }
 
 OS=$(detect_os)
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve from BASH_SOURCE, not $0: when this file is SOURCED (INSTALL_SH_LIB=1) $0 is the
+# sourcing shell -- `bash` -- so $0 would give /bin and every path below it would silently
+# miss. BASH_SOURCE[0] is this file in both modes. A caller may still preset REPO_DIR (the
+# test suite points it at a sandbox); $0 remains the fallback for a non-bash shell.
+REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)}"
 PLATFORM_DIR="$REPO_DIR/tmux/$OS"
 
 # ── Flags ──────────────────────────────────────────────────────
@@ -47,7 +51,7 @@ MODE="install"   # install | switch | finish-langfuse | finish-slack | finish-na
 OVERLAY_SRC=""   # --overlay <git-url|local-path>
 OVERLAY_REF=""   # --overlay-ref <branch/tag/sha>
 
-while [ $# -gt 0 ]; do
+while [ -z "${INSTALL_SH_LIB:-}" ] && [ $# -gt 0 ]; do
   case "$1" in
     --non-interactive)  INTERACTIVE=false ;;
     --profile)          shift; PROFILE_ARG="${1:-}" ;;
@@ -69,16 +73,18 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-echo ""
-echo "  Agent Orchestration Installer"
-echo "  Platform: $OS"
-echo "  Repo:     $REPO_DIR"
-echo ""
+if [ -z "${INSTALL_SH_LIB:-}" ]; then
+  echo ""
+  echo "  Agent Orchestration Installer"
+  echo "  Platform: $OS"
+  echo "  Repo:     $REPO_DIR"
+  echo ""
 
-if [ ! -d "$PLATFORM_DIR" ]; then
-  echo "ERROR: No platform directory found at $PLATFORM_DIR"
-  echo "Supported platforms: mac, linux"
-  exit 1
+  if [ ! -d "$PLATFORM_DIR" ]; then
+    echo "ERROR: No platform directory found at $PLATFORM_DIR"
+    echo "Supported platforms: mac, linux"
+    exit 1
+  fi
 fi
 
 # ────────────────────────────────────────────────────────────────
@@ -302,30 +308,59 @@ install_deps_windows() {
   ensure_python
 }
 
-setup_skills() {
-  local skills_src="$REPO_DIR/skills"
-  [ -d "$skills_src" ] || return 0
-  mkdir -p "$HOME/.claude/skills"
-  for skill_dir in "$skills_src"/*/; do
-    [ -d "$skill_dir" ] || continue
-    local name
-    name=$(basename "$skill_dir")
-    local target="$HOME/.claude/skills/$name"
-    local src
-    src="$(cd "$skill_dir" && pwd)"
-    if [ -L "$target" ]; then
-      ln -sfn "$src" "$target"
-      echo "  [ok] skill: $name"
-    elif [ -d "$target" ]; then
-      rm -rf "$target"
-      ln -sfn "$src" "$target"
-      echo "  -> ~/.claude/skills/$name (adopted from real dir)"
+# link_claude_tree <repo-subdir> <~/.claude subdir> <label> [dirs|files|both]
+# Per-ENTRY links: ~/.claude/{skills,commands,...} merge several sources, so owning the
+# directory would hide everything this repo did not place.
+link_claude_tree() {
+  local src_dir="$REPO_DIR/$1" dest_dir="$HOME/.claude/$2" label="$3" kinds="${4:-dirs}"
+  [ -d "$src_dir" ] || return 0
+
+  if [ -L "$dest_dir" ]; then
+    local resolved
+    resolved="$(cd "$dest_dir" 2>/dev/null && pwd -P)" || resolved=""
+    if [ -n "$resolved" ] && [ "$resolved" = "$(cd "$src_dir" && pwd -P)" ]; then
+      echo "  [ok] $label: ~/.claude/$2 is already a link to $1 (overlay-managed)"
+    else
+      echo "  ?? $label: ~/.claude/$2 is a symlink to ${resolved:-<broken>} — skipping"
+      echo "     Remove it to let the installer manage per-entry links."
+    fi
+    return 0
+  fi
+
+  mkdir -p "$dest_dir"
+  local entry name target src linked=0
+  for entry in "$src_dir"/*; do
+    [ -e "$entry" ] || continue
+    case "$kinds" in
+      dirs)  [ -d "$entry" ] || continue ;;
+      files) [ -f "$entry" ] || continue ;;
+    esac
+    name="$(basename "$entry")"
+    target="$dest_dir/$name"
+    src="$(cd "$(dirname "$entry")" && pwd)/$name"
+    if [ -e "$target" ] && [ ! -L "$target" ]; then
+      if [ -d "$target" ]; then
+        rm -rf "$target"
+        ln -sfn "$src" "$target"
+        echo "  -> ~/.claude/$2/$name (adopted from real dir)"
+      else
+        mv "$target" "$target.pre-nexus"
+        ln -sfn "$src" "$target"
+        echo "  -> ~/.claude/$2/$name (existing file kept as $name.pre-nexus)"
+      fi
     else
       ln -sfn "$src" "$target"
-      echo "  -> ~/.claude/skills/$name"
     fi
+    linked=$((linked + 1))
   done
+  echo "  [ok] $label: $linked linked into ~/.claude/$2"
 }
+
+setup_skills()     { link_claude_tree skills         skills     "skills"     dirs;  }
+setup_agents()     { link_claude_tree agents         agents     "agents"     files; }
+setup_commands()   { link_claude_tree commands       commands   "commands"   both;  }
+setup_references() { link_claude_tree references     references "references" files; }
+setup_cscripts()   { link_claude_tree claude-scripts scripts    "scripts"    both;  }
 
 validate_setup() {
   local all_ok=true
@@ -1234,6 +1269,8 @@ if [ "$MODE" = "overlay" ]; then
   exit "$rc"
 fi
 
+[ -n "${INSTALL_SH_LIB:-}" ] && return 0
+
 # ── Step 1: System dependencies ────────────────────────────────
 echo "── Step 1: System dependencies ──────────────────────────"
 case "$OS" in
@@ -1314,9 +1351,13 @@ echo "    NEXUS_INJECT_REGISTRY     (default 1)     Agent Communication + live p
 echo "  Set any INJECT toggle to 0 to omit that block. Less context = faster, cheaper spawns."
 echo ""
 
-# ── Step 4: Global Claude skills ───────────────────────────────
-echo "── Step 4: Global Claude skills ─────────────────────────"
+# ── Step 4: Global Claude assets ───────────────────────────────
+echo "── Step 4: Global Claude assets ─────────────────────────"
 setup_skills
+setup_agents
+setup_commands
+setup_references
+setup_cscripts
 echo ""
 
 # ── Step 5: Validate ───────────────────────────────────────────

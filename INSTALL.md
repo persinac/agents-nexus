@@ -17,7 +17,9 @@ The installer:
 1. Detects your OS and installs system deps (tmux, fzf, node, uv, Python 3.14, Claude Code).
 2. Copies platform tmux configs to `~/.tmux/` and `~/.tmux.conf`.
 3. Walks an **interactive profile setup** — profile name, compose flavor, per-service selection (which containers run), per-service config, host integrations, optional stack startup.
-4. Symlinks global Claude skills from `skills/` into `~/.claude/skills/`.
+4. Symlinks global Claude assets into `~/.claude/` — `skills/`, `agents/`, `commands/`,
+   `references/`, and `claude-scripts/` (→ `~/.claude/scripts/`). One link per entry, so
+   anything else already in those directories is left alone.
 5. Validates that `uv`, `python3`, and `~/.claude/claude_code_config.json` look healthy.
 
 ## Flags

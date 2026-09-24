@@ -81,3 +81,18 @@ spark/
 
 # Playwright MCP scratch output (console/page dumps from a browsing session).
 .playwright-mcp/
+# Overlay-delivered Claude assets. overlay-apply.sh records the individual FILES it
+# places in .git/info/exclude, so anything created LATER inside one of those directories
+# is unignored — and ~/.claude/skills/<name> symlinks here, so a skill that writes beside
+# itself writes into this repo. Ignore by directory; tracked files are never ignored.
+/skills/*
+!/skills/checkpoint/
+!/skills/doc-vault/
+!/skills/excalidraw-diagram/
+/commands/*
+!/commands/opsx/
+!/commands/distribute.md
+!/commands/spawn-cattle.md
+/agents/
+/references/
+/claude-scripts/

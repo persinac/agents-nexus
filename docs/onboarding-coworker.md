@@ -36,7 +36,8 @@ git clone <this-repo> && cd agents-nexus
 ```
 
 The installer detects your OS, installs system deps, copies configs into `~/.tmux/`, symlinks the
-skills in `skills/` into `~/.claude/skills/`, then walks an **interactive profile setup**.
+repo's `skills/`, `agents/`, `commands/`, `references/` and `claude-scripts/` into the matching
+`~/.claude/` directories, then walks an **interactive profile setup**.
 
 ### 2. Answer the profile prompts
 
