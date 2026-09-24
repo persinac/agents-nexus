@@ -84,6 +84,9 @@ ESCALATE_AFTER = int(POLICY.get("escalate_after_fails", 2))
 # zero progress. Default 60 for all workers (matches what the skill-attached path already used);
 # override per box via policy.worker_max_turns or CONDUCTOR_WORKER_MAX_TURNS.
 WORKER_MAX_TURNS = int(os.environ.get("CONDUCTOR_WORKER_MAX_TURNS", POLICY.get("worker_max_turns", 60)))
+WORKER_TIMEOUT = int(os.environ.get("CONDUCTOR_WORKER_TIMEOUT") or os.environ.get("CONDUCTOR_WAIT_TERMINAL_S")
+                     or POLICY.get("worker_timeout", 1200))
+WORKER_TIMEOUTS = POLICY.get("worker_timeout_by_profile") or {}
 CLI_PATH = os.environ.get("CONDUCTOR_CLI_PATH") or shutil.which("claude")
 if not CLI_PATH:
     print(f"[conductor] warning: no `claude` on PATH; the SDK's bundled CLI may reject model {MODEL!r}",
@@ -396,6 +399,10 @@ def _resolve_base(rp, base):
     return None
 
 
+class WorkspaceError(RuntimeError):
+    """A worktree the Conductor asked git for does not exist; the subtask must not be dispatched into it."""
+
+
 def ensure_workspace(mid, repo, branch=None, base=None):
     """Create the worktree/scratch (Conductor-side; the worker just uses the path).
     Returns (cwd, branch|None). The branch is the mission's building output → the MR.
@@ -423,9 +430,14 @@ def ensure_workspace(mid, repo, branch=None, base=None):
                                                  capture_output=True).returncode == 0), "")
             add = ["git", "-C", rp, "worktree", "add", "-b", branch, ws] + ([start] if start else [])
             r = subprocess.run(add, capture_output=True, text=True)
-            if r.returncode != 0:   # branch already exists (retry round) → attach it
-                subprocess.run(["git", "-C", rp, "worktree", "add", ws, branch],
-                               capture_output=True, text=True)
+            if r.returncode != 0:
+                subprocess.run(["git", "-C", rp, "worktree", "prune"], capture_output=True, text=True)
+                r = subprocess.run(["git", "-C", rp, "worktree", "add", ws, branch],
+                                   capture_output=True, text=True)
+            if r.returncode != 0:
+                raise WorkspaceError(
+                    f"ensure_workspace: git could not create {ws} on {branch}: "
+                    f"{(r.stderr or r.stdout or '').strip()[-400:]}")
         return ws, branch
     os.makedirs(ws, exist_ok=True)
     return ws, None
@@ -806,20 +818,83 @@ def _deregister_self() -> None:
         pass
 
 
-async def wait_terminal(db, sids, timeout=None):
-    """Poll subtask rows until all reach a terminal state (done|error|blocked)."""
-    timeout = timeout or int(os.environ.get("CONDUCTOR_WAIT_TERMINAL_S", 1200))
-    pending = set(sids)
-    end = time.time() + timeout
-    while pending and time.time() < end:
+def worker_timeout(profile: str) -> int:
+    try:
+        return int(WORKER_TIMEOUTS.get(profile) or WORKER_TIMEOUT)
+    except (AttributeError, TypeError, ValueError):
+        return WORKER_TIMEOUT
+
+
+def worker_pane(name: str) -> str:
+    """Newest fleet-registry pane handle registered under `name`, or ""."""
+    reg_dir = os.path.join(os.environ.get("NEXUS_TMUX_DIR") or os.path.join(HOME, ".tmux"), "registry")
+    best, best_at = "", -1
+    try:
+        entries = os.listdir(reg_dir)
+    except OSError:
+        return ""
+    for fn in entries:
+        fields = {}
+        try:
+            for ln in open(os.path.join(reg_dir, fn), errors="replace"):
+                if "=" in ln:
+                    k, v = ln.split("=", 1)
+                    fields[k.strip()] = v.strip()
+        except OSError:
+            continue
+        if fields.get("NAME") != name:
+            continue
+        at = int(fields["AT"]) if fields.get("AT", "").isdigit() else 0
+        if at > best_at:
+            best, best_at = fields.get("PANE_ID") or fields.get("SLOT") or fn, at
+    return best
+
+
+def stop_worker(mid: str, st: dict) -> str:
+    """Close and deregister the pane of a worker the Conductor has given up on; returns the handle or ""."""
+    pane = worker_pane(f"cw-{st['subtask_key']}-{mid[:4]}")
+    if not pane:
+        return ""
+    for verb in ("kill", "deregister"):
+        try:
+            subprocess.run([SUBSTRATE, verb, pane], check=False, capture_output=True, timeout=10)
+        except Exception:
+            pass
+    return pane
+
+
+def result_is_stale(started: dict, current: dict) -> bool:
+    """True when the row a worker is about to write belongs to a later attempt or was already timed out."""
+    if not current:
+        return True
+    if current.get("attempt") != started.get("attempt"):
+        return True
+    return current.get("status") == "error" and (current.get("result") or {}).get("summary") == "worker timeout"
+
+
+async def wait_terminal(db, mid: str, subs: list):
+    """Poll until each subtask is done|error|blocked or past its profile's deadline; a late worker is stopped, not left running."""
+    now = time.time()
+    deadlines = {s["id"]: now + worker_timeout(s.get("profile")) for s in subs}
+    by_id = {s["id"]: s for s in subs}
+    pending = set(by_id)
+    while pending:
         await asyncio.sleep(2)
+        now = time.time()
         for sid in list(pending):
             s = db.get_subtask(sid)
             if s and s["status"] in ("done", "error", "blocked"):
                 pending.discard(sid)
-    for sid in pending:   # timed out
-        db.update_subtask(sid, status="error",
-                          result={"status": "error", "summary": "worker timeout", "artifacts": []})
+            elif now >= deadlines[sid]:
+                pending.discard(sid)
+                st = s or by_id[sid]
+                pane = stop_worker(mid, st)
+                db.update_subtask(sid, status="error",
+                                  result={"status": "error", "summary": "worker timeout", "artifacts": []})
+                db.log_event(mid, "worker_stopped",
+                             {"subtask": st["subtask_key"], "reason": "worker timeout", "pane": pane,
+                              "attempt": st.get("attempt"), "timeout_s": worker_timeout(st.get("profile"))},
+                             subtask_id=sid)
 
 
 def _dep_context(result: dict) -> str:
@@ -852,14 +927,22 @@ async def execute_dag(db, mid: str):
                     for d in deps)
                 base = s["goal"].split("\n\n[Upstream context]")[0]
                 db.update_subtask(s["id"], goal=f"{base}\n\n[Upstream context]\n{ctx}")
-            ws, branch = ensure_workspace(mid, s.get("repo"), _branch(goal, mid), base=_base_branch(goal))
+            try:
+                ws, branch = ensure_workspace(mid, s.get("repo"), _branch(goal, mid), base=_base_branch(goal))
+            except WorkspaceError as exc:
+                db.update_subtask(s["id"], status="error",
+                                  result={"status": "error", "summary": str(exc)[:400], "artifacts": []})
+                db.log_event(mid, "workspace_error", {"repo": s.get("repo"), "error": str(exc)[:400]},
+                             subtask_id=s["id"])
+                print(f"[conductor] {s['subtask_key']} not dispatched: {exc}")
+                continue
             db.log_event(mid, "workspace", {"repo": s.get("repo"), "cwd": ws, "branch": branch}, subtask_id=s["id"])
             via = spawn_worker(mid, db.get_subtask(s["id"]),
                                ws_label=os.environ.get("CONDUCTOR_MISSION_WS") or _mission_ws(goal, mid))
             db.log_event(mid, "dispatched",
                          {"subtask": s["subtask_key"], "profile": s["profile"], "via": via}, subtask_id=s["id"])
         print(f"[conductor] dispatched wave: {[s['subtask_key'] for s in ready]}")
-        await wait_terminal(db, [s["id"] for s in ready])
+        await wait_terminal(db, mid, ready)
     for s in db.list_subtasks(mid):   # anything still pending has unsatisfiable deps
         if s["status"] == "pending":
             db.update_subtask(s["id"], status="blocked")

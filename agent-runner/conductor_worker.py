@@ -12,7 +12,8 @@ import sys
 
 import anyio
 
-from conductor import PROFILES, run_worker, _set_sess, _pane_self, _register_self, _deregister_self, SUBSTRATE
+from conductor import (PROFILES, run_worker, _set_sess, _pane_self, _register_self, _deregister_self,
+                       SUBSTRATE, result_is_stale)
 from conductor_db import Db
 
 
@@ -60,6 +61,13 @@ async def main() -> int:
         _deregister_self()   # self-clean: no pane-died hook for a headless python pane
 
     wr["subtask_id"] = sid
+    if result_is_stale(st, db.get_subtask(sid)):
+        db.log_event(mid, "late_result",
+                     {"subtask": st["subtask_key"], "attempt": st.get("attempt"), "status": wr["status"],
+                      "summary": (wr.get("summary") or wr.get("handoff") or "")[:300]}, subtask_id=sid)
+        db.close()
+        print(f"[worker] {st['subtask_key']} finished after the Conductor moved on; result logged, not applied")
+        return 0
     db.update_subtask(sid, status=wr["status"], result=wr)
     db.log_event(mid, "worker_done", {**wr, "subtask": st["subtask_key"]}, subtask_id=sid)
     db.close()
