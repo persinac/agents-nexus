@@ -306,6 +306,9 @@ def workspace(mid, repo):
     return os.path.join(root, "scratch")
 
 
+_DEFAULT_BASE_REFS = ("origin/main", "origin/master", "main", "master")
+
+
 def _slug(s):
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", (s or "").lower())).strip("-")[:48]
 
@@ -390,7 +393,7 @@ def ensure_workspace(mid, repo, branch=None, base=None):
                         f"(tried origin/{base}, {base}) — push the branch or fix the goal's base= directive")
             else:
                 # branch off the default branch, not whatever's checked out in the main tree
-                start = next((r for r in ("origin/main", "origin/master", "main", "master")
+                start = next((r for r in _DEFAULT_BASE_REFS
                               if subprocess.run(["git", "-C", rp, "rev-parse", "--verify", r],
                                                  capture_output=True).returncode == 0), "")
             add = ["git", "-C", rp, "worktree", "add", "-b", branch, ws] + ([start] if start else [])
@@ -780,11 +783,111 @@ def _run_check_base(repo, mid):
     base_ws = os.path.join(CONDUCTOR_WORK, mid[:8], "base", repo.replace("/", "_"))
     if not os.path.isdir(base_ws):
         os.makedirs(os.path.dirname(base_ws), exist_ok=True)
-        ref = next((r for r in ("origin/main", "origin/master", "main", "master")
+        ref = next((r for r in _DEFAULT_BASE_REFS
                     if subprocess.run(["git", "-C", rp, "rev-parse", "--verify", r], capture_output=True).returncode == 0), "HEAD")
         subprocess.run(["git", "-C", rp, "worktree", "add", "--detach", base_ws, ref], capture_output=True, text=True)
     _BASE_CHECK[key] = _run_check(base_ws)
     return _BASE_CHECK[key]
+
+
+COMMENT_GATE = os.path.expanduser(
+    os.environ.get("CONDUCTOR_COMMENT_GATE") or "~/.claude/hooks/comment-ticket-refs.py")
+
+GATE_FEEDBACK_BUDGET = 400   # re-plan truncates ALL findings to 800 chars; the probe keeps the rest
+
+
+def _mission_worktrees(mid, subtasks):
+    """(repo, worktree) for each repo a subtask built in, where the worktree exists on disk."""
+    for repo in sorted({s.get("repo") for s in subtasks if s.get("repo")}):
+        if not (repo and _is_git(_repo_dir(repo))):
+            continue
+        ws = workspace(mid, repo)
+        if os.path.isdir(ws):
+            yield repo, ws
+
+
+def _diff_base(ws, goal):
+    """The mission's diff base: the goal's explicit `base=` ref, else the repo's origin default."""
+    return _base_branch(goal) or next(
+        (r for r in _DEFAULT_BASE_REFS
+         if subprocess.run(["git", "-C", ws, "rev-parse", "--verify", "--quiet", f"{r}^{{commit}}"],
+                           capture_output=True).returncode == 0),
+        None)
+
+
+def _gate_skipped(why, base=None):
+    """A gate probe that established nothing. `ok` is None so no reader can read it as a pass."""
+    return {"probe": "comment_gate", "base": base, "ok": None, "skipped": why}
+
+
+def _comment_gate(ws, base):
+    """Ticket refs in comments the mission ADDED, via ~/.claude's shared `--diff` gate.
+    None when the gate is absent; a probe whose `ok` is None established nothing."""
+    if not os.path.exists(COMMENT_GATE):
+        return None
+    if not base:
+        return _gate_skipped("no base ref in worktree")
+    try:
+        # DEVNULL: a gate script without --diff falls through to hook mode and reads stdin.
+        r = subprocess.run([sys.executable, COMMENT_GATE, "--diff", base, "--cwd", ws],
+                           capture_output=True, text=True, timeout=180,
+                           stdin=subprocess.DEVNULL)
+    except (subprocess.SubprocessError, OSError) as e:
+        return _gate_skipped(f"{type(e).__name__}: {e}", base)
+    if r.returncode not in (0, 1):
+        tail = ((r.stderr or "") + (r.stdout or "")).strip()[-400:]
+        return _gate_skipped(tail or f"exit {r.returncode}", base)
+    findings = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    return {"probe": "comment_gate", "base": base, "ok": not findings,
+            "count": len(findings), "findings": findings[:20]}
+
+
+def _gate_feedback(findings, count):
+    """Findings text bounded by GATE_FEEDBACK_BUDGET chars, naming how many it left out."""
+    shown, used = [], 0
+    for ln in findings:
+        if shown and used + len(ln) > GATE_FEEDBACK_BUDGET:
+            break
+        shown.append(ln[:GATE_FEEDBACK_BUDGET])
+        used += len(shown[-1]) + 1
+    more = count - len(shown)
+    return "\n".join(shown) + (f"\n...and {more} more; see the comment_gate probe." if more > 0 else "")
+
+
+def _comment_gate_finding(repo, gp):
+    """The re-plan instruction for a failed gate, or None when the gate passed or was skipped."""
+    if not gp or gp.get("skipped") or gp.get("ok") is not False:
+        return None
+    return {"severity": "blocker", "where": f"{repo}: ticket refs in comments",
+            "what": f"{gp['count']} ticket reference(s) in comments this mission added:\n"
+                    + _gate_feedback(gp["findings"], gp["count"]),
+            "fix_hint": "Rewrite each comment to state the why directly, or delete it. The ticket "
+                        "key goes in the commit message or the MR description, never the source."}
+
+
+async def _run_comment_gate(mid, goal, subtasks, probes):
+    """(ran, ok, findings) across the mission's worktrees; `ran` is False when none produced
+    a result, so a gate that never ran can never be reported as a pass."""
+    ran, ok, out = False, True, []
+    for repo, ws in _mission_worktrees(mid, subtasks):
+        gp = await asyncio.to_thread(_comment_gate, ws, _diff_base(ws, goal))
+        if gp is None:
+            print(f"[conductor] comment gate: {COMMENT_GATE} absent → skipped")
+            continue
+        probes.append(gp)
+        if gp.get("skipped"):
+            print(f"[conductor] comment gate in {repo} could not run → skipped: {gp['skipped']}")
+            continue
+        ran = True
+        f = _comment_gate_finding(repo, gp)
+        if not f:
+            print(f"[conductor] comment gate in {repo} vs {gp['base']}: PASS")
+            continue
+        ok = False
+        out.append(f)
+        print(f"[conductor] comment gate FAIL in {repo}: {gp['count']} ticket ref(s) in added "
+              f"comments → HARD FAIL\n    " + "\n    ".join(gp["findings"][:5]))
+    return ran, ok, out
 
 
 def _changed_files(ws):
@@ -909,12 +1012,7 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
     # Ground-truth gate: run the repo's real check command (`task lint`) in each
     # building worktree. A failing check is a HARD fail regardless of the reviewers.
     check_ok, ran_check = True, False
-    for repo in sorted({s.get("repo") for s in subtasks if s.get("repo")}):
-        if not (repo and _is_git(_repo_dir(repo))):
-            continue
-        ws = workspace(mid, repo)
-        if not os.path.isdir(ws):
-            continue
+    for repo, ws in _mission_worktrees(mid, subtasks):
         cp = await asyncio.to_thread(_run_check, ws)
         if not cp:
             continue
@@ -937,6 +1035,8 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
                 check_ok = False
                 print(f"[conductor] check FAIL in {repo} (baseline clean) → HARD FAIL")
 
+    ran_gate, gate_ok, gate_findings = await _run_comment_gate(mid, goal, subtasks, probes)
+
     cwd = os.path.join(CONDUCTOR_WORK, mid[:8])
     if not os.path.isdir(cwd):
         cwd = REPO
@@ -953,10 +1053,12 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
     findings = [dict(f, lens=r["lens"]) for r in reviews for f in (r["verdict"].get("findings") or [])]
     blockers = [f for f in findings if f.get("severity") == "blocker"]
     reviewers_ok = passed >= (n // 2 + 1) and not blockers   # majority pass AND no blocker
-    overall = (check_ok if ran_check else True) and reviewers_ok
+    overall = (check_ok if ran_check else True) and (gate_ok if ran_gate else True) and reviewers_ok
     verdict = {"pass": overall, "recommendation": "ship" if overall else "retry",
                "check": ({"ran": ran_check, "ok": check_ok} if ran_check else None),
-               "reviewers": {"count": n, "passed": passed}, "findings": findings[:25]}
+               "comment_gate": ({"ran": ran_gate, "ok": gate_ok} if ran_gate else None),
+               "reviewers": {"count": n, "passed": passed},
+               "findings": (gate_findings + findings)[:25]}
     return verdict, probes
 
 
