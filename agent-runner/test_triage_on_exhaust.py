@@ -49,15 +49,16 @@ def test_false_positive_gate():
     assert not C._triage_rejected({"what": "missing APITimeoutError handler", "fix_hint": "add except"})
 
 
-def _find_triage(cap=6, findings=None, dry=False, enabled=True):
+def _find_triage(cap=6, findings=None, dry=False, enabled=True, jira_extra=None, prompts=None):
     db = FakeDb()
-    restore = _patch(DRY_RUN=dry,
-                     REPORTING={"jira": {"enabled": enabled, "project": "FC",
-                                         "assignee": "acct-1"}})
+    jira = {"enabled": enabled, "project": "FC", "assignee": "acct-1", **(jira_extra or {})}
+    restore = _patch(DRY_RUN=dry, REPORTING={"jira": jira})
     # stub reporter_agent → returns a fake key per call
     calls = {"n": 0}
     async def fake_reporter(instr, mcp):
         calls["n"] += 1
+        if prompts is not None:
+            prompts.append(instr)
         return {"key": f"FC-{9000 + calls['n']}"}
     restore2 = _patch(reporter_agent=fake_reporter)
     try:
@@ -109,11 +110,99 @@ def test_false_positive_rejected_not_filed():
 
 def test_triage_dry_run_files_nothing():
     fs = [{"severity": "blocker", "where": "a.py:1", "what": "x", "lens": "c"}]
-    db, keys, ncreate = _find_triage(findings=fs, dry=True)
+    db, keys, ncreate = _find_triage(findings=fs, dry=True, jira_extra={"triage_epic": "CN-5137"})
     assert keys == []
     assert ncreate == 0
     assert db.payload("triage_dryrun") is not None
-    assert db.payload("triage_dryrun")["would_file"][0]["parent"] == "FC-1239"
+    assert db.payload("triage_dryrun")["would_file"][0]["parent"] == "CN-5137"
+
+
+def test_triage_epic_falls_back_to_reporting_epic():
+    fs = [{"severity": "blocker", "where": "a.py:1", "what": "x", "lens": "c"}]
+    db, _, _ = _find_triage(findings=fs, dry=True, jira_extra={"epic": "CN-1"})
+    assert db.payload("triage_dryrun")["would_file"][0]["parent"] == "CN-1"
+
+
+def test_triage_unresolved_epic_files_top_level_not_under_a_hardcoded_epic():
+    fs = [{"severity": "blocker", "where": "a.py:1", "what": "x", "lens": "c"}]
+    prompts = []
+    _find_triage(findings=fs, jira_extra={"epic": "${JIRA_EPIC}"}, prompts=prompts)
+    assert "no parent epic" in prompts[0]
+    assert "FC-1239" not in prompts[0]
+
+
+def test_triage_labels_reach_the_create_prompt():
+    fs = [{"severity": "blocker", "where": "a.py:1", "what": "x", "lens": "c"}]
+    prompts = []
+    _find_triage(findings=fs, prompts=prompts,
+                 jira_extra={"triage_epic": "CN-5137", "triage_labels": ["member-concierge", "factory-triage"]})
+    assert "parent epic='CN-5137'" in prompts[0]
+    assert "labels=['member-concierge', 'factory-triage']" in prompts[0]
+
+
+def test_blocked_subtask_ticket_title_carries_the_workers_reason():
+    fs = [{"severity": "blocker", "where": "s4", "what": "subtask ended blocked",
+           "fix_hint": "Gate (d) needs a target-environment decision\nfrom the owner", "lens": "review"}]
+    db, _, _ = _find_triage(findings=fs, dry=True, jira_extra={"triage_epic": "CN-5137"})
+    summary = db.payload("triage_dryrun")["would_file"][0]["summary"]
+    assert summary.startswith("[review] s4 blocked: Gate (d) needs a target-environment decision from")
+    assert len(summary) <= 110
+
+
+class LoopDb:
+    def __init__(self, keys):
+        self.subs = {k: {"id": k, "subtask_key": k, "status": "pending", "attempt": 0,
+                         "goal": f"do {k}", "result": None} for k in keys}
+        self.events = []
+    def list_subtasks(self, mid): return [dict(s) for s in self.subs.values()]
+    def update_subtask(self, sid, **f): self.subs[sid].update(f)
+    def update_mission(self, mid, **f): pass
+    def log_event(self, mid, kind, payload): self.events.append((kind, payload))
+    def kinds(self): return [k for k, _ in self.events]
+
+
+def _run_loop(script, max_replans=5):
+    """`script[round]` maps subtask key → (status, summary) for what the workers return that round."""
+    db = LoopDb(sorted({k for rnd in script for k in rnd}))
+    state = {"round": -1, "verified": 0}
+    async def fake_dag(db_, mid):
+        state["round"] += 1
+        outcome = script[min(state["round"], len(script) - 1)]
+        for k, s in db_.subs.items():
+            if s["status"] == "pending":
+                st, summary = outcome.get(k, ("done", "ok"))
+                s.update(status=st, result={"summary": summary})
+    async def fake_verify(mid, goal, subs):
+        state["verified"] += 1
+        return {"pass": False, "findings": []}, []
+    restore = _patch(execute_dag=fake_dag, verify_mission=fake_verify, MAX_REPLANS=max_replans)
+    try:
+        verdict, ok = _run(C.run_and_verify(db, "mid1", "goal"))
+        return db, ok, state
+    finally:
+        restore()
+
+
+def test_same_subtasks_blocked_two_rounds_running_stops_the_loop():
+    blocked = {"s2": ("blocked", "needs a human decision on gate (d)")}
+    db, ok, state = _run_loop([blocked])
+    assert not ok
+    assert state["round"] == 1
+    assert "blocked_repeat" in db.kinds()
+    assert db.kinds().count("replan") == 1
+
+
+def test_a_block_that_clears_after_a_replan_keeps_the_loop_going():
+    db, ok, state = _run_loop([{"s3": ("blocked", "partial delivery, needs rework")}, {}])
+    assert "blocked_repeat" not in db.kinds()
+    assert state["round"] == 5
+    assert state["verified"] == 5
+
+
+def test_dependency_blocks_without_a_worker_summary_do_not_stop_the_loop():
+    db, ok, state = _run_loop([{"s1": ("error", "worker timeout"), "s2": ("blocked", "")}])
+    assert "blocked_repeat" not in db.kinds()
+    assert state["round"] == 5
 
 
 # ── D2 branch flow: exhaust → partial vs escalate ──────────────────────────────

@@ -1320,6 +1320,7 @@ async def run_and_verify(db, mid: str, goal: str, start_round: int = 0) -> tuple
     effort (high → xhigh) after ESCALATE_AFTER failed rounds. `start_round` lets a
     resumed mission continue from its persisted replan_count."""
     verdict = {"pass": False}
+    prev_blocked = set()
     for rnd in range(start_round, MAX_REPLANS + 1):
         effort = WORKER_EFFORT if rnd < ESCALATE_AFTER else ESC_EFFORT
         db.log_event(mid, "round", {"round": rnd, "worker_effort": effort})
@@ -1355,6 +1356,14 @@ async def run_and_verify(db, mid: str, goal: str, start_round: int = 0) -> tuple
             print(f"[conductor] workspace missing for {keys} — stopping at round {rnd}; "
                   f"re-planning cannot recreate a worktree")
             return verdict, False
+        blocked = {s["subtask_key"] for s in failed
+                   if s["status"] == "blocked" and (s.get("result") or {}).get("summary")}
+        if blocked and blocked == prev_blocked:
+            db.log_event(mid, "blocked_repeat", {"round": rnd, "subtasks": sorted(blocked)})
+            print(f"[conductor] {sorted(blocked)} blocked two rounds running — stopping at round {rnd}; "
+                  f"re-planning is not unblocking them")
+            return verdict, False
+        prev_blocked = blocked
         if rnd < MAX_REPLANS:
             db.log_event(mid, "replan", {"round": rnd, "findings": verdict.get("findings")})
             fb = json.dumps(verdict.get("findings", []))[:800]
@@ -1785,8 +1794,8 @@ def _triage_rejected(f):
 
 
 async def _file_triage_tickets(db, mid, goal, verdict, src, tracking_key, mr_url, cap=6):
-    """File the residual reviewer findings as child tickets under the Claude Queue epic (FC-1239)
-    via the queue-techdebt contract. Keep blocker+major, dedupe by locus, cap at `cap` (roll the
+    """File the residual reviewer findings as child tickets under reporting.jira.triage_epic
+    (else reporting.jira.epic) via the queue-techdebt contract. Keep blocker+major, dedupe by locus, cap at `cap` (roll the
     remainder into one 'N more' ticket — never silently drop), and skip false positives. Returns
     the created keys. DRY_RUN → logs the would-file payloads instead of creating. Reuses
     reporter_agent (atlassian) — does not re-implement Atlassian calls."""
@@ -1815,7 +1824,8 @@ async def _file_triage_tickets(db, mid, goal, verdict, src, tracking_key, mr_url
     if overflow:
         db.log_event(mid, "triage_capped", {"kept": len(head), "overflow": len(overflow)})
 
-    epic = "FC-1239"   # the Claude Queue tech-debt epic — triage findings route HERE, not the src epic
+    epic = (j.get("triage_epic") or "").strip() or _jira_epic()
+    labels = [str(x) for x in (j.get("triage_labels") or [])]
     team_id = "bee517c7-f0ef-499f-83ff-5a0ff5446959"   # Finding Care (customfield_10001)
     assignee = j.get("assignee")
     refs = (f"\n\n### References\n"
@@ -1825,8 +1835,11 @@ async def _file_triage_tickets(db, mid, goal, verdict, src, tracking_key, mr_url
 
     def _payload(f):
         lens = f.get("lens", "review")
+        what = f.get("what") or "finding"
+        if what.startswith("subtask ended") and f.get("fix_hint"):
+            what = f"{f.get('where', '')} {what.removeprefix('subtask ended ')}: {' '.join(f['fix_hint'].split())}"
         return {
-            "summary": f"[{lens}] {(f.get('what') or 'finding')[:100]}"[:110],
+            "summary": f"[{lens}] {what[:100]}"[:110],
             "severity": f.get("severity"),
             "body": (f"### Problem\n{f.get('what', '')}\n\n"
                      f"### Where\n{f.get('where', '(unspecified)')}\n\n"
@@ -1860,7 +1873,9 @@ async def _file_triage_tickets(db, mid, goal, verdict, src, tracking_key, mr_url
         res = await reporter_agent(
             f"Create a Jira issue, then set its Team field in a SECOND call. "
             f"Step 1 — create: project key={j['project']!r}, issue type='Task', "
-            f"parent epic={epic!r}, assignee accountId={assignee!r}, summary={p['summary']!r}, "
+            + (f"parent epic={epic!r}, " if epic else "no parent epic, ")
+            + (f"labels={labels!r}, " if labels else "")
+            + f"assignee accountId={assignee!r}, summary={p['summary']!r}, "
             f"description (markdown):\n\n{p['body']}\n\n"
             f"Step 2 — the Team field customfield_10001 is a PLAIN STRING {team_id!r} and is silently "
             f"dropped on create, so after creating, call editJiraIssue to set customfield_10001={team_id!r}. "
@@ -2081,7 +2096,7 @@ async def finalize(db, mid, goal, start_round=0):
             targets = await report(db, mid, goal, art, subs, verdict, draft=True, triage=True)
             db.finish_mission(mid, "partial")
             db.log_event(mid, "partial", {"verdict": verdict, "replans": replans, "targets": targets})
-            print(f"[conductor] PARTIAL after {MAX_REPLANS} re-plans · mission {mid} · reported→{targets}")
+            print(f"[conductor] PARTIAL after {replans} re-plans · mission {mid} · reported→{targets}")
             return mid, "partial"
         db.finish_mission(mid, "escalated")
         db.log_event(mid, "escalated", {"verdict": verdict, "replans": replans})
