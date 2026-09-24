@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -215,7 +216,7 @@ def register(name: str, cwd: str, inbox: Path):
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default=os.environ.get("PROJECT_SLUG") or Path(os.getcwd()).name)
-    ap.add_argument("--model", default=os.environ.get("CLAUDE_MODEL", "claude-opus-5"))
+    ap.add_argument("--model", default=os.environ.get("CLAUDE_MODEL", "claude-opus-5-5[1m]"))
     ap.add_argument("--cwd", default=os.getcwd())
     ap.add_argument("--all-mcp", action="store_true", help="load all user MCP servers, not just memory")
     ap.add_argument("--approval-timeout", type=float, default=120.0)
@@ -267,6 +268,7 @@ async def main() -> int:
 
     mcp = load_mcp_servers(args.all_mcp)
     options = ClaudeAgentOptions(
+        cli_path=os.environ.get("CONDUCTOR_CLI_PATH") or shutil.which("claude"),
         model=args.model,
         cwd=args.cwd,
         setting_sources=[],                         # hermetic: no clobber, no legacy hooks

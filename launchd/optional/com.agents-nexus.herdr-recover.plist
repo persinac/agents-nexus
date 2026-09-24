@@ -35,8 +35,8 @@
     <integer>600</integer>
 
     <key>StandardOutPath</key>
-    <string>/tmp/agents-nexus-herdr-recover.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/herdr-recover.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/agents-nexus-herdr-recover.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/herdr-recover.log</string>
 </dict>
 </plist>

@@ -148,7 +148,7 @@ def load_pool() -> list[Model]:
         raw = [
             {"model": cheap, "tier": "haiku", "cost": 1.0},
             {"model": os.environ.get("ROUTE_SONNET_MODEL", "claude-sonnet-5"), "tier": "sonnet", "cost": 3.0},
-            {"model": os.environ.get("ROUTE_OPUS_MODEL", "claude-opus-4-8"), "tier": "opus", "cost": 15.0},
+            {"model": os.environ.get("ROUTE_OPUS_MODEL", "claude-opus-5-5"), "tier": "opus", "cost": 15.0},
         ]
     pool: list[Model] = []
     for e in raw:

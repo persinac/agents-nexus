@@ -550,7 +550,7 @@ wrapper. **T1 doesn't need this** (the reviewer is verdict-only, no MCP).
   only), `~/.codex/skills/<name>/SKILL.md` (same frontmatter as Claude skills), `codex plugin
   marketplace`. Bundled example: `~/.codex/plugins/cache/openai-curated-remote/openai-templates/0.1.0/skills/`.
 - Profiles/policy: `~/.tmux/conductor.yaml` (symlink → repo `config/`), `profiles:` block,
-  `policy.reviewer.count: 3`, `policy.model: claude-opus-4-8`.
+  `policy.reviewer.count: 3`, `policy.model: claude-opus-5-5[1m]`.
 - Codex: `codex exec` flags `--output-schema` / `-o` / `-C` / `-s` / `-a` / `--skip-git-repo-check`;
   `codex review --uncommitted|--base`; `codex mcp add <NAME> [--env] -- <cmd>`;
   `codex mcp-server` (codex AS an MCP tool — future: claude delegates to codex).

@@ -8,7 +8,7 @@
 # the tmux-scripts symlink pattern). The Conductor reads the stable ~/.tmux path.
 
 policy:
-  model: claude-opus-5[1m]            # all agents AND the orchestrator
+  model: claude-opus-5-5[1m]          # all agents AND the orchestrator; [1m] = 1M-token context
   orchestrator_effort: max          # Conductor judgment nodes: classify / plan / adjudicate / synthesize
   worker_effort: high               # workers start here
   worker_effort_escalated: xhigh    # bump to this after `escalate_after_fails` failed verify rounds
@@ -48,10 +48,19 @@ profiles:
     permission: standard
     verify: { mode: code, checks: [tests, swarm-review] }
 
+  # Incidents only. For "read this code and report how it works", plan `research` — pinning the
+  # postmortem skill here made it the only research seat, so code-recon subtasks inherited it.
   investigation:
     skill: incident-postmortem
     tools: [Read, Grep, Bash]
     mcp: [agent-memory, snowflake, datadog]
+    permission: read-only
+    verify: { mode: report, checks: [fact-check, sourcing] }
+
+  # Reads code and reports. Deliberately skill-less: a wrong procedure is worse than none.
+  research:
+    tools: [Read, Grep, Glob, Bash]
+    mcp: [agent-memory]
     permission: read-only
     verify: { mode: report, checks: [fact-check, sourcing] }
 
@@ -61,6 +70,15 @@ profiles:
     mcp: [agent-memory, snowflake]
     permission: read-only
     verify: { mode: report, checks: [sourcing, reconcile] }
+
+  # Scopes and decomposes; decides what is in and out. Deliberately skill-less — the PM
+  # subtask differs per mission. For "is this worth doing at all", plan a `weigh` subtask
+  # instead; that skill is a full evidence-backed RICE and too heavy to pin here.
+  pm:
+    tools: [Read, Grep, Bash]
+    mcp: [agent-memory, atlassian]
+    permission: read-only           # scoping seat: must never edit the code it is scoping
+    verify: { mode: report, checks: [sourcing, fact-check] }
 
   reviewer:
     skill: swarm-review-mr          # the crew; spawned `policy.reviewer.count` wide

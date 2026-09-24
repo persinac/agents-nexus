@@ -61,7 +61,7 @@ async def main() -> int:
 
     wr["subtask_id"] = sid
     db.update_subtask(sid, status=wr["status"], result=wr)
-    db.log_event(mid, "worker_done", wr, subtask_id=sid)
+    db.log_event(mid, "worker_done", {**wr, "subtask": st["subtask_key"]}, subtask_id=sid)
     db.close()
     print(f"[worker] {st['subtask_key']} → {wr['status']} · artifacts={wr.get('artifacts')}")
     return 0

@@ -2,7 +2,7 @@
 """Conductor (Slice B) — mission orchestrator: single-subtask end-to-end.
 
 Deterministic spine with four scoped judgment nodes (classify / plan / adjudicate /
-synthesize), each a one-shot opus-4.8 call at `max` effort returning structured JSON.
+synthesize), each a one-shot opus-5.5 call at `max` effort returning structured JSON.
 Everything is logged to agents.missions / mission_subtasks / mission_events.
 
 Slice B proves the whole loop on one subtask, running the worker IN-PROCESS (a
@@ -84,6 +84,10 @@ ESCALATE_AFTER = int(POLICY.get("escalate_after_fails", 2))
 # zero progress. Default 60 for all workers (matches what the skill-attached path already used);
 # override per box via policy.worker_max_turns or CONDUCTOR_WORKER_MAX_TURNS.
 WORKER_MAX_TURNS = int(os.environ.get("CONDUCTOR_WORKER_MAX_TURNS", POLICY.get("worker_max_turns", 60)))
+CLI_PATH = os.environ.get("CONDUCTOR_CLI_PATH") or shutil.which("claude")
+if not CLI_PATH:
+    print(f"[conductor] warning: no `claude` on PATH; the SDK's bundled CLI may reject model {MODEL!r}",
+          file=sys.stderr)
 # Terminal behavior when a building mission exhausts MAX_REPLANS without passing verify.
 # `escalate` (default) = today's behavior byte-for-byte: mark escalated + stop, work stranded.
 # `partial` = best-effort: open a DRAFT MR for the attempt + file the residual reviewer findings
@@ -212,6 +216,19 @@ from claude_agent_sdk import (
 
 WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}   # real SDK write tools (MultiEdit isn't one)
 
+# Head-anchored, not tail: the old `joined[-400:]` handed a dependent the worker's sign-off and
+# dropped its findings (d2f16450 — s1's spec became 400 chars of epilogue, so s2 invented a schema
+# that renamed or dropped 25 of the source's 29 columns).
+HANDOFF_MAX = int(os.environ.get("CONDUCTOR_HANDOFF_MAX", 8000))
+SUMMARY_MAX = int(os.environ.get("CONDUCTOR_SUMMARY_MAX", 4000))
+
+_WORKER_RESULT_RULE = (
+    " When you are done, end your FINAL message with a single JSON object (no code fence) shaped "
+    '{"status":"done|error|blocked","summary":"<what you did>","artifacts":["<absolute path>"],'
+    '"handoff":"<everything a dependent subtask needs: exact names, schemas, signatures, '
+    'decisions — not a one-line summary>"}. If your subtask produced a specification, put the '
+    "specification itself in `handoff`, in full.")
+
 # The worker runs in a git worktree PRE-CHECKED-OUT on the mission branch. A worker doing
 # reflexive "good git hygiene" (git checkout -b, switch, branch rename) silently FORKS the
 # mission: its commit rides an invented branch while the conductor commits/pushes/MRs the mission
@@ -220,6 +237,11 @@ WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}   # real SDK write tools (MultiE
 _WORKER_BRANCH_RULE = (" You are already on the correct git branch in this worktree — commit "
                        "directly to it; do NOT create, switch, rename, or reset branches "
                        "(no `git checkout -b`, `git switch -c`, `git branch`).")
+
+_WORKER_AUTH_RULE = (" If an access gate blocks something you need (an expired SSO session, a Cloudflare "
+                     "Access login, an MCP server that will not connect), stop that line of work and "
+                     "return status `blocked` naming the gate. Do not hunt for a different credential or "
+                     "a different environment to get past it.")
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -294,6 +316,9 @@ def _repo_dir(repo):
 
 def _is_git(path):
     return os.path.isdir(os.path.join(path, ".git"))
+
+
+_WORKSPACE_GONE = "workspace missing"
 
 
 def workspace(mid, repo):
@@ -417,6 +442,7 @@ async def judge(instruction: str, schema_hint: str) -> dict:
     prompt = (f"{instruction}\n\nRespond with ONLY a single JSON object (no prose, no code fence) "
               f"matching this shape:\n{schema_hint}")
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=ORCH_EFFORT, setting_sources=[],
         permission_mode="bypassPermissions", allowed_tools=[],   # no tools → no turn cap needed
     )
@@ -541,9 +567,9 @@ async def _run_worker_codex(subtask: dict, profile: dict, effort: str) -> dict:
                                     capture_output=True, text=True, timeout=CODEX_WORKER_TIMEOUT)
         wr = json.load(open(out))
         status = wr.get("status") if wr.get("status") in ("done", "error", "blocked") else "error"
-        summary = str(wr.get("summary") or "")[-1500:]
+        summary = str(wr.get("summary") or "")[:SUMMARY_MAX]
         artifacts = [a for a in (wr.get("artifacts") or []) if a]
-        handoff = wr.get("handoff")
+        handoff = (wr.get("handoff") or None) and str(wr["handoff"])[:HANDOFF_MAX]
     except Exception as e:
         # Gap E: a parse/timeout failure is NOT necessarily a WORK failure. If codex actually changed
         # files in the worktree, reconcile to done from git — don't discard good work and let the
@@ -569,13 +595,18 @@ async def _run_worker_codex(subtask: dict, profile: dict, effort: str) -> dict:
 
 
 async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
+    cwd = workspace(subtask["mission_id"], subtask.get("repo"))   # worktree or scratch — never a live checkout
+    # A worktree that vanished mid-mission (stray prune, half-finished setup) is not something a
+    # re-plan can fix: every retry re-raises CLIConnectionError, one effort rung higher.
+    if not os.path.isdir(cwd):
+        return _worker_result(subtask["id"], "error",
+                              f"{_WORKSPACE_GONE}: {cwd} — recreate the worktree and resume", [])
     if profile.get("vendor") == "codex":   # T2: mixed-vendor DAG worker — codex builds this subtask
         return await _run_worker_codex(subtask, profile, effort)
     tools = list(profile.get("tools", []))
     mcp = _load_mcp(profile.get("mcp", []))
     allowed = tools + [f"mcp__{s}__*" for s in mcp]
     read_only = profile.get("permission") == "read-only"
-    cwd = workspace(subtask["mission_id"], subtask.get("repo"))   # worktree or scratch — never a live checkout
 
     # A profile MAY name a `skill:` = the mission procedure (techdebt → pull-techdebt, etc.).
     # The Skill TOOL can't invoke plugin skills headlessly ("Unknown skill"), so we resolve the
@@ -591,11 +622,13 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
         append = (f"You are a Conductor worker. Your assigned procedure is the skill at {skill_md} — "
                   f"read it and follow it to completion (its references/ are alongside it), then stop."
                   + _WORKER_BRANCH_RULE)
+    append += _WORKER_AUTH_RULE + _WORKER_RESULT_RULE
 
     # Workers are autonomous within an approved mission → bypassPermissions.
     # read-only profiles disallow the write tools (Bash-write hardening is slice C+,
     # which brings back the classifier gate via a streaming worker).
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=effort, cwd=cwd,
         setting_sources=(["user", "project"] if skill_md else []),
         mcp_servers=mcp, allowed_tools=allowed,
@@ -604,26 +637,99 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
         system_prompt={"type": "preset", "preset": "claude_code", "append": append},
     )
     artifacts, text, status = [], [], "error"
-    async for msg in query(prompt=subtask["goal"], options=opts):
-        if isinstance(msg, AssistantMessage):
-            for b in msg.content:
-                if isinstance(b, TextBlock) and b.text.strip():
-                    text.append(b.text.strip())
-                elif isinstance(b, ToolUseBlock):
-                    if b.name in WRITE_TOOLS:
-                        fp = b.input.get("file_path") or b.input.get("notebook_path")
-                        if fp:
-                            artifacts.append(fp if os.path.isabs(fp) else os.path.join(cwd, fp))
-                    elif b.name == "Bash":   # catch files written via redirect / tee / touch
-                        for m in re.finditer(r'(?:>>?\s*|(?:^|\s)(?:tee|touch)\s+)([^\s;|&>]+)',
-                                             b.input.get("command") or ""):
-                            fp = m.group(1)
-                            artifacts.append(fp if os.path.isabs(fp) else os.path.join(cwd, fp))
-        elif isinstance(msg, ResultMessage):
-            status = "done" if msg.subtype == "success" else "error"
+    err = None
+    try:
+        async for msg in query(prompt=subtask["goal"], options=opts):
+            if isinstance(msg, AssistantMessage):
+                for b in msg.content:
+                    if isinstance(b, TextBlock) and b.text.strip():
+                        text.append(b.text.strip())
+                    elif isinstance(b, ToolUseBlock):
+                        if b.name in WRITE_TOOLS:
+                            fp = b.input.get("file_path") or b.input.get("notebook_path")
+                            if fp:
+                                artifacts.append(fp if os.path.isabs(fp) else os.path.join(cwd, fp))
+                        elif b.name == "Bash":   # catch files written via redirect / tee / touch
+                            for m in re.finditer(r'(?:>>?\s*|(?:^|\s)(?:tee|touch)\s+)([^\s;|&>]+)',
+                                                 b.input.get("command") or ""):
+                                fp = m.group(1)
+                                artifacts.append(fp if os.path.isabs(fp) else os.path.join(cwd, fp))
+            elif isinstance(msg, ResultMessage):
+                status = "done" if msg.subtype == "success" else "error"
+    except ClaudeSDKError as e:
+        err = e
     joined = " ".join(text)
-    return {"subtask_id": subtask["id"], "status": status,
-            "summary": joined[-1500:], "artifacts": sorted(set(artifacts)), "handoff": joined[-400:]}
+    if status != "done":
+        # Mirror the codex path's Gap E: a turn-limit or SDK error is not necessarily a WORK
+        # failure. 1ce34834 round 2 hit max_turns with 12 files and 114 insertions already
+        # written, and reported artifacts=[] handoff=null — the whole round discarded.
+        changed = _worktree_changed_paths(cwd)
+        if changed:
+            why = f"{type(err).__name__}: {err}" if err else "worker did not report success"
+            return _worker_result(subtask["id"], "done", joined, artifacts + changed,
+                                  degraded=f"{why}; reconciled from git — {len(changed)} file(s) changed")
+        if err:
+            raise err
+    return _worker_result(subtask["id"], status, joined, artifacts)
+
+
+_RESULT_KEYS = ("status", "summary", "handoff", "artifacts")
+_VERDICT_KEYS = ("pass", "findings")
+_REPORT_KEYS = ("key", "url", "id", "self", "error", "title", "branch", "description")
+
+
+def _last_shaped_json(text: str, keys: tuple) -> dict:
+    """The LAST JSON object carrying one of `keys`. `_extract_json` takes the FIRST `{...}`, so a
+    reviewer quoting a goal's `{env}` placeholder cost it its whole vote."""
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] != "{":
+            continue
+        try:
+            obj = _extract_json(text[i:])
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and any(k in obj for k in keys):
+            return obj
+    return {}
+
+
+def _last_result_json(text: str) -> dict:
+    return _last_shaped_json(text, _RESULT_KEYS)
+
+
+def _verdict_json(text: str) -> dict:
+    """A reviewer verdict, or a FAIL-CLOSED verdict when nothing parseable is present."""
+    v = _last_shaped_json(text, _VERDICT_KEYS)
+    if not isinstance(v.get("pass"), bool):
+        return {"pass": False, "findings": [{"severity": "major", "where": "reviewer",
+                                             "what": "no parseable verdict in reviewer output"}]}
+    v.setdefault("findings", [])
+    return v
+
+
+def _worker_result(sid: str, status: str, joined: str, artifacts: list, degraded: str = None) -> dict:
+    """Worker result, preferring the final-message JSON contract over the transcript.
+    `full_output` is always untruncated — a read-only subtask's text IS its deliverable."""
+    parsed = _last_result_json(joined)
+    if not isinstance(parsed.get("handoff"), str) or not parsed["handoff"].strip():
+        parsed.pop("handoff", None)
+
+    declared = [a for a in (parsed.get("artifacts") or []) if isinstance(a, str) and a]
+    if degraded:
+        status = "done"   # reconciled from git: files changed, so the work happened
+    elif parsed.get("status") in ("done", "error", "blocked"):
+        status = parsed["status"]
+    summary = str(parsed.get("summary") or joined)[:SUMMARY_MAX]
+    out = {
+        "subtask_id": sid, "status": status,
+        "summary": f"[degraded] {degraded}. {summary}"[:SUMMARY_MAX] if degraded else summary,
+        "artifacts": sorted(set(artifacts) | set(declared)),
+        "handoff": (parsed.get("handoff") or joined)[:HANDOFF_MAX],
+        "full_output": joined,
+    }
+    if degraded:
+        out["degraded"] = degraded
+    return out
 
 
 # ── dispatch (slice C: cross-process workers, one tmux window per subtask) ────
@@ -638,8 +744,9 @@ def spawn_worker(mid: str, st: dict, ws_label: str = None) -> str:
     fan-out is watchable at once. Falls back to a detached subprocess if the backend is down."""
     cwd = workspace(mid, st.get("repo"))
     name = f"cw-{st['subtask_key']}-{mid[:4]}"
-    env_prefix = "".join(f"{k}={os.environ[k]} " for k in
-                         ("CONDUCTOR_MODEL", "CONDUCTOR_ORCH_EFFORT", "CONDUCTOR_WORKER_EFFORT")
+    env_prefix = "".join(f"{k}='{os.environ[k]}' " for k in
+                         ("CONDUCTOR_MODEL", "CONDUCTOR_ORCH_EFFORT", "CONDUCTOR_WORKER_EFFORT",
+                          "CONDUCTOR_WORKER_MAX_TURNS", "CONDUCTOR_WAIT_TERMINAL_S")
                          if os.environ.get(k))
     cmd = f"{env_prefix}{PYEXE} {WORKER_SCRIPT} {mid} {st['id']}"
     # Route spawn through the substrate seam (tmux today; herdr under NEXUS_SUBSTRATE=herdr).
@@ -699,8 +806,9 @@ def _deregister_self() -> None:
         pass
 
 
-async def wait_terminal(db, sids, timeout=1200):
+async def wait_terminal(db, sids, timeout=None):
     """Poll subtask rows until all reach a terminal state (done|error|blocked)."""
+    timeout = timeout or int(os.environ.get("CONDUCTOR_WAIT_TERMINAL_S", 1200))
     pending = set(sids)
     end = time.time() + timeout
     while pending and time.time() < end:
@@ -712,6 +820,15 @@ async def wait_terminal(db, sids, timeout=1200):
     for sid in pending:   # timed out
         db.update_subtask(sid, status="error",
                           result={"status": "error", "summary": "worker timeout", "artifacts": []})
+
+
+def _dep_context(result: dict) -> str:
+    """Upstream text a dependent needs, richest field first, head-anchored."""
+    for k in ("handoff", "full_output", "summary"):
+        v = result.get(k)
+        if isinstance(v, str) and v.strip():
+            return v[:HANDOFF_MAX]
+    return "(no handoff recorded)"
 
 
 async def execute_dag(db, mid: str):
@@ -729,9 +846,9 @@ async def execute_dag(db, mid: str):
         for s in ready:
             deps = [by_key[d] for d in (s["depends_on"] or []) if d in by_key]
             if deps:
-                ctx = "\n".join(
-                    f"- {d['subtask_key']}: "
-                    f"{((d.get('result') or {}).get('handoff') or (d.get('result') or {}).get('summary', ''))[:300]}"
+                ctx = "\n\n".join(
+                    f"### {d['subtask_key']}\n"
+                    f"{_dep_context(d.get('result') or {})}"
                     for d in deps)
                 base = s["goal"].split("\n\n[Upstream context]")[0]
                 db.update_subtask(s["id"], goal=f"{base}\n\n[Upstream context]\n{ctx}")
@@ -768,6 +885,40 @@ def _run_check(cwd):
         return {"probe": "check", "command": cmd, "ok": r.returncode == 0, "exit": r.returncode,
                 "output_tail": out[-4000:]}
     return None
+
+
+_CHECK_INLINE_RE = re.compile(r'^(?P<file>[\w./\\-]+\.\w+):(?P<line>\d+)(?::\d+)?:\s+(?P<rest>\S.*)$')
+_CHECK_ARROW_RE = re.compile(r'^\s*-->\s+(?P<file>[\w./\\-]+\.\w+):(?P<line>\d+)')
+_CHECK_RULE_RE = re.compile(r'^(?P<code>[A-Z]{1,5}\d{2,4})\s+(?P<msg>\S.*)$')
+
+
+def _check_findings(output: str) -> set:
+    """Lint findings as (file, message), line numbers dropped since they shift on any edit.
+    Handles ruff's default two-line form and the one-line form ruff --concise / mypy emit."""
+    found, rule = set(), None
+    for raw in (output or "").splitlines():
+        ln = raw.rstrip()
+        m = _CHECK_ARROW_RE.match(ln)
+        if m:
+            if rule:
+                found.add((m.group("file"), rule))
+            continue
+        m = _CHECK_RULE_RE.match(ln.strip())
+        if m:
+            rule = f'{m.group("code")} {" ".join(m.group("msg").split())}'[:160]
+            continue
+        m = _CHECK_INLINE_RE.match(ln.strip())
+        if m:
+            found.add((m.group("file"), " ".join(m.group("rest").split())[:160]))
+    return found
+
+
+def _new_check_findings(branch_out: str, base_out: str, changed: set) -> list:
+    """Findings the branch has that the baseline does not, in files the mission touched — naming
+    a file was too coarse, since editing a file with standing debt then blamed you for it."""
+    base = _check_findings(base_out)
+    return sorted(f"{f}: {msg}" for f, msg in _check_findings(branch_out) - base
+                  if not changed or f in changed or os.path.basename(f) in changed)
 
 
 _BASE_CHECK = {}   # cache: same lint on origin/main per mission (pre-existing debt)
@@ -891,14 +1042,87 @@ async def _run_comment_gate(mid, goal, subtasks, probes):
 
 
 def _changed_files(ws):
-    """The mission's changed files in a worktree (paths + basenames), for attributing lint failures."""
-    out = subprocess.run(["git", "-C", ws, "status", "--porcelain"], capture_output=True, text=True).stdout
+    """Changed files (paths + basenames) for attributing lint failures — committed diff included,
+    since a status-only view of a committed mission makes every failure look pre-existing."""
+    touched, _added = _touched_vs_base(ws)
     files = set()
-    for ln in out.splitlines():
+    for f in touched:
+        files.add(f); files.add(os.path.basename(f))
+    return files
+
+
+_REL_PATH_RE = re.compile(r'(?<![\w/])((?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8})')
+# "existing" alone is NOT a cue — "write through the existing S3Output helper in common.py"
+# names a dependency to use, not a file to modify, and flagged it as an unmet target.
+_EXTEND_CUE_RE = re.compile(
+    r'\b(?:extend|do not create|don\'t create|not create a new|'
+    r'add (?:it|the \w+) to|append to|alongside)\b', re.I)
+
+
+EXTEND_CUE_WINDOW = 160
+
+
+def _extend_targets(goal: str) -> list:
+    """Repo-relative paths the goal says to EXTEND, by a cue on the same line. Line-bounded
+    because splitting on `.` splits `setup_athena.py` and a wider window leaks across items."""
+    targets = []
+    for m in _REL_PATH_RE.finditer(goal):
+        path = m.group(1)
+        if path.startswith("/") or path in targets:
+            continue
+        lo = goal.rfind("\n", 0, m.start()) + 1
+        hi = goal.find("\n", m.end())
+        hi = len(goal) if hi < 0 else hi
+        lo = max(lo, m.start() - EXTEND_CUE_WINDOW)
+        hi = min(hi, m.end() + EXTEND_CUE_WINDOW)
+        if _EXTEND_CUE_RE.search(goal[lo:hi]):
+            targets.append(path)
+    return targets
+
+
+def _touched_vs_base(ws: str) -> tuple:
+    """(touched, added) paths — COMMITTED diff vs base plus the worktree. Workers are told to
+    commit, so `git status` alone reports a finished subtask as having changed nothing."""
+    base = next((r for r in ("origin/main", "origin/master", "main", "master")
+                 if subprocess.run(["git", "-C", ws, "rev-parse", "--verify", r],
+                                   capture_output=True).returncode == 0), None)
+    touched, added = set(), set()
+    if base:
+        d = subprocess.run(["git", "-C", ws, "diff", "--name-status", f"{base}...HEAD"],
+                           capture_output=True, text=True).stdout
+        for ln in d.splitlines():
+            parts = ln.split("\t")
+            if len(parts) >= 2:
+                touched.add(parts[-1])
+                if parts[0].startswith("A"):
+                    added.add(parts[-1])
+    for ln in subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                             capture_output=True, text=True).stdout.splitlines():
         f = ln[3:].strip().strip('"')
         if f:
-            files.add(f); files.add(os.path.basename(f))
-    return files
+            touched.add(f)
+            if ln[:2].strip() in ("??", "A"):
+                added.add(f)
+    return touched, added
+
+
+def _target_file_probes(goal: str, ws: str) -> list:
+    """Deterministic 'did it actually edit that file' check — 1ce34834 created a sibling manifest
+    against an explicit prohibition, which git answers outright and prose does not."""
+    targets = _extend_targets(goal)
+    if not targets or not os.path.isdir(ws):
+        return []
+    changed, untracked = _touched_vs_base(ws)
+    out = []
+    for t in targets:
+        exists = os.path.isfile(os.path.join(ws, t))
+        modified = t in changed
+        siblings = [u for u in untracked
+                    if os.path.dirname(u) == os.path.dirname(t) and u != t]
+        out.append({"probe": "extend_target", "path": t, "exists": exists,
+                    "modified": modified, "ok": bool(modified or not exists),
+                    "new_files_in_same_dir": siblings})
+    return out
 
 
 # ── cross-vendor reviewer (Codex) ─────────────────────────────────────────────
@@ -916,6 +1140,30 @@ VERDICT_SCHEMA = os.path.join(REPO, "agent-runner", "schemas", "verdict.schema.j
 RESULT_SCHEMA = os.path.join(REPO, "agent-runner", "schemas", "result.schema.json")
 
 
+_REF_PATH_RE = re.compile(r'(?<![\w/])(/(?:[\w.@+-]+/)+[\w.@+-]+\.[A-Za-z0-9]{1,8})')
+REF_PROBE_BYTES = int(os.environ.get("CONDUCTOR_REF_PROBE_BYTES", 6000))
+
+
+def _reference_probes(goal: str, cap: int = 6) -> list:
+    """Read the files the goal names so verify can check the diff against them.
+    d2f16450 passed verify having renamed or dropped 25 of 29 source columns; nothing compared."""
+    out = []
+    for path in dict.fromkeys(_REF_PATH_RE.findall(goal)):
+        if len(out) >= cap:
+            break
+        if not os.path.isfile(path):
+            continue
+        p = {"probe": "reference", "path": path}
+        try:
+            with open(path, errors="replace") as f:
+                p["content"] = f.read(REF_PROBE_BYTES)
+            p["truncated"] = os.path.getsize(path) > REF_PROBE_BYTES
+        except OSError as e:
+            p["error"] = str(e)
+        out.append(p)
+    return out
+
+
 def _reviewer_prompt(goal: str, summaries: list, probes: list, lens: str, cwd: str,
                      can_inspect: bool = True) -> str:
     """Shared adversarial-reviewer prompt used by BOTH the Claude and Codex reviewers.
@@ -925,10 +1173,31 @@ def _reviewer_prompt(goal: str, summaries: list, probes: list, lens: str, cwd: s
     inspect = (f"You MAY inspect artifacts under {cwd} (Read/Grep/Bash, read-only)."
                if can_inspect else
                "Judge ONLY from the summaries and ground-truth probes below; do not run shell commands.")
+    refs = [p["path"] for p in probes if p.get("probe") == "reference"]
+    fidelity = (
+        f"\n\nFIDELITY CHECK — the goal names these authoritative sources, included verbatim in the "
+        f"`reference` probes: {refs}. The work must be FAITHFUL to them. Treat as a BLOCKER any "
+        f"field, column, key, or parameter that the source defines and the output renames, drops, "
+        f"merges, or collapses, and any table/file/identifier renamed away from what the goal "
+        f"states. Compare them element by element and say which are missing. A tolerant or "
+        f"'inferred' mapping is a FAIL, not a mitigation." if refs else "")
+    unmet = [p["path"] for p in probes if p.get("probe") == "extend_target" and not p["ok"]]
+    targets = (
+        f"\n\nTARGET FILES — the goal said to EXTEND these and they were NOT modified: {unmet}. "
+        f"The `extend_target` probes are git ground truth, not opinion. This is a BLOCKER; say so "
+        f"even if a new file beside it is otherwise well written." if unmet else "")
+    # A pipeline the mission just triggered is always mid-flight at review time; without this the
+    # "fail anything unverified" rule below turns that timing into a blocker on every pushed MR.
+    timing = (
+        "\n\nPIPELINE TIMING — a CI pipeline that has not finished is NOT evidence of failure. "
+        "Jobs still `running`, `created`, `pending` or `manual` mean the evidence is incomplete: "
+        "report that at `minor`, never `blocker`, and never fail the mission on it alone. A job "
+        "that actually reported `failed` IS a blocker. Judge what has reported, not what has not "
+        "reported yet, and do not claim a pipeline is green while jobs are outstanding.")
     return (
         f"You are an ADVERSARIAL reviewer using the '{lens}' lens. Find why this mission is NOT "
         f"correctly/completely done. Be strict: if anything is unverified, missing, or wrong, FAIL it. "
-        f"{inspect}\n\n"
+        f"{inspect}{fidelity}{targets}{timing}\n\n"
         f"Goal: {goal}\nWork summaries: {json.dumps(summaries)}\n"
         f"Ground-truth probes: {json.dumps(probes)}\n\n"
         'Respond with ONLY JSON: {"pass":true,"findings":[{"severity":"blocker|major|minor","where":"","what":""}]}'
@@ -942,6 +1211,7 @@ async def review_one(mid: str, goal: str, summaries: list, probes: list, lens: s
     tools = list(profile.get("tools", [])) + [f"mcp__{s}__*" for s in mcp]
     prompt = _reviewer_prompt(goal, summaries, probes, lens, cwd)
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=ORCH_EFFORT, cwd=cwd, setting_sources=[],
         mcp_servers=mcp, allowed_tools=tools, disallowed_tools=list(WRITE_TOOLS),
         permission_mode="bypassPermissions",
@@ -953,7 +1223,7 @@ async def review_one(mid: str, goal: str, summaries: list, probes: list, lens: s
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         text.append(b.text)
-        return {"lens": lens, "verdict": _extract_json("".join(text))}
+        return {"lens": lens, "verdict": _verdict_json("".join(text))}
     except Exception as e:
         return {"lens": lens, "verdict": {"pass": False,
                 "findings": [{"severity": "major", "where": lens, "what": f"reviewer failed: {e}"}]}}
@@ -1006,6 +1276,9 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
                 except OSError:
                     pass
             probes.append(p)
+    probes.extend(_reference_probes(goal))
+    for repo in sorted({s.get("repo") for s in subtasks if s.get("repo")}):
+        probes.extend(_target_file_probes(goal, workspace(mid, repo)))
     summaries = [{"subtask": s["subtask_key"], "status": s["status"],
                   "summary": (s.get("result") or {}).get("summary", "")} for s in subtasks]
 
@@ -1022,18 +1295,22 @@ async def verify_mission(mid: str, goal: str, subtasks: list) -> tuple:
             print(f"[conductor] check `{cp['command']}` in {repo}: PASS")
             continue
         # Branch check failed — baseline-diff: is it the mission's fault or pre-existing debt?
-        changed = _changed_files(ws)
-        if any(cf and cf in cp["output_tail"] for cf in changed):
+        base_cp = await asyncio.to_thread(_run_check_base, repo, mid)
+        if not base_cp or base_cp["ok"]:
             check_ok = False
-            print(f"[conductor] check FAIL in {repo} on a mission-changed file → HARD FAIL")
+            print(f"[conductor] check FAIL in {repo} (baseline clean) → HARD FAIL")
+            continue
+        new_findings = _new_check_findings(cp["output_tail"], base_cp["output_tail"],
+                                          _changed_files(ws))
+        cp["baseline_dirty"] = True
+        if new_findings:
+            check_ok = False
+            cp["new_findings"] = new_findings[:20]
+            print(f"[conductor] check FAIL in {repo}: {len(new_findings)} finding(s) absent from "
+                  f"baseline → HARD FAIL\n    " + "\n    ".join(new_findings[:5]))
         else:
-            base_cp = await asyncio.to_thread(_run_check_base, repo, mid)
-            if base_cp and not base_cp["ok"]:
-                cp["baseline_dirty"] = True   # pre-existing failures, none in mission files → advisory
-                print(f"[conductor] check FAIL in {repo} but baseline also fails (no mission files) → advisory")
-            else:
-                check_ok = False
-                print(f"[conductor] check FAIL in {repo} (baseline clean) → HARD FAIL")
+            print(f"[conductor] check FAIL in {repo} but every finding is in the baseline too "
+                  f"→ advisory")
 
     ran_gate, gate_ok, gate_findings = await _run_comment_gate(mid, goal, subtasks, probes)
 
@@ -1079,6 +1356,7 @@ async def review_plan(mid: str, goal: str, design_brief: dict, plan_obj: dict, l
         'Respond with ONLY JSON: {"pass":true,"findings":[{"severity":"blocker|major|minor","where":"","what":"","fix_hint":""}]}'
     )
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=ORCH_EFFORT, cwd=REPO, setting_sources=[],
         mcp_servers=mcp, allowed_tools=tools, disallowed_tools=list(WRITE_TOOLS),
         permission_mode="bypassPermissions",
@@ -1090,7 +1368,7 @@ async def review_plan(mid: str, goal: str, design_brief: dict, plan_obj: dict, l
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         text.append(b.text)
-        return {"lens": lens, "verdict": _extract_json("".join(text))}
+        return {"lens": lens, "verdict": _verdict_json("".join(text))}
     except Exception as e:
         return {"lens": lens, "verdict": {"pass": False,
                 "findings": [{"severity": "major", "where": lens, "what": f"plan reviewer failed: {e}"}]}}
@@ -1152,6 +1430,7 @@ async def run_and_verify(db, mid: str, goal: str, start_round: int = 0) -> tuple
     effort (high → xhigh) after ESCALATE_AFTER failed rounds. `start_round` lets a
     resumed mission continue from its persisted replan_count."""
     verdict = {"pass": False}
+    prev_blocked = set()
     for rnd in range(start_round, MAX_REPLANS + 1):
         effort = WORKER_EFFORT if rnd < ESCALATE_AFTER else ESC_EFFORT
         db.log_event(mid, "round", {"round": rnd, "worker_effort": effort})
@@ -1180,6 +1459,21 @@ async def run_and_verify(db, mid: str, goal: str, start_round: int = 0) -> tuple
         print(f"[conductor] round {rnd} verdict: pass={verdict.get('pass')} rec={verdict.get('recommendation')}")
         if verdict.get("pass"):
             return verdict, True
+        gone = [s for s in failed if _WORKSPACE_GONE in ((s.get("result") or {}).get("summary") or "")]
+        if gone:
+            keys = [s["subtask_key"] for s in gone]
+            db.log_event(mid, "workspace_missing", {"round": rnd, "subtasks": keys})
+            print(f"[conductor] workspace missing for {keys} — stopping at round {rnd}; "
+                  f"re-planning cannot recreate a worktree")
+            return verdict, False
+        blocked = {s["subtask_key"] for s in failed
+                   if s["status"] == "blocked" and (s.get("result") or {}).get("summary")}
+        if blocked and blocked == prev_blocked:
+            db.log_event(mid, "blocked_repeat", {"round": rnd, "subtasks": sorted(blocked)})
+            print(f"[conductor] {sorted(blocked)} blocked two rounds running — stopping at round {rnd}; "
+                  f"re-planning is not unblocking them")
+            return verdict, False
+        prev_blocked = blocked
         if rnd < MAX_REPLANS:
             db.log_event(mid, "replan", {"round": rnd, "findings": verdict.get("findings")})
             fb = json.dumps(verdict.get("findings", []))[:800]
@@ -1206,6 +1500,15 @@ def _expandvars_deep(x):
     return x
 
 REPORTING = _expandvars_deep(CFG.get("reporting", {}))
+
+
+def _resolve_gate_before_report() -> bool:
+    """Hold a verified mission before it files anything. Env or --gate-before-report."""
+    v = (os.environ.get("CONDUCTOR_GATE_BEFORE_REPORT") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+GATE_BEFORE_REPORT = _resolve_gate_before_report()
 
 
 def _jira_epic():
@@ -1441,6 +1744,7 @@ async def _name_mr(goal, worktree, target="main"):
         'text, no absolute file paths>"}'
     )
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=NAMING_MODEL, effort="low", setting_sources=[],
         permission_mode="bypassPermissions", allowed_tools=[],
     )
@@ -1451,7 +1755,7 @@ async def _name_mr(goal, worktree, target="main"):
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         text.append(b.text)
-        out = _extract_json("".join(text))
+        out = _last_shaped_json("".join(text), _REPORT_KEYS) or _extract_json("".join(text))
     except (ClaudeSDKError, ValueError):
         return None
     title = (out.get("title") or "").strip()[:72]
@@ -1519,7 +1823,8 @@ async def reporter_agent(instruction, mcp_names):
     reporting action and returns structured JSON."""
     mcp = _load_mcp(mcp_names)
     opts = ClaudeAgentOptions(model=MODEL, effort=ORCH_EFFORT, setting_sources=[], mcp_servers=mcp,
-                              allowed_tools=[f"mcp__{s}__*" for s in mcp], permission_mode="bypassPermissions")
+                              allowed_tools=[f"mcp__{s}__*" for s in mcp], permission_mode="bypassPermissions",
+                              cli_path=CLI_PATH)
     text = []
     try:
         async for msg in query(prompt=instruction, options=opts):
@@ -1527,7 +1832,12 @@ async def reporter_agent(instruction, mcp_names):
                 for b in msg.content:
                     if isinstance(b, TextBlock):
                         text.append(b.text)
-        return _extract_json("".join(text))
+        joined = "".join(text)
+        out = _last_shaped_json(joined, _REPORT_KEYS)
+        if out:
+            return out
+        url = _first_url(joined)   # the agent filed it but wrote prose; don't lose the artifact
+        return {"url": url} if url else _extract_json(joined)
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
 
@@ -1596,8 +1906,8 @@ def _triage_rejected(f):
 
 
 async def _file_triage_tickets(db, mid, goal, verdict, src, tracking_key, mr_url, cap=6):
-    """File the residual reviewer findings as child tickets under the Claude Queue epic (FC-1239)
-    via the queue-techdebt contract. Keep blocker+major, dedupe by locus, cap at `cap` (roll the
+    """File the residual reviewer findings as child tickets under reporting.jira.triage_epic
+    (else reporting.jira.epic) via the queue-techdebt contract. Keep blocker+major, dedupe by locus, cap at `cap` (roll the
     remainder into one 'N more' ticket — never silently drop), and skip false positives. Returns
     the created keys. DRY_RUN → logs the would-file payloads instead of creating. Reuses
     reporter_agent (atlassian) — does not re-implement Atlassian calls."""
@@ -1626,7 +1936,8 @@ async def _file_triage_tickets(db, mid, goal, verdict, src, tracking_key, mr_url
     if overflow:
         db.log_event(mid, "triage_capped", {"kept": len(head), "overflow": len(overflow)})
 
-    epic = "FC-1239"   # the Claude Queue tech-debt epic — triage findings route HERE, not the src epic
+    epic = (j.get("triage_epic") or "").strip() or _jira_epic()
+    labels = [str(x) for x in (j.get("triage_labels") or [])]
     team_id = "bee517c7-f0ef-499f-83ff-5a0ff5446959"   # Finding Care (customfield_10001)
     assignee = j.get("assignee")
     refs = (f"\n\n### References\n"
@@ -1636,8 +1947,11 @@ async def _file_triage_tickets(db, mid, goal, verdict, src, tracking_key, mr_url
 
     def _payload(f):
         lens = f.get("lens", "review")
+        what = f.get("what") or "finding"
+        if what.startswith("subtask ended") and f.get("fix_hint"):
+            what = f"{f.get('where', '')} {what.removeprefix('subtask ended ')}: {' '.join(f['fix_hint'].split())}"
         return {
-            "summary": f"[{lens}] {(f.get('what') or 'finding')[:100]}"[:110],
+            "summary": f"[{lens}] {what[:100]}"[:110],
             "severity": f.get("severity"),
             "body": (f"### Problem\n{f.get('what', '')}\n\n"
                      f"### Where\n{f.get('where', '(unspecified)')}\n\n"
@@ -1671,7 +1985,9 @@ async def _file_triage_tickets(db, mid, goal, verdict, src, tracking_key, mr_url
         res = await reporter_agent(
             f"Create a Jira issue, then set its Team field in a SECOND call. "
             f"Step 1 — create: project key={j['project']!r}, issue type='Task', "
-            f"parent epic={epic!r}, assignee accountId={assignee!r}, summary={p['summary']!r}, "
+            + (f"parent epic={epic!r}, " if epic else "no parent epic, ")
+            + (f"labels={labels!r}, " if labels else "")
+            + f"assignee accountId={assignee!r}, summary={p['summary']!r}, "
             f"description (markdown):\n\n{p['body']}\n\n"
             f"Step 2 — the Team field customfield_10001 is a PLAIN STRING {team_id!r} and is silently "
             f"dropped on create, so after creating, call editJiraIssue to set customfield_10001={team_id!r}. "
@@ -1848,6 +2164,33 @@ async def _safe_synthesize(db, mid, goal, subs, verdict, verified=True):
     return art.get("artifact", "")
 
 
+MISSION_GOAL_MAX = int(os.environ.get("CONDUCTOR_MISSION_GOAL_MAX", 12000))
+_MISSION_GOAL_HDR = ("\n\n[Mission goal — AUTHORITATIVE. The framing above is a planner paraphrase; "
+                     "exact names, schemas, file targets and prohibitions below override it.]\n")
+
+
+def _subtask_goal(planned: str, mission_goal: str) -> str:
+    """Planner framing plus the verbatim mission goal — 1ce34834's subtask goal was a 393-char
+    paraphrase carrying none of the exact columns, file targets, or prohibitions it was judged on."""
+    if not mission_goal or mission_goal.strip() in (planned or "").strip():
+        return planned
+    return f"{planned}{_MISSION_GOAL_HDR}{mission_goal[:MISSION_GOAL_MAX]}"
+
+
+def _gate(db, mid, goal, subs, verdict, art, why: str):
+    """Hold before ANY filing. Covers the exhausted path too: `on_exhausted: partial` files a
+    draft MR + triage tickets, so gating only the verified path still let a dead mission file."""
+    branches = _commit_worktrees(mid, subs, goal)   # the branch is the deliverable; only filing is held
+    db.log_event(mid, "report_gate", {"why": why, "verdict": verdict,
+                                      "artifact": (art or "")[:4000], "branches": branches})
+    db.finish_mission(mid, "gated")
+    print(f"[conductor] GATED before reporting ({why}) · mission {mid}\n"
+          f"[conductor] review the worktree, then release with: "
+          f"conductor.py --resume {mid[:8]}   (unset CONDUCTOR_GATE_BEFORE_REPORT first)")
+    _slack_relay(f"⏸ Conductor {mid[:8]} GATED before reporting ({why}) · {_title(goal)}")
+    return mid, "gated"
+
+
 async def finalize(db, mid, goal, start_round=0):
     """Shared tail for run + resume: DAG/verify/re-plan loop → synthesize → report → finish."""
     verdict, ok = await run_and_verify(db, mid, goal, start_round=start_round)
@@ -1860,16 +2203,20 @@ async def finalize(db, mid, goal, start_round=0):
         # honesty. Default `escalate` keeps the historical stop-and-strand behavior.
         if ON_EXHAUSTED == "partial":
             art = await _safe_synthesize(db, mid, goal, subs, verdict, verified=False)
+            if GATE_BEFORE_REPORT:
+                return _gate(db, mid, goal, subs, verdict, art, "exhausted")
             targets = await report(db, mid, goal, art, subs, verdict, draft=True, triage=True)
             db.finish_mission(mid, "partial")
             db.log_event(mid, "partial", {"verdict": verdict, "replans": replans, "targets": targets})
-            print(f"[conductor] PARTIAL after {MAX_REPLANS} re-plans · mission {mid} · reported→{targets}")
+            print(f"[conductor] PARTIAL after {replans} re-plans · mission {mid} · reported→{targets}")
             return mid, "partial"
         db.finish_mission(mid, "escalated")
         db.log_event(mid, "escalated", {"verdict": verdict, "replans": replans})
         print(f"[conductor] ESCALATED after {MAX_REPLANS} re-plans · mission {mid}")
         return mid, "escalated"
     art = await _safe_synthesize(db, mid, goal, subs, verdict, verified=True)
+    if GATE_BEFORE_REPORT:
+        return _gate(db, mid, goal, subs, verdict, art, "verified")
     targets = await report(db, mid, goal, art, subs, verdict)
     db.finish_mission(mid, "done")
     print(f"[conductor] DONE · mission {mid} · reported→{targets}")
@@ -1887,7 +2234,8 @@ async def run_mission(goal: str, created_by: str = "cli") -> tuple:
         cr = await classify(goal)
         mid = db.create_mission(goal, type=cr.get("type", "building"),
                                 route=cr.get("route", "conductor"), repos=cr.get("repos", []),
-                                datasources=cr.get("datasources", []), created_by=created_by, device=HOST)
+                                datasources=cr.get("datasources", []), created_by=created_by, device=HOST,
+                                model=MODEL)
         _set_sess(f"conductor-{mid[:8]}")
         db.log_event(mid, "classified", cr)
         print(f"[conductor] mission {mid[:8]} · type={cr.get('type')} repos={cr.get('repos')}")
@@ -1917,7 +2265,7 @@ async def run_mission(goal: str, created_by: str = "cli") -> tuple:
             p["design"] = design_brief
         db.update_mission(mid, plan=p, status="dispatched")
         for st in p.get("subtasks", []):
-            db.create_subtask(mid, st["id"], st["goal"], st.get("profile", "one-shot"),
+            db.create_subtask(mid, st["id"], _subtask_goal(st["goal"], goal), st.get("profile", "one-shot"),
                               repo=st.get("repo"), depends_on=st.get("depends_on", []), effort=WORKER_EFFORT)
         db.log_event(mid, "planned", {"strategy": p.get("strategy"), "subtasks": len(p.get("subtasks", []))})
         if PLAN_GATE_ON:
@@ -2155,11 +2503,13 @@ async def run_sdlc_stage(mid: str, project_dir: str, leaf: str, ctx: str, effort
               f"(its references/ are alongside it), writing the artifact file(s) under {project_dir}.\n"
               f"{_sdlc_escape_hint(leaf_fq)}\n\nMission context:\n{ctx}\n")
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=(effort or WORKER_EFFORT), cwd=project_dir,
         setting_sources=["user", "project"],
         mcp_servers=mcp, allowed_tools=allowed, disallowed_tools=["AskUserQuestion"],
         permission_mode="bypassPermissions", max_turns=80,
-        system_prompt={"type": "preset", "preset": "claude_code", "append": SDLC_HEADLESS_CONVENTION},
+        system_prompt={"type": "preset", "preset": "claude_code",
+                       "append": SDLC_HEADLESS_CONVENTION + _WORKER_AUTH_RULE},
     )
     text, artifacts, status = [], [], "error"
     async for msg in query(prompt=prompt, options=opts):
@@ -2337,7 +2687,8 @@ async def run_sdlc_mission(goal: str, created_by: str = "cli") -> tuple:
         ws_root = scan.get("workspace_root")
         proj, reason = _sdlc_resolve_project(goal, scan)
         mid = db.create_mission(goal, type="sdlc", route="sdlc",
-                                repos=(proj or {}).get("repos") or [], created_by=created_by, device=HOST)
+                                repos=(proj or {}).get("repos") or [], created_by=created_by, device=HOST,
+                                model=MODEL)
         _set_sess(f"conductor-sdlc-{mid[:8]}")
         db.log_event(mid, "sdlc_resolved", {"reason": reason, "project": (proj or {}).get("path"),
                      "workspace_root": ws_root, "ticket": ticket,
@@ -2405,8 +2756,19 @@ async def run_sdlc_mission(goal: str, created_by: str = "cli") -> tuple:
 
 if __name__ == "__main__":
     import anyio
+    # Line-buffered: a redirected log otherwise sits empty for minutes and a healthy mission is
+    # indistinguishable from a hang.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
     _load_dotenv()   # idempotent re-load (already ran at import); harmless belt-and-suspenders
     args = sys.argv[1:]
+    if "--gate-before-report" in args:
+        GATE_BEFORE_REPORT = True
+        os.environ["CONDUCTOR_GATE_BEFORE_REPORT"] = "1"   # cross the --distribute seam
+        args = [a for a in args if a != "--gate-before-report"]
     # Run-mode flags override CONDUCTOR_RUN_MODE (the default; see _resolve_run_mode). Precedence:
     # explicit flag > env > default(dry). --dry-run wins if both flags are passed (fail safe).
     _mode_override = None
@@ -2442,7 +2804,12 @@ if __name__ == "__main__":
         # goals routinely carry spaces/parens/quotes. The detached conductor decodes it.
         import base64
         g64 = base64.b64encode(goal.encode()).decode()
+        policy_env = "".join(f"{k}='{os.environ[k]}' " for k in
+                             ("CONDUCTOR_MODEL", "CONDUCTOR_ORCH_EFFORT", "CONDUCTOR_WORKER_EFFORT",
+                          "CONDUCTOR_WORKER_MAX_TURNS", "CONDUCTOR_WAIT_TERMINAL_S")
+                             if os.environ.get(k))
         inner = (f"env CONDUCTOR_MISSION_WS={label} CONDUCTOR_GOAL_B64={g64} CONDUCTOR_RUN_MODE={RUN_MODE} "
+                 f"CONDUCTOR_GATE_BEFORE_REPORT={'1' if GATE_BEFORE_REPORT else '0'} {policy_env}"
                  f"{PYEXE} {os.path.abspath(__file__)} --distribute-run")
         r = subprocess.run([SUBSTRATE, "spawn", name, _REPO_ROOT, inner, "--workspace", label],
                            capture_output=True, text=True)
