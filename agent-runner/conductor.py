@@ -234,6 +234,11 @@ _WORKER_BRANCH_RULE = (" You are already on the correct git branch in this workt
                        "directly to it; do NOT create, switch, rename, or reset branches "
                        "(no `git checkout -b`, `git switch -c`, `git branch`).")
 
+_WORKER_AUTH_RULE = (" If an access gate blocks something you need (an expired SSO session, a Cloudflare "
+                     "Access login, an MCP server that will not connect), stop that line of work and "
+                     "return status `blocked` naming the gate. Do not hunt for a different credential or "
+                     "a different environment to get past it.")
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 def _set_sess(name: str):
@@ -609,7 +614,7 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
         append = (f"You are a Conductor worker. Your assigned procedure is the skill at {skill_md} — "
                   f"read it and follow it to completion (its references/ are alongside it), then stop."
                   + _WORKER_BRANCH_RULE)
-    append += _WORKER_RESULT_RULE
+    append += _WORKER_AUTH_RULE + _WORKER_RESULT_RULE
 
     # Workers are autonomous within an approved mission → bypassPermissions.
     # read-only profiles disallow the write tools (Bash-write hardening is slice C+,
@@ -2375,7 +2380,8 @@ async def run_sdlc_stage(mid: str, project_dir: str, leaf: str, ctx: str, effort
         setting_sources=["user", "project"],
         mcp_servers=mcp, allowed_tools=allowed, disallowed_tools=["AskUserQuestion"],
         permission_mode="bypassPermissions", max_turns=80,
-        system_prompt={"type": "preset", "preset": "claude_code", "append": SDLC_HEADLESS_CONVENTION},
+        system_prompt={"type": "preset", "preset": "claude_code",
+                       "append": SDLC_HEADLESS_CONVENTION + _WORKER_AUTH_RULE},
     )
     text, artifacts, status = [], [], "error"
     async for msg in query(prompt=prompt, options=opts):
