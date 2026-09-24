@@ -128,7 +128,7 @@ existing skill** — the planner's judgment becomes "which skill/profile, parame
 ```ts
 type Profile = {
   name: string
-  model: string                    // claude-opus-5 | claude-sonnet-5 | claude-haiku-4-5-...
+  model: string                    // claude-opus-5-5 | claude-sonnet-5 | claude-haiku-4-5-...
   effort: "low" | "medium" | "high" | "xhigh"
   tools: string[]                  // allowed built-in tools
   mcp: string[]                    // ["agent-memory","snowflake",...]
@@ -161,7 +161,7 @@ type Profile = {
 2. **Redundant state: local DB + Jira.** The DB is the source of truth (resumable +
    audit) and stitches to the knowledge graph via `memory_nodes.mission_id` /
    `memory_events.mission_id`; Jira mirrors it for standup / team surfacing.
-3. **Effort/retry policy** (`config/conductor.yaml`): all `claude-opus-5`; the
+3. **Effort/retry policy** (`config/conductor.yaml`): all `claude-opus-5-5`; the
    orchestrator's judgment nodes run at `max`; workers start at `high` and escalate to
    `xhigh` after 2 failed verify rounds; up to `max_replans: 5` verify→re-dispatch
    rounds before escalating to a human.
@@ -174,7 +174,7 @@ type Profile = {
 ## Built — roadmap complete (A–F + worktree isolation)
 - **Schema** — migration `20260709000001` (missions/subtasks/events + knowledge-graph `mission_id`).
 - **A/B** — `conductor_db.py` (state + event log) + `conductor.py` spine: classify/plan/adjudicate/
-  synthesize judgment nodes (opus-5 @ max, structured JSON) + worker execution.
+  synthesize judgment nodes (opus-5.5 @ max, structured JSON) + worker execution.
 - **Worktree isolation** — workers run in a per-mission git worktree (branch `conductor/<mid8>`) or a
   scratch dir, never a live checkout; artifacts recorded as absolute paths so verify probes them.
 - **C** — cross-process fleet dispatch (`conductor_worker.py`, one tmux window per subtask, DB gather)
@@ -183,7 +183,7 @@ type Profile = {
 - **E** — `report()`: commit the branch (always) + Jira/Confluence/MR (gated, **dry-run by default**) via `reporter_agent`.
 - **F** — `conductor.py --resume <mid|prefix>` continues a non-terminal mission from persisted DB state.
 
-**Run:** `conductor.py "<goal>"` (uses `config/conductor.yaml`: opus-5 @ max/high). Cheap smoke via
+**Run:** `conductor.py "<goal>"` (uses `config/conductor.yaml`: opus-5.5 @ max/high). Cheap smoke via
 `CONDUCTOR_MODEL` / `CONDUCTOR_ORCH_EFFORT` / `CONDUCTOR_WORKER_EFFORT` / `CONDUCTOR_REVIEWERS`.
 **Go live on reporting:** set `reporting.*.enabled` (+ a Confluence space) in the config.
 **Optional hardening:** run reviewers over a real `git diff`; read-only Bash gate via a streaming worker.

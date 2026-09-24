@@ -183,6 +183,7 @@ def main() -> None:
 
     # ── D. headroom / what-if: opus -> sonnet ────────────────────────────────
     rows = ch(f"""SELECT
+                 {J.format('requested_model')},
                  count(),
                  sum(usage_details['output']),
                  countIf(usage_details['output'] < 500),
@@ -190,14 +191,18 @@ def main() -> None:
                  sum(usage_details['input']),
                  sum(usage_details['cache_read_input_tokens']),
                  sum(usage_details['cache_creation_input_tokens'])
-                 FROM observations WHERE {W} AND {J.format('requested_model')} LIKE '%opus%'""")
+                 FROM observations WHERE {W} AND {J.format('requested_model')} LIKE '%opus%'
+                 GROUP BY 1""")
     print(f"\n[D] headroom — if opus turns had been served by sonnet")
-    if rows and rows[0][0] and int(rows[0][0]) > 0:
-        n, out_all, n_small, out_small, i_all, cr_all, cw_all = (int(x) for x in rows[0])
-        u_all = {"input": i_all, "output": out_all,
-                 "cache_read_input_tokens": cr_all, "cache_creation_input_tokens": cw_all}
-        opus_cost = price("claude-opus-5", u_all)
-        sonnet_cost = price("claude-sonnet-5", u_all)
+    if rows:
+        n = out_all = n_small = out_small = 0
+        opus_cost = sonnet_cost = 0.0
+        for model, *vals in rows:
+            c, o, cs, os_, i, cr, cw = (int(x) for x in vals)
+            u = {"input": i, "output": o, "cache_read_input_tokens": cr, "cache_creation_input_tokens": cw}
+            n, out_all, n_small, out_small = n + c, out_all + o, n_small + cs, out_small + os_
+            opus_cost += price(model, u)
+            sonnet_cost += price("claude-sonnet-5", u)
         print(f"    {n} opus turns, {out_all:,} output tok, actual ~${opus_cost:.2f} at opus rates")
         print(f"    theoretical if ALL -> sonnet: ~${sonnet_cost:.2f}  "
               f"(~${opus_cost - sonnet_cost:.2f} max, ignores quality)")

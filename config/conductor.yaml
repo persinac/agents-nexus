@@ -8,7 +8,7 @@
 # the tmux-scripts symlink pattern). The Conductor reads the stable ~/.tmux path.
 
 policy:
-  model: claude-opus-5[1m]          # all agents AND the orchestrator; [1m] = 1M-token context
+  model: claude-opus-5-5[1m]          # all agents AND the orchestrator; [1m] = 1M-token context
   orchestrator_effort: max          # Conductor judgment nodes: classify / plan / adjudicate / synthesize
   worker_effort: high               # workers start here
   worker_effort_escalated: xhigh    # bump to this after `escalate_after_fails` failed verify rounds

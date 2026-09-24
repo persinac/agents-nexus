@@ -126,6 +126,8 @@ def _load_prices() -> None:
     for name, p in (data.get("models") or {}).items():
         if isinstance(p, dict) and "input" in p and "output" in p:
             _PRICES[name] = {"input": float(p["input"]), "output": float(p["output"])}
+            if "cache_read_mult" in p:
+                _PRICES[name]["cache_read_mult"] = float(p["cache_read_mult"])
     _CACHE_READ_MULT = float(data.get("cache_read_mult", 0.10))
     _CACHE_WRITE_MULT = float(data.get("cache_write_mult", 1.25))
     log.info("ceilings: loaded %d model prices from %s", len(_PRICES), PRICES_PATH)
@@ -146,7 +148,7 @@ def _turn_usd(model: str | None, ud: dict) -> float:
     inp = p["input"]
     return (ud.get("input", 0) * inp
             + ud.get("cache_creation_input_tokens", 0) * inp * _CACHE_WRITE_MULT
-            + ud.get("cache_read_input_tokens", 0) * inp * _CACHE_READ_MULT
+            + ud.get("cache_read_input_tokens", 0) * inp * p.get("cache_read_mult", _CACHE_READ_MULT)
             + ud.get("output", 0) * p["output"]) / 1_000_000
 
 

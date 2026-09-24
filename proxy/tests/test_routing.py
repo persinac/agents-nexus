@@ -26,7 +26,7 @@ import main
 POOL = [
     routing.Model("claude-haiku-4-5", "haiku", 1.0),
     routing.Model("claude-sonnet-5", "sonnet", 3.0),
-    routing.Model("claude-opus-5", "opus", 15.0),
+    routing.Model("claude-opus-5-5", "opus", 15.0),
 ]
 TRIVIAL = frozenset({"trivial"})
 
@@ -60,7 +60,7 @@ def test_mid_size_is_normal():
 
 def test_trivial_downgrades_within_anthropic_only():
     cd = routing.Cooldowns()
-    served = routing.select_model("claude-opus-5", "trivial", POOL, cd, TRIVIAL, 0.0)
+    served = routing.select_model("claude-opus-5-5", "trivial", POOL, cd, TRIVIAL, 0.0)
     assert served == "claude-haiku-4-5"
     # never crosses vendor: the served id is always an Anthropic pool member
     assert served in {m.model for m in POOL}
@@ -68,8 +68,8 @@ def test_trivial_downgrades_within_anthropic_only():
 
 def test_normal_and_hard_keep_requested():
     cd = routing.Cooldowns()
-    assert routing.select_model("claude-opus-5", "normal", POOL, cd, TRIVIAL, 0.0) == "claude-opus-5"
-    assert routing.select_model("claude-opus-5", "hard", POOL, cd, TRIVIAL, 0.0) == "claude-opus-5"
+    assert routing.select_model("claude-opus-5-5", "normal", POOL, cd, TRIVIAL, 0.0) == "claude-opus-5-5"
+    assert routing.select_model("claude-opus-5-5", "hard", POOL, cd, TRIVIAL, 0.0) == "claude-opus-5-5"
 
 
 def test_unknown_model_passes_through():
@@ -86,13 +86,13 @@ def test_selection_skips_cooled_down_model():
     cd = routing.Cooldowns(threshold=2, window=100)
     cd.record("claude-haiku-4-5", 429, 0.0)
     cd.record("claude-haiku-4-5", 429, 0.0)  # trips cooldown
-    served = routing.select_model("claude-opus-5", "trivial", POOL, cd, TRIVIAL, 1.0)
+    served = routing.select_model("claude-opus-5-5", "trivial", POOL, cd, TRIVIAL, 1.0)
     assert served == "claude-sonnet-5"  # haiku cooled → next cheapest
 
 
 def test_shed_walks_down_then_stops():
     cd = routing.Cooldowns()
-    assert routing.shed_model("claude-opus-5", POOL, cd, 0.0) == "claude-sonnet-5"
+    assert routing.shed_model("claude-opus-5-5", POOL, cd, 0.0) == "claude-sonnet-5"
     assert routing.shed_model("claude-sonnet-5", POOL, cd, 0.0) == "claude-haiku-4-5"
     assert routing.shed_model("claude-haiku-4-5", POOL, cd, 0.0) is None
 
@@ -100,7 +100,7 @@ def test_shed_walks_down_then_stops():
 # ── pure: bg-session cost ceiling ────────────────────────────────────────────
 
 def test_bg_ceiling_caps_opus_to_sonnet():
-    served = routing.select_bg_ceiling("claude-opus-5", "claude-sonnet-5", POOL)
+    served = routing.select_bg_ceiling("claude-opus-5-5", "claude-sonnet-5", POOL)
     assert served == "claude-sonnet-5"
 
 
@@ -120,7 +120,7 @@ def test_bg_ceiling_unknown_model_passes_through():
     # unknown requested model, or unknown ceiling model (e.g. a typo'd
     # BG_CEILING_MODEL) — fail open, same convention as select_model
     assert routing.select_bg_ceiling("gpt-4o-mini", "claude-sonnet-5", POOL) == "gpt-4o-mini"
-    assert routing.select_bg_ceiling("claude-opus-5", "not-a-real-model", POOL) == "claude-opus-5"
+    assert routing.select_bg_ceiling("claude-opus-5-5", "not-a-real-model", POOL) == "claude-opus-5-5"
 
 
 # ── pure: backoff + cooldowns ───────────────────────────────────────────────
@@ -143,13 +143,13 @@ def test_cooldown_threshold_trips_then_expires():
 # ── pure: request shaping (kill switch / cache preservation) ────────────────
 
 def test_body_for_model_is_byte_identical_when_unchanged():
-    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}],
+    body = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}],
             "system": [{"type": "text", "text": "S", "cache_control": {"type": "ephemeral"}}]}
     raw = json.dumps(body).encode()
     # unchanged model → original bytes returned verbatim (preserves prompt cache)
-    assert main._body_for_model("claude-opus-5", "claude-opus-5", body, raw) is raw
+    assert main._body_for_model("claude-opus-5-5", "claude-opus-5-5", body, raw) is raw
     # rewrite → only `model` changes; system/messages preserved
-    out = json.loads(main._body_for_model("claude-haiku-4-5", "claude-opus-5", body, raw))
+    out = json.loads(main._body_for_model("claude-haiku-4-5", "claude-opus-5-5", body, raw))
     assert out["model"] == "claude-haiku-4-5"
     assert out["system"] == body["system"] and out["messages"] == body["messages"]
 
@@ -159,20 +159,20 @@ def test_kill_switch_disables_downgrade(monkeypatch):
     unchanged even for a trivial turn, so the outbound body stays byte-identical."""
     monkeypatch.setattr(main, "_COOLDOWNS", routing.Cooldowns())
     monkeypatch.setattr(main, "ROUTE_ENABLED", False)
-    trivial = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
-    served, difficulty = main._decide_served(True, None, trivial, "claude-opus-5")
-    assert served == "claude-opus-5" and difficulty == "n/a"
+    trivial = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
+    served, difficulty = main._decide_served(True, None, trivial, "claude-opus-5-5")
+    assert served == "claude-opus-5-5" and difficulty == "n/a"
 
 
 def test_route_enabled_downgrades_trivial_but_not_work(monkeypatch):
     monkeypatch.setattr(main, "_COOLDOWNS", routing.Cooldowns())
     monkeypatch.setattr(main, "ROUTE_ENABLED", True)
-    trivial = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
-    served, difficulty = main._decide_served(True, None, trivial, "claude-opus-5")
+    trivial = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
+    served, difficulty = main._decide_served(True, None, trivial, "claude-opus-5-5")
     assert difficulty == "trivial" and served == "claude-haiku-4-5"
     # work sessions are never routed, even on a trivial turn
-    w_served, w_diff = main._decide_served(True, "work-acme", trivial, "claude-opus-5")
-    assert w_served == "claude-opus-5" and w_diff == "n/a"
+    w_served, w_diff = main._decide_served(True, "work-acme", trivial, "claude-opus-5-5")
+    assert w_served == "claude-opus-5-5" and w_diff == "n/a"
 
 
 # ── bg-session cost ceiling ("bg-" prefix) ──────────────────────────────────
@@ -181,9 +181,9 @@ def test_bg_ceiling_kill_switch_off_by_default(monkeypatch):
     """Same convention as ROUTE_ENABLED: a new cost lever ships defaulting
     inert. A bg- session sees no change until BG_CEILING_ENABLED=1."""
     monkeypatch.setattr(main, "BG_CEILING_ENABLED", False)
-    huge = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "x" * 200_000}]}
-    served, difficulty = main._decide_served(True, "bg-mr-rebase", huge, "claude-opus-5")
-    assert served == "claude-opus-5" and difficulty == "n/a"
+    huge = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "x" * 200_000}]}
+    served, difficulty = main._decide_served(True, "bg-mr-rebase", huge, "claude-opus-5-5")
+    assert served == "claude-opus-5-5" and difficulty == "n/a"
 
 
 def test_bg_ceiling_ignores_request_shape_entirely(monkeypatch):
@@ -195,11 +195,11 @@ def test_bg_ceiling_ignores_request_shape_entirely(monkeypatch):
     monkeypatch.setattr(main, "BG_CEILING_ENABLED", True)
     monkeypatch.setattr(main, "BG_CEILING_MODEL", "claude-sonnet-5")
     monkeypatch.setattr(main, "_COOLDOWNS", routing.Cooldowns())
-    tiny = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
-    huge = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "x" * 200_000}],
+    tiny = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
+    huge = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "x" * 200_000}],
             "thinking": {"type": "enabled"}}
-    assert main._decide_served(True, "bg-mr-rebase", tiny, "claude-opus-5") == ("claude-sonnet-5", "bg-ceiling")
-    assert main._decide_served(True, "bg-mr-rebase", huge, "claude-opus-5") == ("claude-sonnet-5", "bg-ceiling")
+    assert main._decide_served(True, "bg-mr-rebase", tiny, "claude-opus-5-5") == ("claude-sonnet-5", "bg-ceiling")
+    assert main._decide_served(True, "bg-mr-rebase", huge, "claude-opus-5-5") == ("claude-sonnet-5", "bg-ceiling")
 
 
 def test_bg_ceiling_never_upgrades_an_already_cheap_request(monkeypatch):
@@ -217,11 +217,11 @@ def test_bg_ceiling_only_applies_to_tagged_sessions(monkeypatch):
     the proxy never infers "background" from anything else."""
     monkeypatch.setattr(main, "BG_CEILING_ENABLED", True)
     monkeypatch.setattr(main, "BG_CEILING_MODEL", "claude-sonnet-5")
-    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]}
     for sess in (None, "general", "work-acme",
                  "search_concierge_svc-chatbot--daily-deflection-stats"):
-        served, difficulty = main._decide_served(True, sess, body, "claude-opus-5")
-        assert served == "claude-opus-5" and difficulty == "n/a", sess
+        served, difficulty = main._decide_served(True, sess, body, "claude-opus-5-5")
+        assert served == "claude-opus-5-5" and difficulty == "n/a", sess
 
 
 def test_bg_ceiling_fails_open_on_error(monkeypatch):
@@ -230,9 +230,9 @@ def test_bg_ceiling_fails_open_on_error(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("pool lookup exploded")
     monkeypatch.setattr(routing, "select_bg_ceiling", _boom)
-    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}]}
-    served, difficulty = main._decide_served(True, "bg-mr-rebase", body, "claude-opus-5")
-    assert served == "claude-opus-5" and difficulty == "n/a"
+    body = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]}
+    served, difficulty = main._decide_served(True, "bg-mr-rebase", body, "claude-opus-5-5")
+    assert served == "claude-opus-5-5" and difficulty == "n/a"
 
 
 def test_bg_ceiling_is_independent_of_route_enabled(monkeypatch):
@@ -242,8 +242,8 @@ def test_bg_ceiling_is_independent_of_route_enabled(monkeypatch):
     monkeypatch.setattr(main, "BG_CEILING_MODEL", "claude-sonnet-5")
     monkeypatch.setattr(main, "ROUTE_ENABLED", False)
     monkeypatch.setattr(main, "_COOLDOWNS", routing.Cooldowns())
-    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
-    served, difficulty = main._decide_served(True, "bg-mr-rebase", body, "claude-opus-5")
+    body = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
+    served, difficulty = main._decide_served(True, "bg-mr-rebase", body, "claude-opus-5-5")
     assert served == "claude-sonnet-5" and difficulty == "bg-ceiling"
 
 
@@ -260,11 +260,11 @@ def test_admin_route_toggles_enabled_live(monkeypatch):
     r = tc.post("/admin/route", json={"enabled": True})
     assert r.status_code == 200 and r.json()["enabled"] is True
     assert main.ROUTE_ENABLED is True
-    trivial = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
-    assert main._decide_served(True, None, trivial, "claude-opus-5")[0] == "claude-haiku-4-5"
+    trivial = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16}
+    assert main._decide_served(True, None, trivial, "claude-opus-5-5")[0] == "claude-haiku-4-5"
     # and back off again
     assert tc.post("/admin/route", json={"enabled": False}).json()["enabled"] is False
-    assert main._decide_served(True, None, trivial, "claude-opus-5")[0] == "claude-opus-5"
+    assert main._decide_served(True, None, trivial, "claude-opus-5-5")[0] == "claude-opus-5-5"
 
 
 def test_admin_route_token_guard(monkeypatch):
@@ -330,11 +330,11 @@ async def _drain(streaming_response):
 async def test_nonstream_529_529_200_retries_twice(orch):
     handler, calls = _scripted([529, 529, 200])
     orch(handler)
-    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(body).encode()
     res = await main._nonstream_response(
         "POST", "v1/messages", raw, body, {}, {}, 0.0, None,
-        True, "claude-opus-5", "claude-opus-5", "normal",
+        True, "claude-opus-5-5", "claude-opus-5-5", "normal",
     )
     assert isinstance(res, Response) and res.status_code == 200
     assert calls["n"] == 3  # 1 + 2 retries
@@ -344,11 +344,11 @@ async def test_nonstream_529_529_200_retries_twice(orch):
 async def test_stream_429_then_200_clean_cutover(orch):
     handler, calls = _scripted([429, 200])
     orch(handler)
-    body = {"model": "claude-opus-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(body).encode()
     res = await main._stream_response(
         "v1/messages", raw, body, {}, {}, 0.0, None,
-        "claude-opus-5", "claude-opus-5", "normal",
+        "claude-opus-5-5", "claude-opus-5-5", "normal",
     )
     # a committed 200 stream — never a torn early stream
     assert isinstance(res, StreamingResponse)
@@ -363,11 +363,11 @@ async def test_stream_persistent_429_surfaces_real_http_status(orch):
     reach Claude Code as a real HTTP 429 (its backoff works), NOT a 200 SSE error."""
     handler, calls = _scripted([429])  # always 429
     orch(handler)
-    body = {"model": "claude-opus-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(body).encode()
     res = await main._stream_response(
         "v1/messages", raw, body, {}, {}, 0.0, None,
-        "claude-opus-5", "claude-opus-5", "normal",
+        "claude-opus-5-5", "claude-opus-5-5", "normal",
     )
     assert isinstance(res, Response) and not isinstance(res, StreamingResponse)
     assert res.status_code == 429
@@ -386,11 +386,11 @@ async def test_stream_midstream_drop_is_not_retried(orch):
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=_drop())
     orch(handler)
 
-    body = {"model": "claude-opus-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(body).encode()
     res = await main._stream_response(
         "v1/messages", raw, body, {}, {}, 0.0, None,
-        "claude-opus-5", "claude-opus-5", "normal",
+        "claude-opus-5-5", "claude-opus-5-5", "normal",
     )
     assert isinstance(res, StreamingResponse)
     out = await _drain(res)
@@ -404,7 +404,7 @@ async def test_stream_midstream_drop_is_not_retried(orch):
 # those calls off the session model and owns their transient failures.
 
 CLASSIFIER_BODY = {
-    "model": "claude-opus-5",
+    "model": "claude-opus-5-5",
     "system": "<cc_automode_permissions>\nrules\n</cc_automode_permissions>",
     "messages": [{"role": "user", "content": "=== ACTION BEING CLASSIFIED ===\nBash: ls"}],
 }
@@ -425,10 +425,10 @@ def test_classifier_pinned_off_requested_model_at_floor_tier():
     cd = routing.Cooldowns()
     # default floor is sonnet — cheapest tier >= sonnet that is <= opus in cost
     assert routing.select_classifier_model(
-        "claude-opus-5", CLASSIFIER_BODY, POOL, cd, 0.0) == "claude-sonnet-5"
+        "claude-opus-5-5", CLASSIFIER_BODY, POOL, cd, 0.0) == "claude-sonnet-5"
     # an explicit haiku floor goes all the way down
     assert routing.select_classifier_model(
-        "claude-opus-5", CLASSIFIER_BODY, POOL, cd, 0.0, floor_tier="haiku") == "claude-haiku-4-5"
+        "claude-opus-5-5", CLASSIFIER_BODY, POOL, cd, 0.0, floor_tier="haiku") == "claude-haiku-4-5"
 
 
 def test_classifier_never_upgrades_and_ignores_unknown_models():
@@ -446,7 +446,7 @@ def test_classifier_oversized_transcript_keeps_requested_model():
     permanently, which is worse than the transient failure being avoided."""
     cd = routing.Cooldowns()
     assert routing.select_classifier_model(
-        "claude-opus-5", CLASSIFIER_BODY, POOL, cd, 0.0, max_cheap_tokens=1) == "claude-opus-5"
+        "claude-opus-5-5", CLASSIFIER_BODY, POOL, cd, 0.0, max_cheap_tokens=1) == "claude-opus-5-5"
 
 
 def _classifier_body_of(est_tokens):
@@ -464,7 +464,7 @@ def test_classifier_183k_transcript_routes_to_sonnet():
     cd = routing.Cooldowns()
     body = _classifier_body_of(183_250)
     assert routing.select_classifier_model(
-        "claude-opus-5", body, POOL, cd, 0.0) == "claude-sonnet-5"
+        "claude-opus-5-5", body, POOL, cd, 0.0) == "claude-sonnet-5"
 
 
 def test_classifier_skips_a_tier_that_cannot_fit():
@@ -473,14 +473,14 @@ def test_classifier_skips_a_tier_that_cannot_fit():
     cd = routing.Cooldowns()
     body = _classifier_body_of(225_000)
     assert routing.select_classifier_model(
-        "claude-opus-5", body, POOL, cd, 0.0, floor_tier="haiku") == "claude-sonnet-5"
+        "claude-opus-5-5", body, POOL, cd, 0.0, floor_tier="haiku") == "claude-sonnet-5"
 
 
 def test_classifier_keeps_requested_when_no_tier_fits(monkeypatch):
     monkeypatch.setattr(routing, "TIER_CONTEXT", {"haiku": 1, "sonnet": 1, "opus": 1})
     cd = routing.Cooldowns()
     assert routing.select_classifier_model(
-        "claude-opus-5", _classifier_body_of(50_000), POOL, cd, 0.0) == "claude-opus-5"
+        "claude-opus-5-5", _classifier_body_of(50_000), POOL, cd, 0.0) == "claude-opus-5-5"
 
 
 def test_classifier_skips_cooled_down_model():
@@ -488,7 +488,7 @@ def test_classifier_skips_cooled_down_model():
     cd.record("claude-sonnet-5", 529, 0.0)
     cd.record("claude-sonnet-5", 529, 0.0)  # trips cooldown
     served = routing.select_classifier_model(
-        "claude-opus-5", CLASSIFIER_BODY, POOL, cd, 1.0, floor_tier="haiku")
+        "claude-opus-5-5", CLASSIFIER_BODY, POOL, cd, 1.0, floor_tier="haiku")
     assert served == "claude-haiku-4-5"
 
 
@@ -497,8 +497,8 @@ def test_classifier_routed_even_with_route_disabled(monkeypatch):
     monkeypatch.setattr(main, "_COOLDOWNS", routing.Cooldowns())
     monkeypatch.setattr(main, "ROUTE_ENABLED", False)
     served, difficulty = main._decide_served(
-        True, None, CLASSIFIER_BODY, "claude-opus-5", True)
-    assert difficulty == "classifier" and served != "claude-opus-5"
+        True, None, CLASSIFIER_BODY, "claude-opus-5-5", True)
+    assert difficulty == "classifier" and served != "claude-opus-5-5"
 
 
 def test_classifier_call_detection_gates(monkeypatch):
@@ -538,7 +538,7 @@ async def test_classifier_429_is_retried_not_surfaced(orch):
     raw = json.dumps(CLASSIFIER_BODY).encode()
     res = await main._nonstream_response(
         "POST", "v1/messages", raw, dict(CLASSIFIER_BODY), {}, {}, 0.0, None,
-        True, "claude-opus-5", "claude-opus-5", "classifier", True,
+        True, "claude-opus-5-5", "claude-opus-5-5", "classifier", True,
     )
     assert res.status_code == 200
     assert calls["n"] == 3
@@ -546,10 +546,10 @@ async def test_classifier_429_is_retried_not_surfaced(orch):
     # same script, ordinary turn → surfaced verbatim on the first 429, no retry
     handler2, calls2 = _scripted([429, 429, 200])
     orch(handler2)
-    body = {"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]}
     res2 = await main._nonstream_response(
         "POST", "v1/messages", json.dumps(body).encode(), body, {}, {}, 0.0, None,
-        True, "claude-opus-5", "claude-opus-5", "normal",
+        True, "claude-opus-5-5", "claude-opus-5-5", "normal",
     )
     assert res2.status_code == 429 and calls2["n"] == 1
 
@@ -558,15 +558,15 @@ async def test_classifier_429_is_retried_not_surfaced(orch):
 async def test_classifier_400_reverts_to_requested_model(orch):
     """Belt for the size heuristic: if the cheaper model rejects the transcript,
     fall back to the model the client asked for rather than denying the call."""
-    handler, seen = _recording({"claude-sonnet-5": 400, "claude-opus-5": 200})
+    handler, seen = _recording({"claude-sonnet-5": 400, "claude-opus-5-5": 200})
     orch(handler)
     raw = json.dumps(CLASSIFIER_BODY).encode()
     res = await main._nonstream_response(
         "POST", "v1/messages", raw, dict(CLASSIFIER_BODY), {}, {}, 0.0, None,
-        True, "claude-opus-5", "claude-sonnet-5", "classifier", True,
+        True, "claude-opus-5-5", "claude-sonnet-5", "classifier", True,
     )
     assert res.status_code == 200
-    assert seen == ["claude-sonnet-5", "claude-opus-5"]
+    assert seen == ["claude-sonnet-5", "claude-opus-5-5"]
 
 
 @pytest.mark.asyncio
@@ -578,7 +578,7 @@ async def test_classifier_may_shed_on_work_session(orch):
     raw = json.dumps(CLASSIFIER_BODY).encode()
     res = await main._nonstream_response(
         "POST", "v1/messages", raw, dict(CLASSIFIER_BODY), {}, {}, 0.0, "work-acme",
-        True, "claude-opus-5", "claude-sonnet-5", "classifier", True,
+        True, "claude-opus-5-5", "claude-sonnet-5", "classifier", True,
     )
     assert res.status_code == 200
     assert seen[-1] == "claude-haiku-4-5"           # shed down-ladder after retries
@@ -589,11 +589,11 @@ async def test_classifier_may_shed_on_work_session(orch):
 async def test_work_session_hardfails_no_bypass_and_no_shed(orch):
     handler, calls = _scripted([503])  # always 503
     orch(handler)
-    body = {"model": "claude-opus-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+    body = {"model": "claude-opus-5-5", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(body).encode()
     res = await main._stream_response(
         "v1/messages", raw, body, {}, {}, 0.0, "work-acme",
-        "claude-opus-5", "claude-opus-5", "n/a",
+        "claude-opus-5-5", "claude-opus-5-5", "n/a",
     )
     assert isinstance(res, Response) and res.status_code == 503
     # work never sheds to another model: 1 + ROUTE_MAX_RETRIES attempts, same model
