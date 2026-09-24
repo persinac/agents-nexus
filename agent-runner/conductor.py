@@ -84,6 +84,10 @@ ESCALATE_AFTER = int(POLICY.get("escalate_after_fails", 2))
 # zero progress. Default 60 for all workers (matches what the skill-attached path already used);
 # override per box via policy.worker_max_turns or CONDUCTOR_WORKER_MAX_TURNS.
 WORKER_MAX_TURNS = int(os.environ.get("CONDUCTOR_WORKER_MAX_TURNS", POLICY.get("worker_max_turns", 60)))
+CLI_PATH = os.environ.get("CONDUCTOR_CLI_PATH") or shutil.which("claude")
+if not CLI_PATH:
+    print(f"[conductor] warning: no `claude` on PATH; the SDK's bundled CLI may reject model {MODEL!r}",
+          file=sys.stderr)
 # Terminal behavior when a building mission exhausts MAX_REPLANS without passing verify.
 # `escalate` (default) = today's behavior byte-for-byte: mark escalated + stop, work stranded.
 # `partial` = best-effort: open a DRAFT MR for the attempt + file the residual reviewer findings
@@ -435,6 +439,7 @@ async def judge(instruction: str, schema_hint: str) -> dict:
     prompt = (f"{instruction}\n\nRespond with ONLY a single JSON object (no prose, no code fence) "
               f"matching this shape:\n{schema_hint}")
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=ORCH_EFFORT, setting_sources=[],
         permission_mode="bypassPermissions", allowed_tools=[],   # no tools → no turn cap needed
     )
@@ -620,6 +625,7 @@ async def run_worker(subtask: dict, profile: dict, effort: str) -> dict:
     # read-only profiles disallow the write tools (Bash-write hardening is slice C+,
     # which brings back the classifier gate via a streaming worker).
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=effort, cwd=cwd,
         setting_sources=(["user", "project"] if skill_md else []),
         mcp_servers=mcp, allowed_tools=allowed,
@@ -1102,6 +1108,7 @@ async def review_one(mid: str, goal: str, summaries: list, probes: list, lens: s
     tools = list(profile.get("tools", [])) + [f"mcp__{s}__*" for s in mcp]
     prompt = _reviewer_prompt(goal, summaries, probes, lens, cwd)
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=ORCH_EFFORT, cwd=cwd, setting_sources=[],
         mcp_servers=mcp, allowed_tools=tools, disallowed_tools=list(WRITE_TOOLS),
         permission_mode="bypassPermissions",
@@ -1247,6 +1254,7 @@ async def review_plan(mid: str, goal: str, design_brief: dict, plan_obj: dict, l
         'Respond with ONLY JSON: {"pass":true,"findings":[{"severity":"blocker|major|minor","where":"","what":"","fix_hint":""}]}'
     )
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=ORCH_EFFORT, cwd=REPO, setting_sources=[],
         mcp_servers=mcp, allowed_tools=tools, disallowed_tools=list(WRITE_TOOLS),
         permission_mode="bypassPermissions",
@@ -1634,6 +1642,7 @@ async def _name_mr(goal, worktree, target="main"):
         'text, no absolute file paths>"}'
     )
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=NAMING_MODEL, effort="low", setting_sources=[],
         permission_mode="bypassPermissions", allowed_tools=[],
     )
@@ -1712,7 +1721,8 @@ async def reporter_agent(instruction, mcp_names):
     reporting action and returns structured JSON."""
     mcp = _load_mcp(mcp_names)
     opts = ClaudeAgentOptions(model=MODEL, effort=ORCH_EFFORT, setting_sources=[], mcp_servers=mcp,
-                              allowed_tools=[f"mcp__{s}__*" for s in mcp], permission_mode="bypassPermissions")
+                              allowed_tools=[f"mcp__{s}__*" for s in mcp], permission_mode="bypassPermissions",
+                              cli_path=CLI_PATH)
     text = []
     try:
         async for msg in query(prompt=instruction, options=opts):
@@ -2391,6 +2401,7 @@ async def run_sdlc_stage(mid: str, project_dir: str, leaf: str, ctx: str, effort
               f"(its references/ are alongside it), writing the artifact file(s) under {project_dir}.\n"
               f"{_sdlc_escape_hint(leaf_fq)}\n\nMission context:\n{ctx}\n")
     opts = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
         model=MODEL, effort=(effort or WORKER_EFFORT), cwd=project_dir,
         setting_sources=["user", "project"],
         mcp_servers=mcp, allowed_tools=allowed, disallowed_tools=["AskUserQuestion"],

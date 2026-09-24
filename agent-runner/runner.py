@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -267,6 +268,7 @@ async def main() -> int:
 
     mcp = load_mcp_servers(args.all_mcp)
     options = ClaudeAgentOptions(
+        cli_path=os.environ.get("CONDUCTOR_CLI_PATH") or shutil.which("claude"),
         model=args.model,
         cwd=args.cwd,
         setting_sources=[],                         # hermetic: no clobber, no legacy hooks
