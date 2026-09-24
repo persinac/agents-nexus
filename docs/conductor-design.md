@@ -161,7 +161,7 @@ type Profile = {
 2. **Redundant state: local DB + Jira.** The DB is the source of truth (resumable +
    audit) and stitches to the knowledge graph via `memory_nodes.mission_id` /
    `memory_events.mission_id`; Jira mirrors it for standup / team surfacing.
-3. **Effort/retry policy** (`config/conductor.yaml`): all `claude-opus-5-5`; the
+3. **Effort/retry policy** (`config/conductor.yaml`): all `claude-opus-5-5[1m]`; the
    orchestrator's judgment nodes run at `max`; workers start at `high` and escalate to
    `xhigh` after 2 failed verify rounds; up to `max_replans: 5` verify→re-dispatch
    rounds before escalating to a human.

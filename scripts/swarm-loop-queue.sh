@@ -27,7 +27,7 @@ Env:
   SWARM_QUEUE_SLACK_DM     Slack channel/DM id for the completion ping; unset = no DM
   SWARM_QUEUE_SUMMON_NOTE  MR note body that summons the review bot after a push (e.g. an @mention);
                            unset = the bot is assumed to review on push
-  SWARM_QUEUE_MODEL        model id for the loop agent; unset = inherit settings.json `opus[1m]`
+  SWARM_QUEUE_MODEL        model id for the loop agent (default claude-opus-5-5[1m])
   SWARM_QUEUE_EFFORT       --effort level for the loop agent; unset = claude's default
   PER_MR_TIMEOUT_SEC       per-MR cap in seconds (default 14400)
   SWARM_QUEUE_LOG          log file path
@@ -164,7 +164,7 @@ spawn_loop() {
   fi
 
   "$HOME/.tmux/substrate.sh" spawn "loop-mr$mr" "$cwd" \
-    "env PROJECT_SLUG=loop-mr$mr CLAUDE_MODEL=${SWARM_QUEUE_MODEL:-} CLAUDE_EFFORT=${SWARM_QUEUE_EFFORT:-} CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions \
+    "env PROJECT_SLUG=loop-mr$mr CLAUDE_MODEL=${SWARM_QUEUE_MODEL:-claude-opus-5-5[1m]} CLAUDE_EFFORT=${SWARM_QUEUE_EFFORT:-} CLAUDE_EXTRA_ARGS=--dangerously-skip-permissions \
      SEED_PROMPT='$seed' \
      \$HOME/.tmux/open-claude.sh" \
     --workspace "swarm/loop-mr$mr" >>"$LOG" 2>&1
