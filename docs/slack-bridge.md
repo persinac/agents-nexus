@@ -711,7 +711,7 @@ Supervised (recommended — restarts on crash, starts at login):
 # macOS (launchd)
 task launchd:install:slack-bridge     # or: task launchd:install:all
 launchctl list | grep slack-bridge    # confirm loaded
-# logs: /tmp/agents-nexus-slack-bridge.log
+# logs: ~/Library/Logs/agents-nexus/slack-bridge.log
 
 # Linux (systemd user unit) — installed + started by the tmux installer:
 bash tmux/linux/install.sh            # installs deps + enables + starts the unit

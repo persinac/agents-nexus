@@ -52,16 +52,22 @@ def test_turn_usd_matches_the_snapshot_formula(monkeypatch):
     assert got == pytest.approx(5.0 + 6.25 + 0.50 + 25.0)
 
 
+def test_turn_usd_honours_a_per_model_cache_read_mult(monkeypatch):
+    monkeypatch.setattr(main, "_PRICES", {"claude-opus-5-5": {"input": 4.0, "output": 20.0,
+                                                              "cache_read_mult": 0.05}})
+    assert main._turn_usd("claude-opus-5-5", _ud(cr=1_000_000)) == pytest.approx(0.20)
+
+
 def test_turn_usd_strips_a_dated_model_id(monkeypatch):
     monkeypatch.setattr(main, "_PRICES", {"claude-haiku-4-5": {"input": 1.0, "output": 5.0}})
     assert main._turn_usd("claude-haiku-4-5-20251001", _ud(out=1_000_000)) == pytest.approx(5.0)
 
 
 def test_turn_usd_does_not_tier_fallback(monkeypatch):
-    """claude-opus-4-8 must NOT price an unknown claude-opus-9. The report does
+    """claude-opus-5 must NOT price an unknown claude-opus-9. The report does
     substitute (loudly); the ceiling must not, or a mispriced model could hold a
     runaway under the cap."""
-    monkeypatch.setattr(main, "_PRICES", {"claude-opus-4-8": {"input": 5.0, "output": 25.0}})
+    monkeypatch.setattr(main, "_PRICES", {"claude-opus-5": {"input": 5.0, "output": 25.0}})
     assert main._turn_usd("claude-opus-9", _ud(out=1_000_000)) == 0.0
 
 

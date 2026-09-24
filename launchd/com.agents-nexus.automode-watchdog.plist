@@ -55,8 +55,8 @@
     <integer>10</integer>
 
     <key>StandardOutPath</key>
-    <string>/tmp/agents-nexus-automode-watchdog.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/automode-watchdog.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/agents-nexus-automode-watchdog.log</string>
+    <string>__HOME__/Library/Logs/agents-nexus/automode-watchdog.log</string>
 </dict>
 </plist>
