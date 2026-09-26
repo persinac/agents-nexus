@@ -1,0 +1,28 @@
+# Change ledger read by scripts/flywheel-report.py; each entry is reconciled in the daily report.
+entries:
+  - id: credential-rule
+    date: 2026-09-25
+    status: shipped
+    change: >-
+      Added a standing fact to ~/.claude/CLAUDE.md (304 bytes): never print a credential-bearing
+      file or secret-named variable; assert the property with grep -c, grep -oE '^[A-Z_]+=' or
+      ${#VAR} instead. Takes effect as sessions restart, since CLAUDE.md loads at session start.
+    metric: {kind: hook, name: block-credential-dump, seats: [session, agent]}
+    baseline_days: 30
+    predict: {op: "<", value: 2.0}
+    reconcile_after_days: 14
+    inherited_tokens: 76
+    applies_to: [session, agent]
+
+  - id: claude-md-rewrite
+    date: 2026-09-23
+    status: shipped
+    change: >-
+      Moved harness and glab guidance out of always-loaded ~/.claude/CLAUDE.md into
+      ~/.claude/references/ (356 to 97 lines). Regression watch: tool errors should not rise.
+    metric: {kind: tool_errors, seats: [session, agent]}
+    baseline_days: 21
+    predict: {op: "<=", baseline_mult: 1.1}
+    reconcile_after_days: 14
+    inherited_tokens: -4357
+    applies_to: [session, agent]

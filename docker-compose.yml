@@ -235,7 +235,7 @@ services:
         echo "[langfuse] bucket ready"
 
   langfuse-clickhouse:
-    image: clickhouse/clickhouse-server
+    image: clickhouse/clickhouse-server:25.12
     profiles: ["langfuse"]
     container_name: langfuse-clickhouse
     restart: always
@@ -254,12 +254,12 @@ services:
       retries: 15
 
   langfuse-web:
-    image: langfuse/langfuse:3
+    image: langfuse/langfuse:4.43.0
     profiles: ["langfuse"]
     container_name: langfuse-web
     restart: always
-    mem_limit: 1g
-    memswap_limit: 1g
+    mem_limit: 1536m
+    memswap_limit: 1536m
     mem_reservation: 256m
     ports:
       - "${LANGFUSE_PORT:-3000}:3000"
@@ -312,7 +312,7 @@ services:
         condition: service_completed_successfully
 
   langfuse-worker:
-    image: langfuse/langfuse-worker:3
+    image: langfuse/langfuse-worker:4.43.0
     profiles: ["langfuse"]
     container_name: langfuse-worker
     restart: always

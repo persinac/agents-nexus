@@ -330,7 +330,7 @@ services:
       - "${LANGFUSE_MINIO_PORT:-9094}:9000"
 
   langfuse-clickhouse:
-    image: clickhouse/clickhouse-server
+    image: clickhouse/clickhouse-server:25.12
     profiles: ["langfuse"]
     container_name: langfuse-clickhouse
     restart: always
@@ -346,7 +346,7 @@ services:
       retries: 15
 
   langfuse-web:
-    image: langfuse/langfuse:3
+    image: langfuse/langfuse:4.43.0
     profiles: ["langfuse"]
     container_name: langfuse-web
     restart: always
@@ -399,7 +399,7 @@ services:
         condition: service_healthy
 
   langfuse-worker:
-    image: langfuse/langfuse-worker:3
+    image: langfuse/langfuse-worker:4.43.0
     profiles: ["langfuse"]
     container_name: langfuse-worker
     restart: always
