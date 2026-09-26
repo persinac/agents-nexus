@@ -1514,6 +1514,7 @@ async def run_and_verify(db, mid: str, goal: str, start_round: int = 0) -> tuple
     resumed mission continue from its persisted replan_count."""
     verdict = {"pass": False}
     prev_blocked = set()
+    prev_blockers = None
     for rnd in range(start_round, MAX_REPLANS + 1):
         effort = WORKER_EFFORT if rnd < ESCALATE_AFTER else ESC_EFFORT
         db.log_event(mid, "round", {"round": rnd, "worker_effort": effort})
@@ -1557,6 +1558,14 @@ async def run_and_verify(db, mid: str, goal: str, start_round: int = 0) -> tuple
                   f"re-planning is not unblocking them")
             return verdict, False
         prev_blocked = blocked
+        blockers = sum(1 for f in verdict.get("findings") or [] if f.get("severity") == "blocker")
+        if (ESCALATE_AFTER <= rnd < MAX_REPLANS and not failed and blockers and prev_blockers is not None
+                and blockers >= prev_blockers):
+            db.log_event(mid, "no_progress", {"round": rnd, "blockers": blockers, "prev_blockers": prev_blockers})
+            print(f"[conductor] round {rnd} ended with {blockers} blocker(s) vs {prev_blockers} the round before — "
+                  f"stopping; escalated re-planning is not converging")
+            return verdict, False
+        prev_blockers = blockers
         if rnd < MAX_REPLANS:
             db.log_event(mid, "replan", {"round": rnd, "findings": verdict.get("findings")})
             fb = json.dumps(verdict.get("findings", []))[:800]
