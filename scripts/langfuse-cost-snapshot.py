@@ -137,7 +137,7 @@ def turn_cost(row: dict, price: dict, cache_read_mult: float,
     return round((
         row["input_tokens"] * inp
         + row["cache_creation_tokens"] * inp * cache_write_mult
-        + row["cache_read_tokens"] * inp * cache_read_mult
+        + row["cache_read_tokens"] * inp * price.get("cache_read_mult", cache_read_mult)
         + row["output_tokens"] * price["output"]
     ) / 1_000_000, 6)
 
