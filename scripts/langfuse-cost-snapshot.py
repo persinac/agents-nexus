@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Snapshot Langfuse daily LLM cost/usage into a durable Postgres rollup.
 
-Langfuse keeps per-trace cost in ClickHouse `observations`, which we TTL to
-10 days (see docs/langfuse-retention.md). This job aggregates those observations
+Langfuse v4 keeps per-observation cost in ClickHouse `events_core` (v3 wrote
+`observations`, which v4 leaves empty); retention is a TTL described in
+docs/langfuse-retention.md. This job aggregates those rows
 by (day, project, model) and upserts them into `agents.langfuse_cost_daily` in
 nexus-postgres BEFORE the source rows age out — so the cost view survives long
 after the traces themselves are pruned.
@@ -146,7 +147,7 @@ def turn_cost(row: dict, price: dict, cache_read_mult: float,
 CH_QUERY = f"""
 SELECT toString(toDate(start_time))                 AS day,
        project_id,
-       coalesce(provided_model_name, 'unknown')     AS model,
+       coalesce(nullif(provided_model_name, ''), 'unknown') AS model,
        count()                                       AS observations,
        sum(usage_details['input'])                   AS input_tokens,
        sum(usage_details['output'])                  AS output_tokens,
@@ -155,7 +156,7 @@ SELECT toString(toDate(start_time))                 AS day,
        sum(usage_details['total'])                   AS total_tokens,
        toJSONString(CAST(sumMap(cost_details)  AS Map(String, Float64))) AS cost_json,
        toJSONString(CAST(sumMap(usage_details) AS Map(String, UInt64)))  AS usage_json
-FROM observations
+FROM events_core FINAL
 WHERE type = 'GENERATION'
   AND start_time >= now() - INTERVAL {LOOKBACK_DAYS} DAY
 GROUP BY day, project_id, model
@@ -283,10 +284,16 @@ def main() -> None:
 
     rows, unpriced = fetch_rows()
     if not rows:
-        print("[cost-snapshot] no GENERATION observations in window — nothing to snapshot")
+        print(f"[cost-snapshot] no GENERATION rows in events_core in the last {LOOKBACK_DAYS} days "
+              "— nothing to snapshot")
         return
 
     days = sorted({r["day"] for r in rows})
+    tomorrow = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    future = [d for d in days if d > tomorrow]
+    if future:
+        sys.exit(f"[cost-snapshot] {len(future)} future-dated day(s) in ClickHouse ({future[0]}…{future[-1]}) "
+                 "— timestamps are corrupt; refusing to upsert")
     total = sum(r["total_cost"] for r in rows if r["total_cost"] is not None)
     print(f"[cost-snapshot] aggregated {len(rows)} (day×model) rows across "
           f"{len(days)} days ({days[0]}…{days[-1]}), ${total:,.2f} total")

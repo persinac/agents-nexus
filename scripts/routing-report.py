@@ -4,7 +4,8 @@ routing-report — calibration view for nexus-proxy model routing.
 
 Reads the `routing` metadata the proxy tags onto every /v1/messages generation
 (requested/served model, difficulty, action, retries) plus token usage from
-Langfuse's ClickHouse, and prints:
+Langfuse's ClickHouse `events_core` table (v4; v3's `observations` is left empty),
+and prints:
 
   A. routing activity      — difficulty x action, downgrade rate, resilience
   B. request mix + volumes  — where the token spend actually is
@@ -130,16 +131,16 @@ def main() -> None:
     window = sys.argv[1] if len(sys.argv) > 1 else "24 HOUR"
     if not re.fullmatch(r"\d+\s+(MINUTE|HOUR|DAY|WEEK)", window, re.I):
         sys.exit(f"bad WINDOW {window!r} — use e.g. '24 HOUR', '7 DAY'")
-    W = f"start_time > now() - INTERVAL {window} AND metadata['routing'] != ''"
-    Wo = f"o.start_time > now() - INTERVAL {window} AND o.metadata['routing'] != ''"
-    J = "JSONExtractString(metadata['routing'],'{}')"
+    R = "metadata_values[indexOf(metadata_names, 'routing')]"
+    W = f"type = 'GENERATION' AND start_time > now() - INTERVAL {window} AND {R} != ''"
+    J = f"JSONExtractString({R}, '{{}}')"
 
     print(f"\n=== nexus-proxy routing report — last {window} ===")
 
     # ── A. activity ──────────────────────────────────────────────────────────
     rows = ch(f"""SELECT {J.format('difficulty')} d, {J.format('action')} a,
-                 count(), sum(JSONExtractInt(metadata['routing'],'retries'))
-                 FROM observations WHERE {W} GROUP BY d, a ORDER BY count() DESC""")
+                 count(), sum(JSONExtractInt({R}, 'retries'))
+                 FROM events_core FINAL WHERE {W} GROUP BY d, a ORDER BY count() DESC""")
     total = sum(int(r[2]) for r in rows)
     downgrades = sum(int(r[2]) for r in rows if r[1] == "downgrade")
     retries = sum(int(r[3]) for r in rows)
@@ -157,7 +158,7 @@ def main() -> None:
                  sum(usage_details['output']),
                  sum(usage_details['cache_read_input_tokens']),
                  sum(usage_details['input']+usage_details['cache_creation_input_tokens'])
-                 FROM observations WHERE {W} GROUP BY m ORDER BY count() DESC""")
+                 FROM events_core FINAL WHERE {W} GROUP BY m ORDER BY count() DESC""")
     print(f"\n[B] request mix + token volume (cache-read often dominates cost)")
     print(f"    {'requested':<20}{'turns':>7}{'output_tok':>13}{'cache_read':>13}{'fresh_in':>11}")
     for m, n, o, cr, fi in rows:
@@ -168,7 +169,7 @@ def main() -> None:
                  usage_details['input'], usage_details['output'],
                  usage_details['cache_read_input_tokens'],
                  usage_details['cache_creation_input_tokens']
-                 FROM observations WHERE {W} AND {J.format('action')}='downgrade'""")
+                 FROM events_core FINAL WHERE {W} AND {J.format('action')}='downgrade'""")
     print(f"\n[C] realized downgrade savings — {len(rows)} downgraded turn(s)")
     saved = 0.0
     for req, srv, i, o, cr, cw in rows:
@@ -192,7 +193,7 @@ def main() -> None:
                  sum(usage_details['input']),
                  sum(usage_details['cache_read_input_tokens']),
                  sum(usage_details['cache_creation_input_tokens'])
-                 FROM observations WHERE {W} AND {J.format('requested_model')} LIKE '%opus%'
+                 FROM events_core FINAL WHERE {W} AND {J.format('requested_model')} LIKE '%opus%'
                  GROUP BY 1""")
     print(f"\n[D] headroom — if opus turns had been served by sonnet")
     if rows:
@@ -213,18 +214,14 @@ def main() -> None:
         print("    (no opus-requested turns in window)")
 
     # ── E. per-agent spend + cache-safe sonnet-pin headroom ──────────────────
-    # NOT routing-gated, unlike A-D. Those compare requested vs served and so
-    # genuinely need metadata['routing']; per-agent SPEND does not care whether
-    # proactive downgrade is on. Sharing the gated Wo made E read empty on every
-    # box running the default ROUTE_ENABLED=0 — i.e. the one section that answers
-    # "what is this fleet costing per agent" was dark for a reason unrelated to it.
-    WoE = f"o.start_time > now() - INTERVAL {window}"
-    rows = ch(f"""SELECT t.session_id AS agent, o.provided_model_name AS model, count(),
-                 sum(o.usage_details['input']), sum(o.usage_details['output']),
-                 sum(o.usage_details['cache_read_input_tokens']),
-                 sum(o.usage_details['cache_creation_input_tokens'])
-                 FROM observations o INNER JOIN traces t ON o.trace_id = t.id
-                 WHERE {WoE} AND o.type = 'GENERATION' GROUP BY agent, model""")
+    # Not routing-gated, unlike A-D: gating per-agent spend on W left E empty on
+    # every box running the default ROUTE_ENABLED=0.
+    WE = f"type = 'GENERATION' AND start_time > now() - INTERVAL {window}"
+    rows = ch(f"""SELECT session_id AS agent, provided_model_name AS model, count(),
+                 sum(usage_details['input']), sum(usage_details['output']),
+                 sum(usage_details['cache_read_input_tokens']),
+                 sum(usage_details['cache_creation_input_tokens'])
+                 FROM events_core FINAL WHERE {WE} GROUP BY agent, model""")
     agents: dict = {}
     for agent, model, turns, i, o, cr, cw in rows:
         u = {"input": int(i), "output": int(o),

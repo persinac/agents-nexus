@@ -233,13 +233,15 @@ tasks:
       # docker exec by container_name (not `compose exec`) so it is independent
       # of which compose file resolves by default on this host.
       - |
-        docker exec langfuse-clickhouse clickhouse-client \
-          --user clickhouse --password "${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}" --multiquery -q "
-            ALTER TABLE traces       MODIFY TTL toDateTime(timestamp)  + INTERVAL {{.RETENTION_DAYS}} DAY;
-            ALTER TABLE observations MODIFY TTL toDateTime(start_time) + INTERVAL {{.RETENTION_DAYS}} DAY;
-            ALTER TABLE scores       MODIFY TTL toDateTime(timestamp)  + INTERVAL {{.RETENTION_DAYS}} DAY;
-          "
-      - 'echo "[nexus] Langfuse ClickHouse TTL = {{.RETENTION_DAYS}} days (traces, observations, scores). See docs/langfuse-retention.md."'
+        docker exec langfuse-clickhouse sh -c '
+          q() { clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --enable_full_text_index=1 -q "$1"; }
+          for spec in events_core:start_time events_full:start_time traces:timestamp observations:start_time scores:timestamp; do
+            t=${spec%%:*}; col=${spec#*:}
+            [ "$(q "EXISTS TABLE $t")" = 1 ] || { echo "  $t: absent, skipped"; continue; }
+            q "ALTER TABLE $t MODIFY TTL toDateTime($col) + INTERVAL {{.RETENTION_DAYS}} DAY" || exit 1
+            echo "  $t: {{.RETENTION_DAYS}} days"
+          done'
+      - 'echo "[nexus] Langfuse ClickHouse TTL = {{.RETENTION_DAYS}} days. See docs/langfuse-retention.md."'
 
   langfuse:cost-snapshot:
     desc: "Snapshot Langfuse daily cost/usage (ClickHouse → Postgres agents.langfuse_cost_daily). Idempotent; run daily by launchd/systemd. Preserves cost history past the trace TTL."
