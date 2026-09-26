@@ -23,7 +23,7 @@ CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
 TRANSCRIPT="${TRANSCRIPT/#\~/$HOME}"
 [ -f "$TRANSCRIPT" ] || exit 0
 
-NEXUS_DIR="${AGENTS_NEXUS_DIR:-$HOME/repos/agents-nexus}"
+NEXUS_DIR="${AGENTS_NEXUS_DIR:-$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)}"
 STATE_DIR="$HOME/.claude/auto-checkpoint"
 MCP_CONFIG="$STATE_DIR/mcp.json"
 CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
