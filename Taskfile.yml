@@ -420,6 +420,28 @@ tasks:
       - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist || true
       - rm -f ~/Library/LaunchAgents/com.agents-nexus.langfuse-cost-snapshot.plist
 
+  launchd:install:flywheel-report:
+    desc: Install launchd agent to write the flywheel report daily (4:37am)
+    vars:
+      NEXUS_DIR:
+        sh: pwd
+    cmds:
+      - mkdir -p ~/Library/Logs/agents-nexus
+      - sed -e "s|__AGENTS_NEXUS_DIR__|{{.NEXUS_DIR}}|g" -e "s|__HOME__|$HOME|g" launchd/com.agents-nexus.flywheel-report.plist > ~/Library/LaunchAgents/com.agents-nexus.flywheel-report.plist
+      - launchctl load ~/Library/LaunchAgents/com.agents-nexus.flywheel-report.plist
+      - echo "Installed — flywheel report runs daily at 4:37am and versions the doc-vault entry (reports in ~/.local/share/agents-nexus/flywheel/, log at ~/Library/Logs/agents-nexus/flywheel-report.log)"
+
+  launchd:uninstall:flywheel-report:
+    desc: Remove the flywheel-report launchd agent
+    cmds:
+      - launchctl unload ~/Library/LaunchAgents/com.agents-nexus.flywheel-report.plist || true
+      - rm -f ~/Library/LaunchAgents/com.agents-nexus.flywheel-report.plist
+
+  flywheel:
+    desc: "Write the flywheel report now (30-day window). Pass CLI_ARGS, e.g. -- --days 7 --out -"
+    cmds:
+      - agent-runner/.venv/bin/python scripts/flywheel-report.py {{.CLI_ARGS}}
+
   docvault:test:
     desc: "Run every doc-vault suite (the anchor suite skips when no Chromium is installed)"
     dir: doc-vault

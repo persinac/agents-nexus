@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-nexus.flywheel-report</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__AGENTS_NEXUS_DIR__/agent-runner/.venv/bin/python</string>
+        <string>__AGENTS_NEXUS_DIR__/scripts/flywheel-report.py</string>
+        <string>--days</string>
+        <string>30</string>
+        <string>--deposit</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>4</integer>
+        <key>Minute</key><integer>37</integer>
+    </dict>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>AGENTS_NEXUS_DIR</key>
+        <string>__AGENTS_NEXUS_DIR__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:__HOME__/.local/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/agents-nexus/flywheel-report.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/agents-nexus/flywheel-report.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
